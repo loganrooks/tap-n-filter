@@ -1,0 +1,36 @@
+{
+  "formatVersion" : 1,
+  "name" : "distant-engines",
+  "nodes" : [
+    {
+      "bypass" : false,
+      "displayName" : "EQ",
+      "extras" : {
+
+      },
+      "id" : "2EF8A6F0-1234-5678-9ABC-DEF012345678",
+      "parameters" : {
+        "hp.Q" : 0.707,
+        "hp.frequency" : 80,
+        "lp.Q" : 1.2,
+        "lp.frequency" : 800
+      },
+      "typeIdentifier" : "tnf.eq",
+      "wetDryMix" : 1
+    },
+    {
+      "bypass" : false,
+      "displayName" : "Reverb",
+      "extras" : {
+        "preset" : "largeHall"
+      },
+      "id" : "8B3C7D90-FEDC-BA98-7654-321098765432",
+      "parameters" : {
+
+      },
+      "typeIdentifier" : "tnf.reverb",
+      "wetDryMix" : 0.7
+    }
+  ],
+  "outputGain" : 1
+}
