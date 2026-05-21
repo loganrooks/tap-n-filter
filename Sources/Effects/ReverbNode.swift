@@ -37,7 +37,9 @@ public final class ReverbNode: EffectNode {
 
     // MARK: Instance state
 
-    public let id: UUID
+    /// Per-instance identifier preserved across save/load cycles.
+    public var id: UUID
+    /// User-visible name for this node instance (may differ from the type default).
     public var displayName: String
 
     public var bypass: Bool {
@@ -54,7 +56,9 @@ public final class ReverbNode: EffectNode {
         didSet { reverb.loadFactoryPreset(preset) }
     }
 
+    /// The graph connects audio into this node on bus 0.
     public let inputBus: AVAudioMixerNode
+    /// The graph reads audio from this node on bus 0.
     public let outputBus: AVAudioMixerNode
     private let dryMixer: AVAudioMixerNode
     /// See note on `EQNode.wetMixer`: a small trampoline mixer between the
@@ -73,6 +77,10 @@ public final class ReverbNode: EffectNode {
         self.init(preset: Self.defaultPreset)
     }
 
+    /// Full initializer. `displayName` defaults to `"Reverb"` when nil.
+    /// `wetDryMix` defaults to 0.5 (equal blend), matching the typical
+    /// "add some room" use case. The underlying unit runs at 100% wet;
+    /// the parallel-mixer pattern manages the mix externally.
     public init(
         id: UUID = UUID(),
         displayName: String? = nil,
@@ -101,6 +109,7 @@ public final class ReverbNode: EffectNode {
 
     /// Reverb has no continuous parameters in V1 — the preset is the only
     /// user-tunable knob and it lives in `extras` as a categorical choice.
+    /// Adding continuous parameters (e.g., pre-delay) is a future enhancement.
     public static let parameterCatalog: [EffectParameter] = []
 
     public var parameters: [EffectParameter] { Self.parameterCatalog }
@@ -204,6 +213,9 @@ public final class ReverbNode: EffectNode {
                 actual: state.typeIdentifier
             )
         }
+        // Preserve the identity from saved state. See EQNode.restore for the
+        // rationale; the same drift risk applies to every concrete EffectNode.
+        id = state.id
         displayName = state.displayName
         bypass = state.bypass
         wetDryMix = min(max(state.wetDryMix, 0.0), 1.0)
@@ -238,9 +250,12 @@ public final class ReverbNode: EffectNode {
 
     // MARK: Preset name mapping
 
-    /// The set of `AVAudioUnitReverbPreset` cases stable for V1. Add a new
-    /// case here when Apple ships a new preset and we want users to be able
-    /// to select it from a `.tnf` file.
+    /// All `AVAudioUnitReverbPreset` cases supported in V1, each paired with
+    /// its stable string name used in `.tnf` files.
+    ///
+    /// When Apple adds new presets in future SDKs, add them here. Existing
+    /// entries must not be renamed; doing so would silently fail to load
+    /// older `.tnf` files that contain the old name.
     public static let supportedPresets: [(name: String, preset: AVAudioUnitReverbPreset)] = [
         ("smallRoom", .smallRoom),
         ("mediumRoom", .mediumRoom),
@@ -257,6 +272,8 @@ public final class ReverbNode: EffectNode {
         ("cathedral", .cathedral)
     ]
 
+    /// Return the stable string name for a preset. Falls back to `"largeHall"`
+    /// for unrecognised presets added in future SDKs.
     public static func name(for preset: AVAudioUnitReverbPreset) -> String {
         for entry in supportedPresets where entry.preset == preset {
             return entry.name
@@ -264,6 +281,7 @@ public final class ReverbNode: EffectNode {
         return "largeHall"
     }
 
+    /// Return the preset for a stable string name, or `nil` if unrecognised.
     public static func preset(forName name: String) -> AVAudioUnitReverbPreset? {
         supportedPresets.first { $0.name == name }?.preset
     }

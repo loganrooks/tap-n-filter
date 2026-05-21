@@ -56,19 +56,17 @@ public final class Graph {
     /// Attach every node to `engine` and wire the chain between `source` and
     /// `destination`.
     ///
-    /// Asserts the engine is stopped (`!engine.isRunning`) per ADR-006.
-    /// Calling `attach` on a running engine produces silent routing failures
-    /// in `AVAudioEngine`; the assertion turns the latent bug into an
-    /// immediate crash in debug builds.
+    /// Throws `GraphError.engineMustBeStopped` if the engine is running when
+    /// called, enforcing the ADR-006 lifecycle invariant in both debug and
+    /// release builds. (An `assert` would have been a no-op in release.)
     public func attach(
         to engine: AVAudioEngine,
         source: AVAudioNode,
         destination: AVAudioNode
     ) throws {
-        assert(
-            !engine.isRunning,
-            "Graph.attach requires the engine to be stopped (ADR-006)"
-        )
+        guard !engine.isRunning else {
+            throw GraphError.engineMustBeStopped
+        }
         if attachedEngine != nil {
             throw GraphError.alreadyAttached
         }
@@ -184,18 +182,29 @@ public final class Graph {
         nodes.remove(at: index)
     }
 
-    /// Move the node at `from` to `to`. Both indices must be valid for the
-    /// pre-mutation array.
+    /// Move the node at `from` to `to`.
+    ///
+    /// `source` must be a valid index (0 ..< count). `destination` is the
+    /// index in the post-removal array where the node should land; passing
+    /// `nodes.count` moves the node to the end, consistent with collection
+    /// reordering APIs (e.g. `List.onMove`).
     public func move(from source: Int, to destination: Int) throws {
         try requireDetached()
         guard source >= 0, source < nodes.count else {
             throw GraphError.invalidIndex(source)
         }
-        guard destination >= 0, destination < nodes.count else {
+        // After removal the array is one shorter, so the valid insertion
+        // range is 0 ... (count - 1), i.e. 0 ... (pre-removal count - 1).
+        // We accept destination == nodes.count (move-to-end) before removal
+        // so the caller never has to subtract 1 themselves.
+        guard destination >= 0, destination <= nodes.count else {
             throw GraphError.invalidIndex(destination)
         }
         let node = nodes.remove(at: source)
-        nodes.insert(node, at: destination)
+        // After removal, destination may equal the new count — Array.insert
+        // accepts that (it appends).
+        let adjustedDestination = min(destination, nodes.count)
+        nodes.insert(node, at: adjustedDestination)
     }
 
     /// Clamp `outputGain` to the documented 0.0–2.0 range. Values outside
@@ -262,7 +271,12 @@ public final class Graph {
             }
         }
 
-        let graph = Graph(nodes: loadedNodes, outputGain: preset.outputGain)
+        // Clamp the persisted gain to the 0–2 range so the runtime value
+        // always matches what the trimMixer will apply. Without this, a preset
+        // written with an out-of-range value would give `outputGain` a value
+        // that diverges from the clamped value used in `trimMixer.outputVolume`.
+        let clampedGain = min(max(preset.outputGain, 0.0), 2.0)
+        let graph = Graph(nodes: loadedNodes, outputGain: clampedGain)
         graph.lastLoadWarnings = warnings
         return graph
     }

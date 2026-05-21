@@ -13,6 +13,24 @@ import Presets
 ///
 /// See `docs/orchestration/phases/02-dsp-chain.md` section 2.8 and ADR-008.
 
+// MARK: Typed errors
+
+/// Errors thrown by the ear-test harness.
+enum EarTestHarnessError: Error {
+    /// `AVAudioPCMBuffer` allocation failed for the input staging buffer.
+    case inputBufferAllocationFailed
+    /// `AVAudioPCMBuffer` allocation failed for the per-chunk render buffer.
+    case renderBufferAllocationFailed
+    /// `AVAudioPCMBuffer` allocation failed for the full-length collected output.
+    case collectedBufferAllocationFailed
+    /// `engine.renderOffline` returned `.error`.
+    case offlineRenderError
+    /// `engine.renderOffline` returned an unrecognised status code.
+    case offlineRenderUnknownStatus
+    /// A buffer in the offline pipeline did not use float channel data.
+    case bufferNotFloatFormat
+}
+
 // MARK: CLI parsing
 
 struct CLIOptions {
@@ -96,11 +114,7 @@ func loadBuffer(at path: String) throws -> AVAudioPCMBuffer {
     let format = file.processingFormat
     let frameCount = AVAudioFrameCount(file.length)
     guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else {
-        throw NSError(
-            domain: "tap-n-filter-eartest",
-            code: 1,
-            userInfo: [NSLocalizedDescriptionKey: "Failed to allocate input buffer"]
-        )
+        throw EarTestHarnessError.inputBufferAllocationFailed
     }
     try file.read(into: buffer)
     return buffer
@@ -150,11 +164,7 @@ func renderOffline(
     // duration's worth of output (the tail trails off in subsequent buffers
     // we don't render here).
     guard let outputBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: maxFrames) else {
-        throw NSError(
-            domain: "tap-n-filter-eartest",
-            code: 2,
-            userInfo: [NSLocalizedDescriptionKey: "Failed to allocate render buffer"]
-        )
+        throw EarTestHarnessError.renderBufferAllocationFailed
     }
 
     // Output file is the full length of the input. Reverb tail beyond the
@@ -165,11 +175,7 @@ func renderOffline(
         pcmFormat: format,
         frameCapacity: AVAudioFrameCount(totalFrames)
     ) else {
-        throw NSError(
-            domain: "tap-n-filter-eartest",
-            code: 3,
-            userInfo: [NSLocalizedDescriptionKey: "Failed to allocate collected buffer"]
-        )
+        throw EarTestHarnessError.collectedBufferAllocationFailed
     }
     collected.frameLength = 0
 
@@ -188,23 +194,14 @@ func renderOffline(
             try appendFrames(from: outputBuffer, to: collected, frameCount: frames)
             remaining -= Int64(frames)
         case .cannotDoInCurrentContext:
-            throw NSError(
-                domain: "tap-n-filter-eartest",
-                code: 4,
-                userInfo: [NSLocalizedDescriptionKey: "renderOffline cannotDoInCurrentContext"]
-            )
+            // Apple's docs describe this as a transient condition: "try again
+            // on the next render cycle." Retrying immediately is correct;
+            // throwing here would abort a render that could succeed next pass.
+            continue
         case .error:
-            throw NSError(
-                domain: "tap-n-filter-eartest",
-                code: 5,
-                userInfo: [NSLocalizedDescriptionKey: "renderOffline error"]
-            )
+            throw EarTestHarnessError.offlineRenderError
         @unknown default:
-            throw NSError(
-                domain: "tap-n-filter-eartest",
-                code: 6,
-                userInfo: [NSLocalizedDescriptionKey: "renderOffline unknown status"]
-            )
+            throw EarTestHarnessError.offlineRenderUnknownStatus
         }
     }
 
@@ -224,11 +221,7 @@ func appendFrames(
     guard let sourceData = source.floatChannelData,
           let destData = destination.floatChannelData
     else {
-        throw NSError(
-            domain: "tap-n-filter-eartest",
-            code: 7,
-            userInfo: [NSLocalizedDescriptionKey: "Buffer is not float-format"]
-        )
+        throw EarTestHarnessError.bufferNotFloatFormat
     }
     let channels = Int(source.format.channelCount)
     let offset = Int(destination.frameLength)
@@ -295,7 +288,7 @@ func run() throws {
         inputBuffer = try loadBuffer(at: path)
     } else {
         print("No --input provided; generating synthetic test signal (30 s).")
-        inputBuffer = SyntheticTestSignal.render()
+        inputBuffer = try SyntheticTestSignal.render()
     }
     let frameRate = inputBuffer.format.sampleRate
     let frameCount = inputBuffer.frameLength
@@ -335,6 +328,36 @@ func run() throws {
 
 do {
     try run()
+} catch let error as EarTestHarnessError {
+    let message: String
+    switch error {
+    case .inputBufferAllocationFailed:
+        message = "Failed to allocate input buffer (out of memory?)"
+    case .renderBufferAllocationFailed:
+        message = "Failed to allocate per-chunk render buffer (out of memory?)"
+    case .collectedBufferAllocationFailed:
+        message = "Failed to allocate full-length output buffer (out of memory?)"
+    case .offlineRenderError:
+        message = "AVAudioEngine.renderOffline returned .error — engine in bad state"
+    case .offlineRenderUnknownStatus:
+        message = "AVAudioEngine.renderOffline returned an unrecognised status code"
+    case .bufferNotFloatFormat:
+        message = "A render buffer did not use float channel data"
+    }
+    FileHandle.standardError.write(Data("ear-test failed: \(message)\n".utf8))
+    exit(EXIT_FAILURE)
+} catch let error as SyntheticTestSignalError {
+    let message: String
+    switch error {
+    case .unsupportedFormat(let sr, let ch):
+        message = "Unsupported audio format: sampleRate=\(sr) channels=\(ch)"
+    case .bufferAllocationFailed(let capacity):
+        message = "Buffer allocation failed for \(capacity) frames"
+    case .missingFloatChannelData:
+        message = "floatChannelData was nil on the synthetic signal buffer"
+    }
+    FileHandle.standardError.write(Data("ear-test failed: \(message)\n".utf8))
+    exit(EXIT_FAILURE)
 } catch {
     FileHandle.standardError.write(Data("ear-test failed: \(error)\n".utf8))
     exit(EXIT_FAILURE)

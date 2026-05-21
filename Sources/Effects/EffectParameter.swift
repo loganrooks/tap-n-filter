@@ -29,6 +29,9 @@ public struct EffectParameter: Equatable {
     /// by docs for description.
     public let unit: ParameterUnit
 
+    /// Create a parameter descriptor. The `defaultValue` must fall within
+    /// `range`; out-of-range defaults are not caught at construction time
+    /// but will surface as range-check failures in tests and setParameter.
     public init(
         identifier: String,
         displayName: String,

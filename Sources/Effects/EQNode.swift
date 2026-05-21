@@ -39,7 +39,9 @@ public final class EQNode: EffectNode {
 
     // MARK: Instance state
 
-    public let id: UUID
+    /// Per-instance identifier preserved across save/load cycles.
+    public var id: UUID
+    /// User-visible name for this node instance (may differ from the type default).
     public var displayName: String
 
     public var bypass: Bool {
@@ -50,7 +52,9 @@ public final class EQNode: EffectNode {
         didSet { applyMixGains() }
     }
 
+    /// The graph connects audio into this node on bus 0.
     public let inputBus: AVAudioMixerNode
+    /// The graph reads audio from this node on bus 0.
     public let outputBus: AVAudioMixerNode
     private let dryMixer: AVAudioMixerNode
     /// A small mixer placed between the wet processor and `outputBus`. The
@@ -71,6 +75,9 @@ public final class EQNode: EffectNode {
         self.init(id: UUID())
     }
 
+    /// Full initializer. `displayName` defaults to `"EQ"` when nil.
+    /// `wetDryMix` defaults to 1.0 (fully wet) because the EQ's filter is
+    /// only meaningful at 100% wet; see ADR-007 and `showsWetDryByDefault`.
     public init(
         id: UUID = UUID(),
         displayName: String? = nil,
@@ -109,6 +116,7 @@ public final class EQNode: EffectNode {
 
     // MARK: Parameters
 
+    /// All tunable parameters for this node type, in display order.
     public static let parameterCatalog: [EffectParameter] = [
         EffectParameter(
             identifier: "hp.frequency",
@@ -168,8 +176,11 @@ public final class EQNode: EffectNode {
         }
     }
 
-    /// Read the current value for a parameter. Useful for snapshot and for
-    /// tests that introspect the underlying unit.
+    /// Read the current value for a parameter by identifier.
+    ///
+    /// Returns `nil` for unknown identifiers. The Q parameters are converted
+    /// back from the underlying bandwidth-in-octaves representation before
+    /// being returned; the returned value matches the surface-facing Q scale.
     public func parameterValue(_ identifier: String) -> Float? {
         switch identifier {
         case "hp.frequency":
@@ -297,6 +308,10 @@ public final class EQNode: EffectNode {
                 actual: state.typeIdentifier
             )
         }
+        // Preserve the identity from the saved state so that node IDs remain
+        // stable across save/load cycles. Without this, every load would give
+        // every node a fresh UUID, making identity-based diffing impossible.
+        id = state.id
         displayName = state.displayName
         bypass = state.bypass
         wetDryMix = min(max(state.wetDryMix, 0.0), 1.0)

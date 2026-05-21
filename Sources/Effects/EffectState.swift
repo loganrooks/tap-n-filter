@@ -30,6 +30,8 @@ public struct EffectState: Codable, Equatable {
     /// Type-specific state that doesn't fit `parameters` (e.g. reverb preset).
     public let extras: [String: AnyCodableValue]
 
+    /// Construct a snapshot directly. Typically produced by `EffectNode.snapshot()`
+    /// rather than called by hand; the primary construction path is serialization.
     public init(
         typeIdentifier: String,
         id: UUID,

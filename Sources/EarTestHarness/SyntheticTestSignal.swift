@@ -2,6 +2,18 @@ import AVFoundation
 import Darwin
 import Foundation
 
+/// Errors thrown by `SyntheticTestSignal.render()`.
+enum SyntheticTestSignalError: Error {
+    /// The combination of sample rate and channel count is not supported by
+    /// `AVAudioFormat(standardFormatWithSampleRate:channels:)`.
+    case unsupportedFormat(sampleRate: Double, channels: AVAudioChannelCount)
+    /// `AVAudioPCMBuffer` returned `nil` for the given frame capacity.
+    case bufferAllocationFailed(frameCapacity: AVAudioFrameCount)
+    /// `AVAudioPCMBuffer.floatChannelData` was nil on a buffer that was
+    /// expected to use float PCM.
+    case missingFloatChannelData
+}
+
 /// Generates the default 30-second composite test signal used when the user
 /// does not pass `--input` to the ear-test harness.
 ///
@@ -22,17 +34,27 @@ enum SyntheticTestSignal {
     static let totalDuration: Double = 30.0
 
     /// Render the composite into a freshly-allocated `AVAudioPCMBuffer`.
-    static func render() -> AVAudioPCMBuffer {
-        let format = AVAudioFormat(
+    ///
+    /// Throws `SyntheticTestSignalError` if the format is unsupported, the
+    /// buffer cannot be allocated, or `floatChannelData` is unexpectedly nil.
+    static func render() throws -> AVAudioPCMBuffer {
+        guard let format = AVAudioFormat(
             standardFormatWithSampleRate: sampleRate,
             channels: channelCount
-        )!
+        ) else {
+            throw SyntheticTestSignalError.unsupportedFormat(
+                sampleRate: sampleRate,
+                channels: channelCount
+            )
+        }
         let totalFrames = AVAudioFrameCount(sampleRate * totalDuration)
-        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: totalFrames)!
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: totalFrames) else {
+            throw SyntheticTestSignalError.bufferAllocationFailed(frameCapacity: totalFrames)
+        }
         buffer.frameLength = totalFrames
 
         guard let channelData = buffer.floatChannelData else {
-            fatalError("AVAudioPCMBuffer.floatChannelData is nil for a freshly-allocated buffer")
+            throw SyntheticTestSignalError.missingFloatChannelData
         }
         let channels = Int(channelCount)
 
@@ -155,8 +177,13 @@ enum SyntheticTestSignal {
             var amplitude = scale
             if frame < fadeFrames {
                 amplitude *= Float(frame) / Float(fadeFrames)
-            } else if frame > frames - fadeFrames {
-                amplitude *= Float(frames - frame) / Float(fadeFrames)
+            } else if frame >= frames - fadeFrames {
+                // Fade starts one frame earlier (>=) and the last sample
+                // lands at zero: max(frames - 1 - frame, 0) / max(fadeFrames, 1).
+                // Without this fix the boundary was `frame > frames - fadeFrames`,
+                // which started a frame late and left the final sample non-zero,
+                // causing an audible click at segment boundaries.
+                amplitude *= Float(max(frames - 1 - frame, 0)) / Float(max(fadeFrames, 1))
             }
             let sample = Float(sin(angularFreq * Double(frame))) * amplitude
             for channel in 0 ..< channels {

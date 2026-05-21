@@ -19,6 +19,10 @@ public enum AnyCodableValue: Equatable {
 
 extension AnyCodableValue: Codable {
 
+    /// Decode from a JSON primitive.
+    ///
+    /// Bool is tried first because some Swift JSON toolchains decode `true` as
+    /// `Int` 1 when the bool branch is skipped.
     public init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
         // Order matters: try bool before numeric types because Swift's JSON
@@ -45,6 +49,7 @@ extension AnyCodableValue: Codable {
         )
     }
 
+    /// Encode as a JSON primitive using the concrete case's underlying type.
     public func encode(to encoder: Encoder) throws {
         var container = encoder.singleValueContainer()
         switch self {
