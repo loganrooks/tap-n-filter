@@ -166,3 +166,17 @@ The orchestrator appends new entries during build whenever an open question surf
 - A V0.2 design choice that affects V1 architecture and needs to be flagged for revisiting.
 
 Entries that are resolved during build are updated in place (status changed, link to resolving ADR or commit added) but never deleted.
+
+---
+
+## U-011: AppError collapses domain failures into UI-ready strings
+
+**Status**: Open — deferred to V0.2.
+**Triggered by**: CodeRabbit review on PR #7 (`Sources/ViewModel/AppViewModel.swift` `AppError`).
+**Question**: `AppError` keeps `.capture(CaptureError)` structured but collapses `.graph`, `.parameter`, `.preset`, `.engine`, and `.persistence` into `String` payloads. That loses typed context the lower layers know (which preset, which parameter ID, which engine subsystem) and hard-codes presentation into the view-model's public API — any future consumer that wanted to react programmatically to "preset deserialization vs. preset migration failed" has to string-match.
+
+**Current best guess**: For V0.1.0 the collapse is acceptable. Every error of these kinds funnels into the same `lastError` slot and the same UI surface (the debug-log panel + the header status pill); no consumer programmatically discriminates between the variants today. The lower-layer errors (`GraphError`, `PresetError`, `AVAudioEngine`'s `NSError` payloads) all reach the AppError construction site, so the typed payloads exist — they just don't propagate through.
+
+**Resolution path**: V0.2 promotes each variant to a typed payload mirroring `.capture(CaptureError)`'s pattern: `case graph(GraphError)`, `case preset(PresetError)`, `case parameter(ParameterError)`, `case engine(EngineError)`, `case persistence(PersistenceError)`. UI surfaces continue rendering through `userMessage` (which would dispatch over the typed payload), but any V0.2 UI that wants to discriminate (a "Retry preset migration" button, a "Pick a different source" hint) can pattern-match the typed values.
+
+**Revisit trigger**: V0.2 work that touches `AppViewModel`'s error surface — preset migration UI, or any user-facing affordance that branches on the kind of failure.
