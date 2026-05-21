@@ -1,0 +1,41 @@
+# Xcode
+build/
+DerivedData/
+*.pbxuser
+*.mode1v3
+*.mode2v3
+*.perspectivev3
+xcuserdata/
+*.xccheckout
+*.xcscmblueprint
+*.swp
+*.lock
+.DS_Store
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Package.resolved
+
+# Local config
+.env
+.env.local
+*.local.yaml
+
+# Build artifacts
+*.app
+*.dmg
+*.pkg
+*.zip
+
+# Local generated audio test artifacts (not checked into repo)
+test-artifacts/
+*.wav
+*.aiff
+*.caf
+!docs/**/*.wav  # docs may include reference audio
+
+# Editor scratch
+.vscode/
+.idea/
+*.iml

@@ -1,0 +1,78 @@
+{
+  "project": "tap-n-filter",
+  "version": "0.1.0-pre",
+  "current_phase": "-1",
+  "release_candidate_path": null,
+  "phases": {
+    "-1": {
+      "name": "Framing Audit",
+      "status": "pending",
+      "spec": "phases/-1-framing-audit.md",
+      "started_at": null,
+      "completed_at": null,
+      "audit_report": null,
+      "audit_response": null,
+      "pr_url": null
+    },
+    "0": {
+      "name": "Repo and Tooling Init",
+      "status": "blocked",
+      "spec": "phases/00-init.md",
+      "started_at": null,
+      "completed_at": null,
+      "verification_report": null,
+      "pr_url": null
+    },
+    "1": {
+      "name": "Capture Spike",
+      "status": "blocked",
+      "spec": "phases/01-capture-spike.md",
+      "started_at": null,
+      "completed_at": null,
+      "verification_report": null,
+      "pr_url": null
+    },
+    "2": {
+      "name": "DSP Chain",
+      "status": "blocked",
+      "spec": "phases/02-dsp-chain.md",
+      "started_at": null,
+      "completed_at": null,
+      "verification_report": null,
+      "ear_test_artifact": null,
+      "ear_test_result": null,
+      "pr_url": null
+    },
+    "3": {
+      "name": "UI and Control",
+      "status": "blocked",
+      "spec": "phases/03-ui-control.md",
+      "started_at": null,
+      "completed_at": null,
+      "verification_report": null,
+      "pr_url": null
+    },
+    "4": {
+      "name": "Polish and Release Prep",
+      "status": "blocked",
+      "spec": "phases/04-polish-release.md",
+      "started_at": null,
+      "completed_at": null,
+      "verification_report": null,
+      "release_artifact": null,
+      "user_acceptance": null,
+      "pr_url": null
+    }
+  },
+  "human_inputs": {
+    "audit_escalations": [],
+    "ear_test": null,
+    "acceptance": null,
+    "other_escalations": []
+  },
+  "logs": {
+    "dissent": "../decisions/dissent-log.md",
+    "uncertainty": "../decisions/uncertainty-log.md"
+  },
+  "_schema_note": "Status values: pending | in_progress | passed | failed | blocked. The orchestrator transitions a phase from pending or blocked to in_progress when starting work, then to passed only on verification PASS. Failed phases remain failed until the orchestrator addresses findings and re-runs verification. State transitions are committed with messages of the form 'state: <phase> -> <new_status> (<short reason>)'."
+}

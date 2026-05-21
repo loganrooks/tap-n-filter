@@ -1,0 +1,162 @@
+# Phase 3: UI and Control
+
+Replace the debug UI from Phase 1 with the real menubar interface. Source picker, effect chain editor, parameter sliders, preset save/load, persistence. The UI should be usable for daily ambient listening by end of phase.
+
+## Scope
+
+In:
+- A SwiftUI `MenuBarExtra` window with the full control surface.
+- Source picker: dropdown of running applications with audio output (filtered list using `NSRunningApplication`).
+- Effect chain editor: ordered list of effects, add/remove/reorder, per-effect controls.
+- Per-effect parameter controls: sliders for continuous params, picker for enum params, toggle for bypass.
+- Preset save/load via `NSSavePanel` and `NSOpenPanel`. Loading a `.tnf` replaces the current graph. Saving captures the current graph state.
+- A "factory presets" submenu with `distant-engines`, `submerged`, `next-room`, `dry`.
+- Persistence: the app remembers the last-used graph and source between launches via `UserDefaults` (graph stored as serialized `GraphPreset` JSON).
+- Master power toggle: start/stop the entire chain.
+- A status line showing capture state and current source.
+- Accessibility: every control has a meaningful `accessibilityLabel`. Keyboard navigation works.
+
+Out:
+- Visual spectrum display or metering (planned for V0.2).
+- Multiple concurrent sources (V2).
+- AUv3 plugin hosting (V2).
+- Marketplace UI (V3).
+- Drag-and-drop of effects between chains (not relevant for single-chain V1).
+
+## Reference
+
+`docs/specs/ui.md` describes the UI structure in detail. The orchestrator reads it before writing any view code.
+
+## Architecture
+
+```
+   App (SwiftUI App protocol)
+       │
+       ▼
+   MenuBarExtra (menubar window)
+       │
+       ▼
+   ControlPanelView
+       │
+       ├── SourcePickerView
+       ├── ChainEditorView
+       │       │
+       │       ▼
+       │   [EffectRow for each node]
+       │       │
+       │       ▼
+       │   EffectControlsView
+       │       │
+       │       ├── ParameterSlider × N
+       │       ├── BypassToggle
+       │       └── WetDryMixSlider
+       │
+       ├── PresetMenu
+       └── PowerToggle
+```
+
+View state is owned by a single `AppViewModel` (an `ObservableObject`) which holds:
+- The current `Graph`.
+- The `CaptureController`.
+- The current source.
+- UI presentation state (which effect is expanded, etc.).
+
+Engine and capture lifecycle is driven by the view model in response to view events.
+
+## Tasks
+
+### 3.1 ControlPanelView
+
+The root view shown in the menubar dropdown. Header with the project name, then `SourcePickerView`, then `ChainEditorView`, then footer with `PresetMenu` and `PowerToggle`. Width 320pt, dynamic height based on chain length.
+
+### 3.2 SourcePickerView
+
+A `Picker` showing a list of `CaptureSource` candidates. The list is populated by enumerating `NSRunningApplication` for apps with `activationPolicy == .regular` and known audio-capable identifiers. The list refreshes every 5 seconds via a Timer.
+
+Selecting a source while the chain is running stops the current capture, switches source, restarts. The view model handles the transition cleanly.
+
+### 3.3 ChainEditorView
+
+Ordered list of `EffectRow`s. Each row shows:
+- Effect display name.
+- Bypass toggle.
+- Wet/dry slider.
+- Expand/collapse chevron revealing `EffectControlsView`.
+- Remove button.
+- Drag handle (uses SwiftUI's `.draggable` and `.dropDestination` for reordering).
+
+Below the list, an "Add effect" button presents a menu of available effect types (in V1: EQ, Reverb). Selecting an option appends a default-configured node to the chain.
+
+### 3.4 EffectControlsView
+
+Renders one slider per `EffectParameter`. Slider range is the parameter's `range`, label is the `displayName`, suffix is the `unit` symbol ("Hz", "dB", etc.).
+
+For enum-valued parameters (e.g., reverb preset), renders a `Picker` instead of a slider.
+
+Changes are pushed through to the underlying `EffectNode` via `setParameter` immediately on slider drag (with throttling at 30 Hz to avoid flooding).
+
+### 3.5 PresetMenu
+
+Three sub-menus:
+- "Save As..." → opens `NSSavePanel`, saves current `GraphPreset`.
+- "Load..." → opens `NSOpenPanel` filtered to `.tnf`, loads into the current graph.
+- "Factory Presets" → submenu with each bundled preset, loads on selection.
+
+### 3.6 PowerToggle
+
+A large rounded button at the bottom of the panel. States:
+- "Off" → tap starts capture and engine.
+- "Starting" → spinner.
+- "On" → tap stops.
+- "Failed" → tap clears error and returns to "Off". A small error icon next to the toggle reveals the error message on hover.
+
+### 3.7 Persistence
+
+On every change to the graph or source, the view model serializes the current state to `UserDefaults` under the key `lastSession`. On app launch, the view model attempts to restore from this key; if deserialization fails (schema change, corrupted data), it falls back to loading the `distant-engines` preset and logs a warning.
+
+### 3.8 Accessibility audit
+
+Every control has:
+- `accessibilityLabel` (what it is).
+- `accessibilityValue` for sliders and pickers (current value spoken).
+- `accessibilityHint` where the action is non-obvious.
+
+Keyboard navigation:
+- Tab cycles through controls.
+- Arrow keys adjust sliders.
+- Space toggles bypass and power.
+
+### 3.9 Tests
+
+- SwiftUI snapshot tests for `ControlPanelView` in three states: idle, running, failed.
+- View model unit tests for source switching, preset loading, persistence round-trip.
+- Manual accessibility audit using VoiceOver (orchestrator runs through the app with VoiceOver, records issues in `docs/audits/verification/phase-3-accessibility.md`).
+
+## Gate criteria
+
+Phase 3 PASSES when the verification subagent confirms:
+
+1. All views from 3.1–3.6 exist with the specified structure.
+2. Source switching, effect add/remove/reorder, parameter changes, preset save/load, persistence, and power toggle all work without crashes.
+3. Snapshot tests pass.
+4. View model tests pass.
+5. Accessibility audit shows no major issues (VoiceOver reads every control, keyboard navigation reaches every control).
+6. CodeRabbit and Codex review pass.
+7. `state.json` shows phase `3` → `passed`.
+
+This phase does not have a human-in-loop gate. The verification subagent reads the snapshots and the audit log and decides.
+
+## Failure modes
+
+- **MenuBarExtra has known sizing limitations.** SwiftUI's `MenuBarExtra` window has constraints on resizing and on certain interactions (drag-and-drop in particular has been finicky historically). If a feature can't be implemented within those constraints, the orchestrator writes an ADR and offers a degraded path (e.g., reorder via up/down arrows instead of drag-and-drop).
+- **NSSavePanel and NSOpenPanel don't behave well from a MenuBarExtra window.** The known workaround is to present them from a temporary `NSWindow` or to use the AppKit equivalent. The orchestrator documents the chosen workaround in code comments and an ADR.
+- **Snapshot tests are brittle across macOS versions.** The orchestrator pins macOS test version in CI to one specific runner and notes this in `coding-standards.md`.
+
+## Outputs
+
+- View hierarchy in `Sources/UI/`.
+- View model in `Sources/ViewModel/`.
+- Snapshot tests in `Tests/UISnapshotTests/`.
+- A passing PR titled `phase-3: ui and control`.
+- ADRs for any UI-level workarounds discovered.
+- `state.json` updated.
