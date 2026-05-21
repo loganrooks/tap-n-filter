@@ -1,22 +1,23 @@
 {
   "project": "tap-n-filter",
   "version": "0.1.0-pre",
-  "current_phase": "-1",
+  "current_phase": "0",
   "release_candidate_path": null,
   "phases": {
     "-1": {
       "name": "Framing Audit",
-      "status": "in_progress",
+      "status": "passed",
       "spec": "phases/-1-framing-audit.md",
       "started_at": "2026-05-20",
-      "completed_at": null,
+      "completed_at": "2026-05-20",
       "audit_report": "../audits/framing-audit-001.md",
       "audit_response": "../audits/audit-response-001.md",
+      "verification_report": "../audits/verification/phase-minus-1.md",
       "pr_url": null
     },
     "0": {
       "name": "Repo and Tooling Init",
-      "status": "blocked",
+      "status": "pending",
       "spec": "phases/00-init.md",
       "started_at": null,
       "completed_at": null,
