@@ -6,7 +6,9 @@ import PackageDescription
 let package = Package(
     name: "tap-n-filter",
     platforms: [
-        .macOS(.v14)
+        // 14.4 is the floor declared in ADR-005 and is the OS version that
+        // introduced the Core Audio process tap APIs we depend on.
+        .macOS("14.4")
     ],
     products: [
         .executable(name: "tap-n-filter", targets: ["tap-n-filter"]),
