@@ -1,7 +1,7 @@
 {
   "project": "tap-n-filter",
   "version": "0.1.0-pre",
-  "current_phase": "0",
+  "current_phase": "1",
   "release_candidate_path": null,
   "phases": {
     "-1": {
@@ -17,16 +17,16 @@
     },
     "0": {
       "name": "Repo and Tooling Init",
-      "status": "in_progress",
+      "status": "passed",
       "spec": "phases/00-init.md",
       "started_at": "2026-05-21",
-      "completed_at": null,
-      "verification_report": null,
+      "completed_at": "2026-05-21",
+      "verification_report": "../audits/verification/phase-0-rerun-1.md",
       "pr_url": "https://github.com/loganrooks/tap-n-filter/pull/1"
     },
     "1": {
       "name": "Capture Spike",
-      "status": "blocked",
+      "status": "pending",
       "spec": "phases/01-capture-spike.md",
       "started_at": null,
       "completed_at": null,
