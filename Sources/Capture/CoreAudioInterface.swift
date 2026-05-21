@@ -173,6 +173,15 @@ public struct RealCoreAudioInterface: CoreAudioInterface {
         description.name = "tap-n-filter.tap.\(audioProcessID)"
         description.isPrivate = true
         description.isExclusive = false
+        // Mute the source process so its audio is intercepted, not just
+        // observed. Without this, the source app's audio continues to
+        // play through the system mixer alongside our processed copy and
+        // the user hears the untouched original — the architecture
+        // diagram in `docs/orchestration/phases/01-capture-spike.md`
+        // explicitly labels the source-to-tap arrow "audio output
+        // (intercepted)". See ADR-014 for the muting decision and its
+        // implications for users.
+        description.muteBehavior = .muted
 
         var tapID: AudioObjectID = kAudioObjectUnknown
         let status = AudioHardwareCreateProcessTap(description, &tapID)

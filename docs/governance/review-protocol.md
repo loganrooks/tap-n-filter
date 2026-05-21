@@ -69,6 +69,46 @@ If both reviewers raise the same finding, that's a stronger signal than one alon
 
 If the reviewers contradict each other (CodeRabbit says do X, Codex says do not-X), the orchestrator reads both arguments, makes a call, and documents the call in a brief PR comment and an ADR if the call is substantive.
 
+### Reasoning over acceptance
+
+Automated reviewers see only the snippet they're commenting on. They don't see how the snippet interacts with the rest of the codebase, with downstream tests, with the specs, with ADRs that codify earlier trade-offs, or with the larger architecture. As a result, even technically-correct findings can come with fixes that are narrow, miss the real cause, or break something the reviewer can't see.
+
+The orchestrator responds to every actionable finding with a reasoning trace, not just a fix or an acceptance:
+
+1. **Verify the finding against current code.** Reviewers sometimes flag issues that don't exist any more (rebases, prior commits, stale snippets) or describe an issue that the surrounding code already handles. If the finding doesn't reproduce, the orchestrator replies with the evidence (line numbers, related code) and closes the comment.
+
+2. **Identify the actual root cause, not the surface symptom.** A "fix" the reviewer suggests is often a symptomatic patch. Before applying it, the orchestrator traces the bug to its origin and checks whether the suggested fix addresses the root or just hides the symptom. Patches that quiet a test failure without fixing the underlying bug are a known anti-pattern (see the Phase 3 AccessibilityTreeTests history for a worked example).
+
+3. **Consider the wider blast radius.** Before applying a suggested patch, the orchestrator checks: does the change touch a protocol other types implement? Does it interact with ADR-codified trade-offs? Does it conflict with how the same code is used elsewhere? Are there callers whose assumptions would now be wrong? The narrower the reviewer's framing, the more likely a literal patch breaks something off-screen.
+
+4. **Pick the right scope for the fix.** Sometimes the right fix is the one the reviewer suggested. Sometimes it's a smaller intervention (a doc fix, a comment, a guard). Sometimes it's a larger change (lift a method onto a protocol, refactor a chain of callers). Sometimes the right answer is to defer with an `uncertainty-log` entry because the proper fix requires infrastructure the current build environment lacks.
+
+5. **Document the reasoning in the commit, the PR response, or both.** When the orchestrator pushes back, accepts with modifications, or defers, the reasoning is written down. The next session (with no memory of this conversation) needs to be able to read the commit message, the PR summary comment, or the ADR and understand why each finding was resolved the way it was. Hidden reasoning is the failure mode the audit catches (`CLAUDE.md`).
+
+When a reviewer's suggested fix is wrong but the underlying observation is right, the orchestrator does the work to find the correct fix rather than refusing the finding outright. "Skip this comment" is rarely the right answer for actionable severities.
+
+### CodeRabbit vs Codex: how their outputs differ
+
+Both reviewers analyse the same diff but have different shapes:
+
+| | CodeRabbit | Codex |
+|---|---|---|
+| Trigger | Automatic on every push | Manual: post `@codex review` |
+| Comment style | Inline line-anchored comments with severity tags (critical/major/minor/nit) | Inline + summary report, severity as `P1`/`P2` badges |
+| Suggested fixes | Frequently includes a committable diff suggestion | Frequently describes the fix in prose; diff only when small |
+| Pre-built rules | Strong library of language-specific lint patterns (force-unwraps, race conditions, formatting). Tends to surface "Swift coding-standards" violations the orchestrator's own self-review missed | Less rule-based, more reasoning-driven; tends to surface architectural and correctness issues (silent-failure paths, missing teardown, unhandled async edges) |
+| False-positive rate | Higher on style/format nits; lower on safety issues | Lower overall, but flags fewer items per pass |
+| Re-review behaviour | Re-reviews automatically on each new commit | Stays silent unless re-triggered with another `@codex review` |
+
+Practical implications for response:
+
+- **CodeRabbit's diff suggestions are tempting to apply verbatim.** Don't. The orchestrator reads the suggestion, traces it to the root cause (see "Reasoning over acceptance" above), and either applies it, modifies it, or replaces it with the correct fix.
+- **Codex's prose-only fixes need translation.** The orchestrator turns each Codex finding into a concrete code change, not a "noted, will think about it" reply.
+- **Overlapping findings are higher-confidence.** When both reviewers flag the same line, the underlying issue is almost always real; the disagreement (if any) is about scope.
+- **Codex's P1/P2 doesn't map cleanly to CodeRabbit's critical/major/minor.** P1 is closer to "this can produce a wrong result in production" — usually critical or major. P2 is closer to "this is a code-health issue" — usually major or minor. The orchestrator triages each item on its actual impact, not the badge.
+
+When the reviewers' findings are in tension (CodeRabbit suggests fix A, Codex suggests fix B for the same code), the orchestrator reads both rationales, picks the one that addresses the root cause, and posts a comment on the PR explaining the choice. If both fixes have merit but address different aspects, the orchestrator may combine them.
+
 ## When to escalate review disagreements
 
 If the orchestrator and a reviewer disagree on a critical or major finding, and the orchestrator's argument feels weaker than the reviewer's on careful reading, the orchestrator surfaces `[ESCALATION: review-disagreement: PR-<num>]` and asks the user. This is per criterion (b) in `escalation-criteria.md` — High-severity, Low-confidence resolution.

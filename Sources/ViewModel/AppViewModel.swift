@@ -320,10 +320,19 @@ public final class AppViewModel: ObservableObject {
         }
 
         do {
+            // Route into the engine's main mixer, not directly into the
+            // output node. The mainMixerNode is what AVAudioEngine connects
+            // to outputNode automatically; bypassing it (as we did until
+            // 2026-05-21) means the chain's audio never reaches the audio
+            // device — the user hears only the source app's untouched
+            // signal because the process tap is non-blocking. The Phase 1
+            // architecture diagram explicitly puts mainMixerNode in the
+            // path, and `tap-n-filter-eartest` follows the same convention
+            // for offline rendering.
             try graph.attach(
                 to: engine,
                 source: engine.inputNode,
-                destination: engine.outputNode
+                destination: engine.mainMixerNode
             )
         } catch {
             stopCaptureLoggingRollbackError(primaryStage: "graph attach")
