@@ -48,6 +48,32 @@ Entries are added at the bottom. They are not edited after commit (except for ty
 
 ---
 
+## 2026-05-21 — Codex P2 "run blocking startup off main actor" partially deferred to Phase 3
+
+**Decision**: PR #3 moves `availableSources()` (pure HAL) to `Task.detached` but keeps `controller.start(source:into:)` and `controller.stop()` on the main actor. The full off-main hop is deferred to Phase 3.
+
+**Phase**: Phase 1 post-merge fix (PR #3).
+
+**Considered**:
+- Move `controller.start` to `Task.detached` (initial PR #3 attempt) — rejected. CodeRabbit Major flagged it correctly: capturing `AVAudioEngine` in a `@Sendable` closure is unsound (engine is not Sendable), and `configureEngineInput` mutates `engine.inputNode.audioUnit` off the main thread, violating AVFoundation's serial-configuration guidance.
+- Refactor `CaptureController` to split HAL prep (process ID lookup, tap + aggregate device creation) from engine binding (the `kAudioOutputUnitProperty_CurrentDevice` set) so HAL prep can run off main and only the engine bind hops back — rejected for Phase 1 scope. Substantial restructure for a debug UI being replaced in Phase 3.
+- Move only enumeration off main; document the deferred fix — chosen. Addresses the most common UI stall (the process-list lookup) without breaking the AVAudioEngine contract. Permission-prompt stall is acceptable because it's a system modal the user is already interacting with. Phase 3's real UI gets the proper split.
+
+---
+
+## 2026-05-21 — Bundling state.json advancement into PR #3 rather than direct push to main
+
+**Decision**: PR #3 contains both the codex-feedback fixes AND the state.json advancement (phase 1 → passed, phase 2 → in_progress, current_phase → 2). State updates ride a PR rather than a direct push to main.
+
+**Phase**: Phase 1 close-out / Phase 2 kickoff.
+
+**Considered**:
+- Direct push to main (the pattern in earlier commits 8701a34, 987ae82, 2bff1da) — rejected for this PR. Branch protection requires PR + CI status, and CLAUDE.md says "Do not push directly to main." Earlier direct pushes predated stricter branch protection on this build.
+- Separate PR for state only — rejected. Two PRs for what is effectively one logical change (advance phase after merge + fix the code that just merged) adds review overhead without changing correctness.
+- Bundle into the next phase's PR (Phase 2 PR) — rejected. State.json should reflect the post-PR-2 ground truth before Phase 2's PR opens, otherwise the Phase 2 PR's state-advancement diff conflates "advance Phase 1" with "advance Phase 2".
+
+---
+
 ## Future entries
 
 The orchestrator appends new entries here during build. Examples of decisions that would warrant an entry:
