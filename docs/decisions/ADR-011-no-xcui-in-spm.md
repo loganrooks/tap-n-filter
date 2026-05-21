@@ -19,17 +19,19 @@ The problem: this repository is SwiftPM-only (ADR-009). SwiftPM has no story for
 
 ## Decision
 
-Run the accessibility audit **in-process via `NSHostingView`**, walking the resulting `NSAccessibility` element tree directly. The test lives in a standard SwiftPM `.testTarget` (`AccessibilityTreeTests`) and produces the same JSON artifact at the same path.
+Run the accessibility audit **in-process via `NSHostingView`**, walking the resulting `NSAccessibility` element tree directly, and split the audit across two SwiftPM targets:
 
-Mechanics:
+1. **Artifact producer — `Sources/AccessibilityDump/main.swift`** (a real `.executableTarget`). Brings up an `NSApplication`, opens an off-screen key `NSWindow`, hosts `ControlPanelView` inside it, spins the runloop briefly, then walks the AppKit accessibility tree (`AXRole`, `AXDescription`/`AXTitle`/`AXLabel`/`AXTitleUIElement`, `AXValue`, `AXHelp`, `AXChildren`) via the KVC `accessibilityAttributeValue:` API and serializes it to `test-artifacts/phase-3-accessibility-tree.json`. A real `NSApplication` with a key window is required for SwiftUI's accessibility shadow tree to materialize; an `XCTest` CLI binary does not have either, so the same walk inside `swift test` returns a near-empty tree.
 
-1. Instantiate `AppViewModel` with a deterministic capture mock and a fresh engine.
-2. Apply a known starting state (drop the auto-restored graph, add one EQ and one Reverb so both effect-row variants are covered).
-3. Wrap `ControlPanelView` in an `NSHostingView`, force a layout pass.
-4. Walk the AppKit accessibility tree (`accessibilityRole`, `accessibilityLabel`, `accessibilityValue`, `accessibilityHelp`, `accessibilityChildren`) and serialize it to JSON.
-5. Write the JSON to `test-artifacts/phase-3-accessibility-tree.json` and assert that every interactive element has a non-empty label (and that sliders/pickers have non-empty values).
+2. **CI gate — `Tests/AccessibilityTreeTests/`** (a `.testTarget` with no module dependencies). Decodes the committed JSON, asserts plausible structural counts (sliders, popup buttons, action-button labels), and scans `Sources/UI/*.swift` for `.accessibilityLabel("...")` / `.accessibilityValue("...")` literals with empty arguments. Both checks run in a headless CLI without needing the AppKit accessibility runtime.
 
-The verification subagent reads the committed JSON file (and re-runs the test for fresh evidence) exactly as it would for an XCUITest dump.
+Workflow:
+
+- A developer changes the UI, then regenerates the artifact: `swift run tap-n-filter-a11y-dump`. The new JSON is committed.
+- `swift test` validates the artifact's structural counts and the source convention.
+- The manual VoiceOver pass documented in `docs/audits/verification/phase-3-accessibility.md` is the gold-standard interactive check.
+
+The verification subagent reads the committed JSON file exactly as it would for an XCUITest dump.
 
 ## Alternatives considered
 
@@ -68,4 +70,5 @@ Rejected. The brief excludes new top-level dependencies. The in-process walk is 
 
 - `docs/orchestration/phases/03-ui-control.md` §3.8 — the original spec.
 - `docs/decisions/ADR-009-spm-only-project-structure.md` — the no-xcodeproj decision.
-- `Tests/AccessibilityTreeTests/AccessibilityTreeTests.swift` — the implementation.
+- `Sources/AccessibilityDump/main.swift` — the artifact-producer executable.
+- `Tests/AccessibilityTreeTests/AccessibilityTreeTests.swift` — the CI gate that validates the artifact + source convention.

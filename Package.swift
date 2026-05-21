@@ -105,8 +105,12 @@ let package = Package(
             ]
         ),
         .testTarget(
+            // The XCTest validates the committed JSON artifact and source-
+            // level `.accessibilityLabel(_:)` discipline. The in-process
+            // AppKit walk lives in the AccessibilityDump executable (ADR-
+            // 011), so this target has no UI/ViewModel dependencies.
             name: "AccessibilityTreeTests",
-            dependencies: ["UI", "ViewModel", "Capture", "Graph", "Effects", "Presets"],
+            dependencies: [],
             path: "Tests/AccessibilityTreeTests"
         )
     ]

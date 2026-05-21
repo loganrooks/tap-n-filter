@@ -107,12 +107,20 @@ final class AppViewModelTests: XCTestCase {
         let model = makeViewModel(capture: capture)
         await Task.yield()
 
+        // Start from a known empty graph so the round-trip assertion is
+        // independent of the auto-restored fallback (distant-engines).
+        while !model.graph.nodes.isEmpty {
+            model.removeEffect(at: 0)
+        }
         // Mutate the graph and let the debounced write fire.
         model.addEffect(of: "tnf.reverb")
         try await Task.sleep(nanoseconds: 400_000_000)
 
+        let expectedCount = model.graph.nodes.count
+        let expectedLastName = model.graph.nodes.last?.displayName
+
         // Instantiate a second view model with the same defaults; it should
-        // restore the reverb node.
+        // restore exactly what the first model persisted.
         let model2 = AppViewModel(
             capture: MockCaptureController(),
             engine: AVAudioEngine(),
@@ -120,8 +128,9 @@ final class AppViewModelTests: XCTestCase {
             defaults: defaults
         )
         await Task.yield()
-        XCTAssertEqual(model2.graph.nodes.count, 1)
-        XCTAssertEqual(model2.graph.nodes.first?.displayName, "Reverb")
+        XCTAssertEqual(model2.graph.nodes.count, expectedCount)
+        XCTAssertEqual(model2.graph.nodes.last?.displayName, expectedLastName)
+        XCTAssertEqual(model2.graph.nodes.last?.displayName, "Reverb")
     }
 
     func test_falls_back_to_distant_engines_on_corrupt_data() async throws {
