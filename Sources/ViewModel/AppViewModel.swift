@@ -319,6 +319,23 @@ public final class AppViewModel: ObservableObject {
             return
         }
 
+        // Pre-empt AVAudioEngine's lazy auto-wire of
+        // `inputNode → mainMixerNode.bus 0`. The engine creates that wire
+        // the first time anything touches mainMixerNode and the user has
+        // no way to disable it; without removing it we end up with a
+        // parallel passthrough alongside our chain. The chain's processed
+        // signal would land on a higher bus of mainMixerNode and get
+        // summed with the untouched input — the user hears the original
+        // audio with a faint processed copy mixed in, not the filtered
+        // chain output the V1 design promises. Reference: the failing
+        // listen test on 2026-05-21 against Safari + `distant-engines`.
+        //
+        // Touch mainMixerNode to force its lazy creation, then disconnect
+        // any outputs from inputNode the auto-wire installed. graph.attach
+        // re-establishes the explicit wiring as inputNode's only output.
+        _ = engine.mainMixerNode
+        engine.disconnectNodeOutput(engine.inputNode)
+
         do {
             // Route into the engine's main mixer, not directly into the
             // output node. The mainMixerNode is what AVAudioEngine connects
