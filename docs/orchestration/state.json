@@ -1,7 +1,7 @@
 {
   "project": "tap-n-filter",
   "version": "0.1.0-pre",
-  "current_phase": "1",
+  "current_phase": "2",
   "release_candidate_path": null,
   "phases": {
     "-1": {
@@ -26,18 +26,19 @@
     },
     "1": {
       "name": "Capture Spike",
-      "status": "pending",
+      "status": "passed",
       "spec": "phases/01-capture-spike.md",
-      "started_at": null,
-      "completed_at": null,
-      "verification_report": null,
-      "pr_url": null
+      "started_at": "2026-05-21",
+      "completed_at": "2026-05-21",
+      "verification_report": "../audits/verification/phase-1-rerun-1.md",
+      "pr_url": "https://github.com/loganrooks/tap-n-filter/pull/2",
+      "followup_pr_url": "https://github.com/loganrooks/tap-n-filter/pull/3"
     },
     "2": {
       "name": "DSP Chain",
-      "status": "blocked",
+      "status": "in_progress",
       "spec": "phases/02-dsp-chain.md",
-      "started_at": null,
+      "started_at": "2026-05-21",
       "completed_at": null,
       "verification_report": null,
       "ear_test_artifact": null,
