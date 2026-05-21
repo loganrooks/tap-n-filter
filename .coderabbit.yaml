@@ -1,0 +1,53 @@
+# CodeRabbit configuration for tap-n-filter
+# Reference: https://docs.coderabbit.ai/reference/configuration
+#
+# Adapted from the user's canonical template at loganrooks/coderabbit
+# with private-repo references stripped (per phase-0 spec 0.5).
+# If the CodeRabbit GitHub App is not installed on this repo, the file
+# is harmless; install the app at https://github.com/apps/coderabbitai
+# and reviews begin automatically on the next PR.
+
+language: en-US
+early_access: false
+
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: true
+  auto_review:
+    enabled: true
+    drafts: false
+
+  path_filters:
+    # Review code and docs but skip generated and vendor artifacts.
+    - "!**/*.lock"
+    - "!Package.resolved"
+    - "!**/DerivedData/**"
+    - "!**/.build/**"
+    - "!**/xcuserdata/**"
+
+  path_instructions:
+    - path: "Sources/**/*.swift"
+      instructions: |
+        Swift code. Follow docs/governance/coding-standards.md:
+        - Typed errors (enum: Error), not NSError or generic Error.
+        - Public surfaces have doc comments explaining why, not what.
+        - No force-unwrapping outside test code or static well-known values.
+        - Audio-thread code is small and uses no locks; lifecycle uses async/await.
+        - When patterns are borrowed from AudioCap, the source comment cites it.
+    - path: "Tests/**/*.swift"
+      instructions: |
+        XCTest. Test names are descriptive sentences. Integration tests are
+        gated by RUN_INTEGRATION_TESTS=1. Snapshot tests are pinned to a
+        specific macOS runner.
+    - path: "docs/**/*.md"
+      instructions: |
+        Markdown docs use declarative prose. Avoid AI writing patterns:
+        no "not X, but Y", no anaphoric paragraph openers, no aphoristic
+        closers, no tricolon padding.
+
+chat:
+  auto_reply: true
