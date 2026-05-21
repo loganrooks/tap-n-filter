@@ -47,12 +47,12 @@
     },
     "3": {
       "name": "UI and Control",
-      "status": "pending",
+      "status": "in_progress",
       "spec": "phases/03-ui-control.md",
-      "started_at": null,
+      "started_at": "2026-05-21",
       "completed_at": null,
       "verification_report": null,
-      "pr_url": null
+      "pr_url": "https://github.com/loganrooks/tap-n-filter/pull/7"
     },
     "4": {
       "name": "Polish and Release Prep",
