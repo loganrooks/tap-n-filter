@@ -99,10 +99,12 @@ func runProbe() async {
 
     print("--- engine state ---")
     print("engine.isRunning   : \(engine.isRunning)")
-    let inputFormat = engine.inputNode.inputFormat(forBus: 0)
+    let inputFormatRecv = engine.inputNode.inputFormat(forBus: 0)
+    let inputFormatEmit = engine.inputNode.outputFormat(forBus: 0)
     let outputFormat = engine.outputNode.outputFormat(forBus: 0)
-    print("inputNode.inputFormat : \(inputFormat.sampleRate) Hz × \(inputFormat.channelCount) ch (\(inputFormat.commonFormatDescription))")
-    print("outputNode.outputFormat: \(outputFormat.sampleRate) Hz × \(outputFormat.channelCount) ch (\(outputFormat.commonFormatDescription))")
+    print("inputNode.inputFormat  (HW side): \(inputFormatRecv.sampleRate) Hz × \(inputFormatRecv.channelCount) ch (\(inputFormatRecv.commonFormatDescription))")
+    print("inputNode.outputFormat (engine):  \(inputFormatEmit.sampleRate) Hz × \(inputFormatEmit.channelCount) ch (\(inputFormatEmit.commonFormatDescription))")
+    print("outputNode.outputFormat:          \(outputFormat.sampleRate) Hz × \(outputFormat.channelCount) ch (\(outputFormat.commonFormatDescription))")
     print()
 
     dumpDebugLog(viewModel)

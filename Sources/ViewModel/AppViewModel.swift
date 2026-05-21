@@ -173,6 +173,16 @@ public final class AppViewModel: ObservableObject {
     /// from hammering the disk.
     private static let persistenceDebounceInterval: TimeInterval = 0.200
 
+    /// Maximum time `powerOn` waits for `engine.outputNode.outputFormat`
+    /// to become valid (non-zero sample rate AND channel count) before
+    /// `engine.start()`. The output device can transiently report
+    /// `0 Hz × 0 ch` during route changes triggered by tap creation /
+    /// muting — Bluetooth audio devices are the typical offender. 1.5 s
+    /// is generous; observed delays are typically under 200 ms once the
+    /// route settles.
+    private static let outputHardwareFormatWaitTimeout: TimeInterval = 1.5
+    private static let outputHardwareFormatPollNanoseconds: UInt64 = 50_000_000
+
     /// Whether the engine is currently running (and therefore the graph is
     /// attached). Tracked so we know whether to tear down on `powerOff`.
     private var engineIsRunning: Bool = false
@@ -384,6 +394,26 @@ public final class AppViewModel: ObservableObject {
             return
         }
 
+        // Wait for the output device's hardware format to become valid
+        // before `engine.start()`. Bluetooth headphones and other devices
+        // that go through a route change when the process tap engages
+        // can briefly report `0 Hz × 0 ch`, which makes
+        // `IsFormatSampleRateAndChannelCountValid(outputHWFormat)` fail
+        // and engine.start throw `-10875` (FailedInitialization). The
+        // wait is bounded; if the format never recovers we surface a
+        // typed error rather than hang.
+        do {
+            try await waitForValidOutputHardwareFormat()
+        } catch let waitError {
+            graph.detach()
+            stopCaptureLoggingRollbackError(primaryStage: "output format wait")
+            let outFormat = engine.outputNode.outputFormat(forBus: 0)
+            logger.error("Output hardware format never became valid within \(Self.outputHardwareFormatWaitTimeout)s: \(outFormat.sampleRate) Hz × \(outFormat.channelCount) ch")
+            lastError = .engine("Output device not ready: \(waitError.localizedDescription)")
+            return
+        }
+        engine.prepare()
+
         do {
             try engine.start()
             engineIsRunning = true
@@ -575,6 +605,36 @@ public final class AppViewModel: ObservableObject {
 
         if wasRunning {
             attemptReattach()
+        }
+    }
+
+    /// Poll `engine.outputNode.outputFormat(forBus: 0)` until it reports
+    /// a non-zero sample rate AND channel count, or `timeout` elapses.
+    /// The audio route can be in a transient state right after tap
+    /// creation / muting (especially on Bluetooth output devices); the
+    /// poll lets the route settle without blocking the caller forever.
+    private func waitForValidOutputHardwareFormat(
+        timeout: TimeInterval = AppViewModel.outputHardwareFormatWaitTimeout,
+        pollNanoseconds: UInt64 = AppViewModel.outputHardwareFormatPollNanoseconds
+    ) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        var iterations = 0
+        while true {
+            let format = engine.outputNode.outputFormat(forBus: 0)
+            if format.sampleRate > 0, format.channelCount > 0 {
+                if iterations > 0 {
+                    logger.info("Output hardware format became valid after \(iterations) poll(s): \(format.sampleRate) Hz × \(format.channelCount) ch")
+                }
+                return
+            }
+            if Date() >= deadline {
+                throw CaptureError.engineConfigurationFailed(
+                    "Output hardware format never became valid (timeout \(timeout)s): "
+                    + "\(format.sampleRate) Hz × \(format.channelCount) ch"
+                )
+            }
+            iterations += 1
+            try await Task.sleep(nanoseconds: pollNanoseconds)
         }
     }
 

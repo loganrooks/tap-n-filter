@@ -420,6 +420,36 @@ public struct RealCoreAudioInterface: CoreAudioInterface {
                 + "\(status)"
             )
         }
+        // 3. Read back the format the AUHAL actually accepted. AVAudioEngine
+        //    or the AUHAL may silently coerce or reject the requested
+        //    format, in which case the engine sees a different format than
+        //    we intended on inputNode.outputFormat. Failing here gives a
+        //    concrete error pointer rather than letting a downstream
+        //    engine.connect throw with a less actionable message.
+        var installedFormat = AudioStreamBasicDescription()
+        formatSize = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        status = AudioUnitGetProperty(
+            inputUnit,
+            kAudioUnitProperty_StreamFormat,
+            kAudioUnitScope_Output,
+            1,
+            &installedFormat,
+            &formatSize
+        )
+        guard status == noErr else {
+            throw CaptureError.engineConfigurationFailed(
+                "Failed to read back installed client stream format: \(status)"
+            )
+        }
+        guard installedFormat.mSampleRate == clientFormat.mSampleRate,
+              installedFormat.mChannelsPerFrame == clientFormat.mChannelsPerFrame
+        else {
+            throw CaptureError.engineConfigurationFailed(
+                "Client stream format readback mismatch: requested "
+                + "\(clientFormat.mSampleRate) Hz × \(clientFormat.mChannelsPerFrame) ch, "
+                + "installed \(installedFormat.mSampleRate) Hz × \(installedFormat.mChannelsPerFrame) ch"
+            )
+        }
     }
 
     private func defaultInputDevice() throws -> AudioDeviceID {
