@@ -159,16 +159,42 @@ final class Phase1DebugViewModel: ObservableObject {
 
             // Step 4: engine wiring + start on main. If engine.start() throws,
             // roll back the controller and remove the recording tap so
-            // resources don't leak past the failed start.
+            // resources don't leak past the failed start. A rollback that
+            // also throws is surfaced to the user — silently swallowing it
+            // hides leaked tap/aggregate-device resources.
             do {
                 let inputFormat = engine.inputNode.outputFormat(forBus: 0)
                 engine.connect(engine.inputNode, to: engine.mainMixerNode, format: inputFormat)
                 engine.connect(engine.mainMixerNode, to: engine.outputNode, format: inputFormat)
                 try engine.start()
             } catch {
-                try? controller.stop()
+                var rollbackError: Error?
+                do {
+                    try controller.stop()
+                } catch {
+                    rollbackError = error
+                }
                 if didInstallRecordingTap { removeRecordingTap() }
-                applyStartError(error)
+                // controller.stop() emits .stopping then .idle through
+                // statePublisher, which delivers on main via
+                // `.receive(on: DispatchQueue.main)`. Those events are
+                // still queued at this point and would overwrite any
+                // failure message via `apply(_:)` if we set it
+                // synchronously here. Defer BOTH branches so the final
+                // assignment runs after the queued state updates — the
+                // success-rollback branch has the same race as the
+                // failed-rollback branch.
+                let primary = error.localizedDescription
+                let secondary = rollbackError?.localizedDescription
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    if let secondary {
+                        self.isPermissionDenied = false
+                        self.statusText = "Engine start failed (\(primary)); rollback also failed (\(secondary)). HAL resources may be leaked — restart the app."
+                    } else {
+                        self.applyStartError(error)
+                    }
+                }
             }
         }
     }
