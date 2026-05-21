@@ -12,6 +12,7 @@ let package = Package(
     ],
     products: [
         .executable(name: "tap-n-filter", targets: ["tap-n-filter"]),
+        .executable(name: "tap-n-filter-eartest", targets: ["tap-n-filter-eartest"]),
         .library(name: "Capture", targets: ["Capture"]),
         .library(name: "Graph", targets: ["Graph"]),
         .library(name: "Effects", targets: ["Effects"]),
@@ -25,6 +26,11 @@ let package = Package(
             resources: [
                 .copy("Resources")
             ]
+        ),
+        .executableTarget(
+            name: "tap-n-filter-eartest",
+            dependencies: ["Graph", "Effects", "Presets"],
+            path: "Sources/EarTestHarness"
         ),
         .target(
             name: "Capture",
@@ -42,7 +48,10 @@ let package = Package(
         .target(
             name: "Presets",
             dependencies: ["Graph", "Effects"],
-            path: "Sources/Presets"
+            path: "Sources/Presets",
+            resources: [
+                .copy("Resources/Presets")
+            ]
         ),
         .testTarget(
             name: "CaptureTests",
