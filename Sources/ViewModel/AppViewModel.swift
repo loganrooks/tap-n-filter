@@ -119,6 +119,15 @@ public final class AppViewModel: ObservableObject {
     /// The most recent surfaced error. Cleared on `clearError()`.
     @Published public private(set) var lastError: AppError?
 
+    /// Effect type identifiers the injected registry can construct, in the
+    /// order the registry returns them. The Add Effect menu reads this so
+    /// it presents exactly the types the view model can instantiate —
+    /// otherwise a non-shared registry (tests, plugin-enabled wiring) would
+    /// show types the view model can't actually add and miss types it can.
+    public var availableEffectTypes: [String] {
+        registry.registeredTypeIdentifiers
+    }
+
     // MARK: Collaborators
 
     private let capture: CaptureControllerProtocol
@@ -131,6 +140,10 @@ public final class AppViewModel: ObservableObject {
     private var sourceRefreshTimer: Timer?
     private var persistenceWorkItem: DispatchWorkItem?
     private var parameterThrottleByKey: [String: TimeInterval] = [:]
+    /// In-flight source refresh. Tracked so a new timer tick doesn't queue
+    /// a second concurrent enumeration; HAL queries that overlap don't help
+    /// the UI but do compete for the same lock inside the controller.
+    private var refreshSourcesTask: Task<Void, Never>?
 
     /// Minimum interval between consecutive `updateParameter` writes for the
     /// same (nodeID, paramID) pair. 30 Hz per `docs/specs/ui.md`.
@@ -201,6 +214,7 @@ public final class AppViewModel: ObservableObject {
         // deinit because the closure holds `weak self`.
         sourceRefreshTimer?.invalidate()
         persistenceWorkItem?.cancel()
+        refreshSourcesTask?.cancel()
     }
 
     // MARK: Menubar icon
@@ -312,7 +326,7 @@ public final class AppViewModel: ObservableObject {
                 destination: engine.outputNode
             )
         } catch {
-            try? capture.stop()
+            stopCaptureLoggingRollbackError(primaryStage: "graph attach")
             lastError = .graph("Graph attach failed: \(error.localizedDescription)")
             return
         }
@@ -322,7 +336,7 @@ public final class AppViewModel: ObservableObject {
             engineIsRunning = true
         } catch {
             graph.detach()
-            try? capture.stop()
+            stopCaptureLoggingRollbackError(primaryStage: "engine start")
             lastError = .engine("Engine start failed: \(error.localizedDescription)")
             return
         }
@@ -497,8 +511,26 @@ public final class AppViewModel: ObservableObject {
         }
     }
 
+    /// Stop the capture controller as part of a rollback, logging any
+    /// secondary error rather than discarding it. The primary failure
+    /// (graph attach / engine start) is the actionable signal the user
+    /// sees; the stop error is supplemental but worth preserving for
+    /// diagnostics — leaked taps and partial HAL state look very different
+    /// from clean teardown in the log stream.
+    private func stopCaptureLoggingRollbackError(primaryStage: String) {
+        do {
+            try capture.stop()
+        } catch {
+            logger.error(
+                "Rollback after \(primaryStage, privacy: .public) failure: capture.stop also failed: \(error.localizedDescription, privacy: .public)"
+            )
+        }
+    }
+
     /// Best-effort re-attach of the graph and engine after a mutation. Errors
-    /// here are surfaced through `lastError` but do not crash the app.
+    /// here are surfaced through `lastError` and the capture controller is
+    /// stopped, so a failed re-attach leaves the UI in a coherent idle state
+    /// rather than "running" with no audio path.
     private func attemptReattach() {
         do {
             try graph.attach(
@@ -509,25 +541,51 @@ public final class AppViewModel: ObservableObject {
             try engine.start()
             engineIsRunning = true
         } catch {
+            // Tear down capture so captureState transitions out of .running.
+            // Best-effort: if stop itself throws, we log both errors but
+            // surface the original reattach failure (the more actionable
+            // one for the user).
+            do {
+                try capture.stop()
+            } catch let stopError {
+                logger.error("capture.stop after reattach failure also failed: \(stopError.localizedDescription, privacy: .public)")
+            }
             lastError = .engine("Re-attach failed after graph mutation: \(error.localizedDescription)")
         }
     }
 
     /// Replace the current graph with one loaded from a preset. The engine is
-    /// stopped (if running), the new graph is installed, and persistence is
-    /// queued.
+    /// stopped (if running), the new graph is installed, and the engine is
+    /// re-attached so capture continues against the new chain. If
+    /// `Graph.restore` throws, we re-attach the original (still-held) graph
+    /// so a failed preset load does not silently kill live audio.
     private func installPreset(_ preset: GraphPreset) throws {
+        let wasRunning = engineIsRunning
         if engineIsRunning {
             engine.stop()
             graph.detach()
             engineIsRunning = false
         }
-        let newGraph = try Graph.restore(from: preset, using: registry)
+        let newGraph: Graph
+        do {
+            newGraph = try Graph.restore(from: preset, using: registry)
+        } catch {
+            // Restore the prior chain so audio resumes; the user sees the
+            // load error via the caller's catch, but the engine isn't left
+            // half-torn-down.
+            if wasRunning {
+                attemptReattach()
+            }
+            throw error
+        }
         graph = newGraph
         for warning in newGraph.lastLoadWarnings {
             logger.warning("Preset load warning: \(String(describing: warning))")
         }
         schedulePersistence()
+        if wasRunning {
+            attemptReattach()
+        }
     }
 
     // MARK: Persistence
@@ -572,18 +630,34 @@ public final class AppViewModel: ObservableObject {
     /// Restore `currentSource` from the persisted bundle ID, matching it
     /// against the live source list. If the saved bundle ID is no longer
     /// running, `currentSource` stays nil.
+    ///
+    /// HAL enumeration can stall the UI (see `powerOn` for the analogous
+    /// off-main pattern), so we run it on a detached task and write back
+    /// on the main actor.
     private func restoreSourceFromDefaults() {
         guard let bundleID = defaults.string(forKey: AppViewModelDefaultsKey.sourceBundleID),
               !bundleID.isEmpty
         else { return }
-        do {
-            let candidates = try capture.availableSources()
-            if let match = candidates.first(where: { $0.bundleIdentifier == bundleID }) {
-                currentSource = match
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let candidates = try await self.fetchAvailableSourcesOffMain()
+                if let match = candidates.first(where: { $0.bundleIdentifier == bundleID }) {
+                    self.currentSource = match
+                }
+            } catch {
+                self.logger.warning("Source restore failed: \(error.localizedDescription, privacy: .public)")
             }
-        } catch {
-            logger.warning("Source restore failed: \(error.localizedDescription, privacy: .public)")
         }
+    }
+
+    /// Run `capture.availableSources()` on a detached task so the HAL
+    /// enumeration (which can block) does not stall the UI. Returns to the
+    /// caller's actor with the result.
+    private func fetchAvailableSourcesOffMain() async throws -> [CaptureSource] {
+        try await Task.detached(priority: .userInitiated) { [capture] in
+            try capture.availableSources()
+        }.value
     }
 
     /// Schedule a debounced write of the current state to `UserDefaults`.
@@ -622,12 +696,22 @@ public final class AppViewModel: ObservableObject {
     /// Refresh `availableSources` from the capture controller.
     ///
     /// Public so the view can request an immediate refresh on appear; the
-    /// timer also calls this every 5 seconds.
+    /// timer also calls this every 5 seconds. HAL enumeration runs on a
+    /// detached task so the periodic refresh does not freeze the menubar
+    /// UI under load. If a refresh is already in flight, the new tick is
+    /// dropped — overlapping enumerations buy nothing and waste CPU.
     public func refreshAvailableSources() {
-        do {
-            availableSources = try capture.availableSources()
-        } catch {
-            logger.warning("Source refresh failed: \(error.localizedDescription, privacy: .public)")
+        guard refreshSourcesTask == nil || refreshSourcesTask?.isCancelled == true else {
+            return
+        }
+        refreshSourcesTask = Task { @MainActor [weak self] in
+            defer { self?.refreshSourcesTask = nil }
+            do {
+                let sources = try await self?.fetchAvailableSourcesOffMain() ?? []
+                self?.availableSources = sources
+            } catch {
+                self?.logger.warning("Source refresh failed: \(error.localizedDescription, privacy: .public)")
+            }
         }
     }
 

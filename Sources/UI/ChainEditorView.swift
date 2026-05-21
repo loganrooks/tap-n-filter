@@ -5,7 +5,7 @@ import ViewModel
 
 /// Ordered editor for the effect chain. Renders one `EffectRow` per node
 /// followed by an `AddEffectButton` whose menu pulls available effect types
-/// from `EffectNodeRegistry.shared`.
+/// from the view model's injected registry.
 public struct ChainEditorView: View {
 
     @EnvironmentObject public var viewModel: AppViewModel
@@ -29,8 +29,10 @@ public struct ChainEditorView: View {
 }
 
 /// Menu button that appends a new effect to the chain. The menu items are
-/// sourced from `EffectNodeRegistry.shared.registeredTypeIdentifiers` so new
-/// effect types appear automatically.
+/// sourced from `AppViewModel.availableEffectTypes` (which forwards to the
+/// view model's injected `EffectNodeRegistry`). Using the view model's
+/// registry — not `EffectNodeRegistry.shared` — keeps the menu options
+/// aligned with what the view model can actually construct.
 public struct AddEffectButton: View {
 
     @EnvironmentObject public var viewModel: AppViewModel
@@ -39,7 +41,7 @@ public struct AddEffectButton: View {
 
     public var body: some View {
         Menu {
-            ForEach(EffectNodeRegistry.shared.registeredTypeIdentifiers, id: \.self) { identifier in
+            ForEach(viewModel.availableEffectTypes, id: \.self) { identifier in
                 Button(displayName(for: identifier)) {
                     viewModel.addEffect(of: identifier)
                 }

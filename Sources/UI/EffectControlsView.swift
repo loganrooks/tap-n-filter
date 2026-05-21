@@ -143,15 +143,12 @@ public struct EffectControlsView: View {
         }
     }
 
-    /// Read the current parameter value off the node. For known effect types
-    /// we use the public reader (`EQNode.parameterValue`); for unknown types
-    /// (V2 plugins) we fall back to the `defaultValue` since the protocol
-    /// does not expose a read API.
+    /// Read the current parameter value off the node via the protocol-level
+    /// reader. Nodes that don't recognise the identifier (or have no
+    /// read-back path) return `nil`; we fall back to `parameter.defaultValue`
+    /// so the control always has a valid initial value.
     private func currentValue(for parameter: EffectParameter) -> Float {
-        if let eq = node as? EQNode {
-            return eq.parameterValue(parameter.identifier) ?? parameter.defaultValue
-        }
-        return parameter.defaultValue
+        return node.parameterValue(parameter.identifier) ?? parameter.defaultValue
     }
 }
 

@@ -137,6 +137,34 @@ Entries are numbered U-001, U-002, etc. Numbers persist. Resolved entries stay i
 
 ---
 
+## U-009: Snapshot test baselines auto-bootstrap on missing files
+
+**Status**: Open — deferred to V0.2
+**Triggered by**: Codex review on PR #7 (`Tests/UISnapshotTests/SnapshotHelper.swift`).
+**Question**: `SnapshotHelper.assertSnapshot` writes a fresh baseline PNG on the first run when no baseline is present, then asserts byte-equality on subsequent runs. In CI on a clean checkout with no baseline images committed, every run writes a baseline and passes — the snapshot tests therefore never catch a visual regression on first push. Generating cross-runner-stable baselines locally is blocked: only Command Line Tools are installed on the build host, so `swift test` cannot run the snapshot target locally, and CI runners differ enough in font rendering / color profile that baselines captured on one runner can fail byte-equality on another (U-007 covers the broader drift question).
+
+**Current best guess**: Document the gap explicitly in `SnapshotHelper.swift` and `coding-standards.md`. Keep the auto-bootstrap behaviour for V0.1.0 so the tests catch the failure mode they DO catch (render-time `nil` from `ImageRenderer`). Defer strict byte-equal gating to V0.2, when a dedicated CI workflow can record baselines once on a pinned runner and commit them; future PRs gate against those baselines.
+
+**Resolution path**: V0.2 adds a `record-snapshots` CI workflow that runs on a pinned macOS image, generates the baselines, and opens an automated PR with the new PNGs. Once committed, `SnapshotHelper` flips to strict mode (fail on missing baseline). The auto-bootstrap path becomes opt-in via `SNAPSHOT_RECORD=1`.
+
+**Revisit trigger**: First V0.2 milestone work touching the UI, or a visual regression discovered through manual review that strict snapshot tests would have caught.
+
+---
+
+## U-010: Source resolution falls back to bundle ID, not PID
+
+**Status**: Open — deferred to V0.2
+**Triggered by**: Codex review on PR #7 (`Sources/ViewModel/AppViewModel.swift` `powerOn`).
+**Question**: `AppViewModel.powerOn` re-resolves the user's selected source from the live HAL list by `bundleIdentifier`. If two processes with the same bundle ID are running (multiple instances of the same app), the resolver may pick a different PID than the one the picker selection identified, capturing the wrong instance.
+
+**Current best guess**: For V0.1.0 the bundle-ID fallback is acceptable. Multi-instance scenarios are rare in the V1 ambient-listening use case (the user picks "Spotify", and Spotify is single-instance). Resolving by exact PID first (and falling back to bundle ID only if the original PID no longer exists) is the right model but pulls a refactor into `CaptureSource` identity comparison that's larger than the V0.1.0 ship window comfortably absorbs.
+
+**Resolution path**: V0.2 changes `powerOn`'s resolution order to: (a) match by PID; (b) fall back to bundle ID only when the original PID is gone. The picker keeps showing display names so the user picks by identity, not number.
+
+**Revisit trigger**: V0.2 multi-instance support, or a user-reported bug where the wrong instance is captured.
+
+---
+
 ## Future entries
 
 The orchestrator appends new entries during build whenever an open question surfaces that's substantial enough to record. Examples:

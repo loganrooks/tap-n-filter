@@ -52,11 +52,11 @@ final class AccessibilityTreeTests: XCTestCase {
         let dump = try loadDump()
         XCTAssertGreaterThanOrEqual(
             dump.counts.totalNodes, 10,
-            "Dump should contain at least 10 nodes (source picker, two effect rows with sliders, two menu buttons). Re-run `swift run AccessibilityDump` from a GUI session and recommit."
+            "Dump should contain at least 10 nodes (source picker, two effect rows with sliders, two menu buttons). Re-run `swift run tap-n-filter-a11y-dump` from a GUI session and recommit."
         )
         XCTAssertGreaterThanOrEqual(
             dump.counts.interactiveElements, 8,
-            "Dump should contain at least 8 interactive elements (source picker + several sliders + two menu buttons). Re-run `swift run AccessibilityDump` from a GUI session."
+            "Dump should contain at least 8 interactive elements (source picker + several sliders + two menu buttons). Re-run `swift run tap-n-filter-a11y-dump` from a GUI session."
         )
         XCTAssertGreaterThanOrEqual(
             dump.counts.sliders, 3,

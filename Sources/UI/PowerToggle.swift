@@ -73,8 +73,13 @@ public struct PowerToggle: View {
         case .running:
             Task { await viewModel.powerOff() }
         case .failed:
+            // Per the button label, "Retry" should restart capture, not just
+            // clear the error. The capture controller is already stopped in
+            // .failed (powerOn's failure paths tear down before publishing
+            // .failed), so calling powerOn directly is correct — no powerOff
+            // first.
             viewModel.clearError()
-            Task { await viewModel.powerOff() }
+            Task { await viewModel.powerOn() }
         case .starting, .stopping:
             // No-op; the button is disabled in these states.
             break

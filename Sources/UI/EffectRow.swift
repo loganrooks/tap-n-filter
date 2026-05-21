@@ -40,6 +40,7 @@ public struct EffectRow: View {
     private var header: some View {
         HStack(spacing: 8) {
             chevron
+            reorderButtons
             Text(node.displayName)
                 .font(.body)
                 .accessibilityAddTraits(.isHeader)
@@ -49,6 +50,39 @@ public struct EffectRow: View {
                 wetDrySlider
             }
             removeButton
+        }
+    }
+
+    /// Stacked up/down icon buttons for reordering this row in the chain.
+    /// Disabled at the boundaries (first row can't move up, last can't move
+    /// down). Drag-and-drop reorder was rejected per ADR-013 because
+    /// `MenuBarExtra` historically does not play well with drag gestures
+    /// and the keyboard/VoiceOver story for drag handles is poor.
+    private var reorderButtons: some View {
+        VStack(spacing: 2) {
+            Button {
+                viewModel.moveEffect(from: index, to: index - 1)
+            } label: {
+                Image(systemName: "chevron.up")
+                    .frame(width: 10, height: 8)
+            }
+            .buttonStyle(.plain)
+            .disabled(index == 0)
+            .accessibilityLabel("Move \(node.displayName) up")
+            .accessibilityHint("Move this effect earlier in the chain.")
+
+            Button {
+                // SwiftUI's onMove convention: `to` is the post-removal slot,
+                // so moving down by one means inserting two slots forward.
+                viewModel.moveEffect(from: index, to: index + 2)
+            } label: {
+                Image(systemName: "chevron.down")
+                    .frame(width: 10, height: 8)
+            }
+            .buttonStyle(.plain)
+            .disabled(index >= viewModel.graph.nodes.count - 1)
+            .accessibilityLabel("Move \(node.displayName) down")
+            .accessibilityHint("Move this effect later in the chain.")
         }
     }
 

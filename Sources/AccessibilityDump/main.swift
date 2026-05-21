@@ -26,7 +26,14 @@ import ViewModel
 
 @MainActor
 func runDump() {
-    let defaults = UserDefaults(suiteName: "tnf.a11y.dump")!
+    // UserDefaults(suiteName:) returns nil only for invalid names; "tnf.a11y.dump"
+    // is a valid identifier. The guard satisfies the no-force-unwrap rule from
+    // docs/governance/coding-standards.md and gives a clear error path if the
+    // SDK ever changes the validity rules.
+    guard let defaults = UserDefaults(suiteName: "tnf.a11y.dump") else {
+        FileHandle.standardError.write(Data("Failed: could not create UserDefaults suite tnf.a11y.dump\n".utf8))
+        exit(1)
+    }
     defaults.removePersistentDomain(forName: "tnf.a11y.dump")
     let capture = StubCaptureController()
     let model = AppViewModel(
