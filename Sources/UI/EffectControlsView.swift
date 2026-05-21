@@ -66,14 +66,19 @@ public struct EffectControlsView: View {
     }
 
     private func integerStepper(_ parameter: EffectParameter) -> some View {
-        let current = currentValue(for: parameter)
+        // The Binding closures read `currentValue(for:)` on each invocation
+        // rather than a once-captured local. SwiftUI rebuilds the view body
+        // when `viewModel.objectWillChange` fires, but a parameter write that
+        // bypasses `updateParameter` (preset load, programmatic restore) does
+        // not trigger an immediate rebuild; reading live means the displayed
+        // value always reflects the node's current state.
         return HStack {
             Text(parameter.displayName)
                 .font(.caption)
             Spacer()
             Stepper(
                 value: Binding<Double>(
-                    get: { Double(current) },
+                    get: { Double(currentValue(for: parameter)) },
                     set: { newValue in
                         viewModel.updateParameter(
                             nodeID: node.id,
@@ -85,23 +90,29 @@ public struct EffectControlsView: View {
                 in: Double(parameter.range.lowerBound) ... Double(parameter.range.upperBound),
                 step: 1
             ) {
-                Text("\(Int(current))")
+                Text("\(Int(currentValue(for: parameter)))")
             }
             .labelsHidden()
             .accessibilityLabel(parameter.displayName)
-            .accessibilityValue("\(Int(current))")
+            .accessibilityValue("\(Int(currentValue(for: parameter)))")
         }
     }
 
     private func enumPicker(_ parameter: EffectParameter, cases: [String]) -> some View {
-        let current = Int(currentValue(for: parameter))
+        // Same live-read pattern as `integerStepper`: the binding getter
+        // reads through to the node on each call, so the displayed selection
+        // tracks programmatic parameter updates (preset load, etc.) even when
+        // SwiftUI hasn't yet re-evaluated the parent body.
         return HStack {
             Text(parameter.displayName)
                 .font(.caption)
             Picker(
                 parameter.displayName,
                 selection: Binding<Int>(
-                    get: { min(max(current, 0), max(cases.count - 1, 0)) },
+                    get: {
+                        let current = Int(currentValue(for: parameter))
+                        return min(max(current, 0), max(cases.count - 1, 0))
+                    },
                     set: { newIndex in
                         viewModel.updateParameter(
                             nodeID: node.id,
@@ -117,8 +128,16 @@ public struct EffectControlsView: View {
             }
             .labelsHidden()
             .accessibilityLabel(parameter.displayName)
-            .accessibilityValue(cases.indices.contains(current) ? cases[current] : "")
+            .accessibilityValue(accessibilityValueForEnum(parameter, cases: cases))
         }
+    }
+
+    /// Resolve the accessibility value for an enum picker by reading live.
+    /// Pulled out of `enumPicker`'s view tree because it's not a view — it's a
+    /// string read at modifier-evaluation time.
+    private func accessibilityValueForEnum(_ parameter: EffectParameter, cases: [String]) -> String {
+        let current = Int(currentValue(for: parameter))
+        return cases.indices.contains(current) ? cases[current] : ""
     }
 
     private var wetDryRow: some View {

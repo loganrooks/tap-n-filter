@@ -72,9 +72,13 @@ public struct EffectRow: View {
             .accessibilityHint("Move this effect earlier in the chain.")
 
             Button {
-                // SwiftUI's onMove convention: `to` is the post-removal slot,
-                // so moving down by one means inserting two slots forward.
-                viewModel.moveEffect(from: index, to: index + 2)
+                // Graph.move's destination is the post-removal index. To move
+                // this row one slot later, remove at `index` (the array shrinks
+                // by one) and reinsert at `index + 1` so the next sibling — now
+                // at `index` after the removal — keeps its position and our
+                // node lands behind it. Passing `index + 2` would skip past
+                // the next sibling and move two slots forward.
+                viewModel.moveEffect(from: index, to: index + 1)
             } label: {
                 Image(systemName: "chevron.down")
                     .frame(width: 10, height: 8)

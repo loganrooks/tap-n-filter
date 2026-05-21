@@ -164,6 +164,11 @@ public final class AppViewModel: ObservableObject {
     /// a second concurrent enumeration; HAL queries that overlap don't help
     /// the UI but do compete for the same lock inside the controller.
     private var refreshSourcesTask: Task<Void, Never>?
+    /// In-flight shutdown triggered by `setSource` while running. Tracked so
+    /// rapid source re-selection coalesces into a single teardown rather than
+    /// queueing N concurrent `powerOff()` tasks, each of which would call
+    /// `capture.stop()` and race against the controller's state machine.
+    private var sourceChangeShutdownTask: Task<Void, Never>?
 
     /// Minimum interval between consecutive `updateParameter` writes for the
     /// same (nodeID, paramID) pair. 30 Hz per `docs/specs/ui.md`.
@@ -251,6 +256,7 @@ public final class AppViewModel: ObservableObject {
         sourceRefreshTimer?.invalidate()
         persistenceWorkItem?.cancel()
         refreshSourcesTask?.cancel()
+        sourceChangeShutdownTask?.cancel()
     }
 
     // MARK: Menubar icon
@@ -281,7 +287,19 @@ public final class AppViewModel: ObservableObject {
         let previousSource = currentSource
         switch captureState {
         case .running:
-            Task { await powerOff() }
+            // Coalesce. If a shutdown task from a prior source change is
+            // already in flight (or about to fire), don't queue a second one
+            // — capture.stop() is idempotent in design but a second concurrent
+            // call still races the controller's state transitions and can
+            // surface a spurious .transitionInProgress error.
+            if sourceChangeShutdownTask == nil {
+                sourceChangeShutdownTask = Task { [weak self] in
+                    await self?.powerOff()
+                    await MainActor.run { [weak self] in
+                        self?.sourceChangeShutdownTask = nil
+                    }
+                }
+            }
         case .starting, .stopping:
             // A transition is in flight; setting the source while we wait is
             // safe — controller.start will be called with the new source on
@@ -322,13 +340,19 @@ public final class AppViewModel: ObservableObject {
         lastError = nil
 
         // Re-resolve the source from the live HAL list so the audioProcessID
-        // we use is fresh.
+        // we use is fresh. Match by PID first — that's what the picker keys on
+        // and what uniquely identifies the running process. Fall back to
+        // bundleIdentifier only if the PID is gone (e.g. the source app was
+        // killed and relaunched between selection and start), so we still do
+        // something sensible rather than refusing to start.
         let resolvedSource: CaptureSource
         do {
             let candidates = try await Task.detached(priority: .userInitiated) { [capture] in
                 try capture.availableSources()
             }.value
-            guard let match = candidates.first(where: { $0.bundleIdentifier == source.bundleIdentifier }) else {
+            let match = candidates.first(where: { $0.pid == source.pid })
+                ?? candidates.first(where: { $0.bundleIdentifier == source.bundleIdentifier })
+            guard let match else {
                 lastError = .capture(.sourceNotFound(source.pid))
                 return
             }
@@ -658,6 +682,13 @@ public final class AppViewModel: ObservableObject {
     /// here are surfaced through `lastError` and the capture controller is
     /// stopped, so a failed re-attach leaves the UI in a coherent idle state
     /// rather than "running" with no audio path.
+    ///
+    /// The attach and engine-start steps run in separate `do/catch` blocks
+    /// because the cleanup is asymmetric: if `attach` fails the graph is
+    /// already detached, but if `engine.start` fails the graph IS attached
+    /// and we have to call `graph.detach()` ourselves before transitioning
+    /// out of running — otherwise the next attach call hits `requireDetached`
+    /// and throws.
     private func attemptReattach() {
         // Same auto-wire-removal dance as powerOn: AVAudioEngine re-creates
         // the inputNode → mainMixerNode passthrough whenever a connection
@@ -671,21 +702,34 @@ public final class AppViewModel: ObservableObject {
                 source: engine.inputNode,
                 destination: engine.mainMixerNode
             )
+        } catch {
+            handleReattachFailure(error, stage: "graph attach", graphAttached: false)
+            return
+        }
+        do {
             try engine.start()
             engineIsRunning = true
         } catch {
-            // Tear down capture so captureState transitions out of .running.
-            // Best-effort: if stop itself throws, we log both errors but
-            // surface the original reattach failure (the more actionable
-            // one for the user).
-            do {
-                try capture.stop()
-            } catch let stopError {
-                logger.error("capture.stop after reattach failure also failed: \(stopError.localizedDescription)")
-            }
-            logger.error("Re-attach failed after graph mutation: \(error.localizedDescription) — full error: \(String(describing: error))")
-            lastError = .engine("Re-attach failed after graph mutation: \(error.localizedDescription)")
+            // attach succeeded above; we MUST detach before falling out so
+            // the graph is back to a state where the next reattach can run.
+            handleReattachFailure(error, stage: "engine start", graphAttached: true)
         }
+    }
+
+    /// Common cleanup for `attemptReattach` failure paths. Detaches the graph
+    /// if the caller indicates it succeeded in attaching, stops capture, and
+    /// surfaces the original failure to the user via `lastError`.
+    private func handleReattachFailure(_ error: Error, stage: String, graphAttached: Bool) {
+        if graphAttached {
+            graph.detach()
+        }
+        do {
+            try capture.stop()
+        } catch let stopError {
+            logger.error("capture.stop after reattach \(stage) failure also failed: \(stopError.localizedDescription)")
+        }
+        logger.error("Re-attach \(stage) failed after graph mutation: \(error.localizedDescription) — full error: \(String(describing: error))")
+        lastError = .engine("Re-attach failed after graph mutation: \(error.localizedDescription)")
     }
 
     /// Replace the current graph with one loaded from a preset. The engine is
@@ -767,7 +811,10 @@ public final class AppViewModel: ObservableObject {
     ///
     /// HAL enumeration can stall the UI (see `powerOn` for the analogous
     /// off-main pattern), so we run it on a detached task and write back
-    /// on the main actor.
+    /// on the main actor. The write is guarded: if the user (or a test)
+    /// has already set `currentSource` while the async enumeration was in
+    /// flight, leave their choice alone — restore is best-effort, not
+    /// authoritative.
     private func restoreSourceFromDefaults() {
         guard let bundleID = defaults.string(forKey: AppViewModelDefaultsKey.sourceBundleID),
               !bundleID.isEmpty
@@ -776,6 +823,10 @@ public final class AppViewModel: ObservableObject {
             guard let self else { return }
             do {
                 let candidates = try await self.fetchAvailableSourcesOffMain()
+                guard self.currentSource == nil else {
+                    self.logger.info("Skipping restore for \(bundleID): currentSource already set.")
+                    return
+                }
                 if let match = candidates.first(where: { $0.bundleIdentifier == bundleID }) {
                     self.currentSource = match
                 }

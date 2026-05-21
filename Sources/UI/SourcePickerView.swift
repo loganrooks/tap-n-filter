@@ -21,10 +21,24 @@ public struct SourcePickerView: View {
             // The picker selects by `pid` (Hashable). The closure maps the
             // selected pid back to the matching CaptureSource on set, which
             // is the only place we need the full value.
+            //
+            // The getter returns nil when `currentSource.pid` is no longer in
+            // `availableSources` — otherwise SwiftUI binds to a "ghost" tag
+            // that has no row, prints a runtime warning about the missing
+            // selection, and can drop the user's pick on the next refresh
+            // (because the picker silently coerces the unknown tag to the
+            // first row). Returning nil maps to the "Select a source"
+            // placeholder, which is the right visual when the previously
+            // chosen process has quit.
             Picker(
                 "Source",
                 selection: Binding<pid_t?>(
-                    get: { viewModel.currentSource?.pid },
+                    get: {
+                        guard let pid = viewModel.currentSource?.pid,
+                              viewModel.availableSources.contains(where: { $0.pid == pid })
+                        else { return nil }
+                        return pid
+                    },
                     set: { pid in
                         if let pid, let match = viewModel.availableSources.first(where: { $0.pid == pid }) {
                             viewModel.setSource(match)

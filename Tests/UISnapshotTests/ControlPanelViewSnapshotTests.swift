@@ -18,7 +18,7 @@ import XCTest
 final class ControlPanelViewSnapshotTests: XCTestCase {
 
     func test_snapshot_idle() async throws {
-        let model = await makeModel(state: .idle)
+        let model = try await makeModel(state: .idle)
         let view = ControlPanelView()
             .environmentObject(model)
         try SnapshotHelper.assertSnapshot(view, named: "control-panel-idle")
@@ -31,14 +31,14 @@ final class ControlPanelViewSnapshotTests: XCTestCase {
             bundleIdentifier: "com.example.test",
             displayName: "Test App"
         )
-        let model = await makeModel(state: .running(source: source), currentSource: source)
+        let model = try await makeModel(state: .running(source: source), currentSource: source)
         let view = ControlPanelView()
             .environmentObject(model)
         try SnapshotHelper.assertSnapshot(view, named: "control-panel-running")
     }
 
     func test_snapshot_failed() async throws {
-        let model = await makeModel(state: .failed(.permissionDenied))
+        let model = try await makeModel(state: .failed(.permissionDenied))
         let view = ControlPanelView()
             .environmentObject(model)
         try SnapshotHelper.assertSnapshot(view, named: "control-panel-failed")
@@ -51,10 +51,16 @@ final class ControlPanelViewSnapshotTests: XCTestCase {
     /// `.receive(on: DispatchQueue.main)` in `AppViewModel.init`, which is
     /// asynchronous: without the wait, snapshots can render against the
     /// default `.idle` state even when the test set up a different one.
+    ///
+    /// Throws if the state never arrives — silently returning the model
+    /// would cause the snapshot to compare against the wrong baseline and
+    /// pass for the wrong reason. A timeout here is a real test failure.
     private func makeModel(
         state: CaptureState,
-        currentSource: CaptureSource? = nil
-    ) async -> AppViewModel {
+        currentSource: CaptureSource? = nil,
+        file: StaticString = #file,
+        line: UInt = #line
+    ) async throws -> AppViewModel {
         let defaults = UserDefaults(suiteName: "tnf.snapshot.\(UUID().uuidString)")!
         let capture = SnapshotMockCapture(initialState: state)
         let model = AppViewModel(
@@ -74,8 +80,19 @@ final class ControlPanelViewSnapshotTests: XCTestCase {
         while model.captureState != state && Date() < deadline {
             try? await Task.sleep(nanoseconds: 5_000_000)
         }
+        guard model.captureState == state else {
+            XCTFail(
+                "captureState never propagated to \(state); stuck at \(model.captureState) after 200ms.",
+                file: file, line: line
+            )
+            throw SnapshotSetupError.statePropagationTimeout(expected: state, actual: model.captureState)
+        }
         return model
     }
+}
+
+private enum SnapshotSetupError: Error {
+    case statePropagationTimeout(expected: CaptureState, actual: CaptureState)
 }
 
 /// Snapshot-only mock; identical surface to the ViewModelTests mock but

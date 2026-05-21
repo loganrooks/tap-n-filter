@@ -317,6 +317,27 @@ final class StubCaptureController: CaptureControllerProtocol, @unchecked Sendabl
 _ = NSApplication.shared
 NSApp.setActivationPolicy(.accessory)
 
-DispatchQueue.main.async { runDump() }
-RunLoop.main.run(until: Date(timeIntervalSinceNow: 1.5))
+// Drive the dump from the main runloop and block until it finishes. The
+// previous "spin for 1.5 s and exit" approach truncated the dump on slower
+// CI / GUI sessions, where window creation + AX-tree population can easily
+// exceed that budget and the JSON file would be empty or partial. Use a
+// semaphore signaled by `runDump()` so we exit immediately on completion
+// and only time out as a last resort.
+let dumpSemaphore = DispatchSemaphore(value: 0)
+DispatchQueue.main.async {
+    runDump()
+    dumpSemaphore.signal()
+}
+// Spin the runloop until the dump signals — RunLoop must run for the
+// dispatch-async block to fire, but DispatchSemaphore.wait blocks the
+// thread, so we cannot just call wait() here. The until-loop idiom keeps
+// the runloop alive in 50 ms slices.
+let dumpDeadline = Date(timeIntervalSinceNow: 30.0)
+while dumpSemaphore.wait(timeout: .now()) == .timedOut {
+    if Date() >= dumpDeadline {
+        FileHandle.standardError.write(Data("Failed: dump did not complete within 30s\n".utf8))
+        exit(1)
+    }
+    RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+}
 
