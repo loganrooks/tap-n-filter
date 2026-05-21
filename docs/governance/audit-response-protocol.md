@@ -2,6 +2,10 @@
 
 The audit-response agent processes findings from the framing auditor (and from per-phase audit-lite questions, when those surface non-trivial issues). It runs in a fresh context separate from both the orchestrator and the auditor. It produces a structured response — one entry per finding — and either resolves findings autonomously or escalates them to the user.
 
+## Model
+
+The audit-response agent runs on **Opus**. The per-finding decision is rubric-driven but the rubric has edges: when the auditor's recommendation conflicts with a documented user constraint, when "Medium severity, concrete recommendation" should still be escalated because the finding cuts product scope, when a Low-severity batch-disagree is actually a missed Medium. These are judgment calls. Sonnet would default to rubber-stamping the rubric. Model selection is per `docs/governance/delegation-protocol.md`.
+
 ## Why a separate agent
 
 The audit-response decisions need a perspective the orchestrator doesn't have: the orchestrator is the entity whose work is being audited. Asking the orchestrator to evaluate findings against its own work risks motivated reasoning. A fresh agent reading the audit, the bundle, and the escalation criteria can evaluate findings against the criteria directly.

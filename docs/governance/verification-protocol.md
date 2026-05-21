@@ -4,6 +4,12 @@ The verification protocol governs how each phase's gate is evaluated. At the end
 
 This document specifies the subagent's prompt, the report schema, and the orchestrator's handling of the result.
 
+## Model
+
+The verification subagent runs on **Sonnet** by default. Verification is mostly mechanical: read the gate criteria, read the diff, mark each criterion Met / Not met / Unable to evaluate based on observable evidence. The audit-lite paragraph is the only judgment piece, and Sonnet handles it adequately for the typical phase.
+
+For phases with human-input gates where the stakes are higher and a missed unsound addition is harder to walk back — Phase 2 (ear test) and Phase 4 (acceptance) — the orchestrator may upgrade to **Opus** so the audit-lite has more room to push back on subtle drift. The phase spec or the orchestrator's discretion at run time governs this. Model selection follows `docs/governance/delegation-protocol.md`.
+
 ## When verification runs
 
 Once per phase, after the orchestrator has finished implementing the phase's tasks and before the orchestrator advances `state.json` to `passed`. The orchestrator does not advance any phase without a PASS verification report.

@@ -25,6 +25,10 @@ Specifically:
 
    Findings are tagged with which persona surfaced them. Multiple personas may surface the same finding; tag with all that apply.
 
+## Model
+
+The auditor runs on **Opus**. The auditor's three-persona pass over a multi-thousand-line bundle is judgment work: which decisions are load-bearing, which alternatives were considered honestly, which APIs are referenced correctly. Sonnet handles factual checks but tends to surface fewer load-bearing findings on a bundle this size. Model selection is per `docs/governance/delegation-protocol.md`.
+
 ## The auditor prompt (verbatim)
 
 The orchestrator spawns the auditor with this prompt as the system instruction, with phase inputs attached:

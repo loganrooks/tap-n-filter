@@ -38,6 +38,10 @@ Run them in order. Do not skip Phase -1.
 
 Each phase ends with a verification subagent invocation. Spawn the verification subagent per `docs/governance/verification-protocol.md`. The subagent reads the phase spec and the diff, returns PASS or FAIL with reasoning, and answers the framing-audit-lite question. Record its report under `docs/audits/verification/<phase>.md` and update `state.json` accordingly.
 
+## Delegation
+
+Delegate work to subagents per `docs/governance/delegation-protocol.md`. The doc covers when to delegate, the six required parts of a delegation prompt, and per-subagent-type model selection (Opus for the auditor and audit-response agent; Sonnet for verification by default; code-writing subagents pick per the trickiness rubric). Read it before spawning a subagent.
+
 ## Human-input gates
 
 Two phases require human input:
