@@ -39,3 +39,4 @@ test-artifacts/
 .vscode/
 .idea/
 *.iml
+Build/
