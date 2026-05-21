@@ -6,9 +6,9 @@
   "phases": {
     "-1": {
       "name": "Framing Audit",
-      "status": "pending",
+      "status": "in_progress",
       "spec": "phases/-1-framing-audit.md",
-      "started_at": null,
+      "started_at": "2026-05-20",
       "completed_at": null,
       "audit_report": null,
       "audit_response": null,
