@@ -34,8 +34,15 @@ public struct ControlPanelView: View {
             FooterView()
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
+
+            if viewModel.showDebugPanel {
+                Divider()
+                DebugPanel()
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+            }
         }
         .frame(width: 320)
-        .frame(maxHeight: 600)
+        .frame(maxHeight: viewModel.showDebugPanel ? 820 : 600)
     }
 }

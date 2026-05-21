@@ -14,6 +14,7 @@ let package = Package(
         .executable(name: "tap-n-filter", targets: ["tap-n-filter"]),
         .executable(name: "tap-n-filter-eartest", targets: ["tap-n-filter-eartest"]),
         .executable(name: "tap-n-filter-a11y-dump", targets: ["tap-n-filter-a11y-dump"]),
+        .executable(name: "tap-n-filter-poweron-probe", targets: ["tap-n-filter-poweron-probe"]),
         .library(name: "Capture", targets: ["Capture"]),
         .library(name: "Graph", targets: ["Graph"]),
         .library(name: "Effects", targets: ["Effects"]),
@@ -39,6 +40,11 @@ let package = Package(
             name: "tap-n-filter-a11y-dump",
             dependencies: ["Capture", "Graph", "Effects", "Presets", "ViewModel", "UI"],
             path: "Sources/AccessibilityDump"
+        ),
+        .executableTarget(
+            name: "tap-n-filter-poweron-probe",
+            dependencies: ["Capture", "Graph", "Effects", "Presets", "ViewModel"],
+            path: "Sources/PowerOnProbe"
         ),
         .target(
             name: "Capture",

@@ -338,8 +338,9 @@ public struct RealCoreAudioInterface: CoreAudioInterface {
         guard let inputUnit = engine.inputNode.audioUnit else {
             throw CaptureError.engineConfigurationFailed("Engine input node has no audio unit")
         }
+        // 1. Point the AUHAL at the aggregate device.
         var mutableDeviceID = deviceID
-        let status = AudioUnitSetProperty(
+        var status = AudioUnitSetProperty(
             inputUnit,
             kAudioOutputUnitProperty_CurrentDevice,
             kAudioUnitScope_Global,
@@ -349,6 +350,75 @@ public struct RealCoreAudioInterface: CoreAudioInterface {
         )
         guard status == noErr else {
             throw CaptureError.engineConfigurationFailed("Failed to set input device: \(status)")
+        }
+        // 2. Read the hardware stream format from the AUHAL's input scope
+        //    (element 1 = the side connected to the device) and propagate
+        //    its sample rate + channel count to the output scope (element
+        //    1 = what AVAudioEngine reads as inputNode.outputFormat), but
+        //    re-shape it into AVAudioEngine's standard non-interleaved
+        //    Float32 layout. The AUHAL converts internally from the
+        //    hardware's interleaved frames to the engine's deinterleaved
+        //    layout.
+        //
+        //    Two reasons we cannot just copy the ASBD verbatim:
+        //
+        //    a) Without any propagation, the client format stays at
+        //       AVAudioEngine's default (1 ch / 16 kHz) and every
+        //       engine.connect against inputNode.outputFormat throws
+        //       "Input HW format and tap format not matching".
+        //
+        //    b) Verbatim propagation of the hardware ASBD installs an
+        //       interleaved layout on the client side, which
+        //       AVAudioMixerNode and AVAudioUnitEQ reject with
+        //       kAudioUnitErr_FormatNotSupported (-10868). The engine
+        //       throws an NSException from
+        //       AUInterfaceBaseV3::SetFormat that bubbles up as a
+        //       SIGTRAP and crashes the process.
+        //
+        //    The bug existed in Phase 1's CaptureController.start path
+        //    but wasn't caught because the Phase 1 live-render check
+        //    was deferred (see state.json
+        //    `phase-1-passthrough-test-needs-interactive`).
+        var hardwareFormat = AudioStreamBasicDescription()
+        var formatSize = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        status = AudioUnitGetProperty(
+            inputUnit,
+            kAudioUnitProperty_StreamFormat,
+            kAudioUnitScope_Input,
+            1,
+            &hardwareFormat,
+            &formatSize
+        )
+        guard status == noErr else {
+            throw CaptureError.engineConfigurationFailed(
+                "Failed to read input hardware stream format: \(status)"
+            )
+        }
+        guard let standardFormat = AVAudioFormat(
+            standardFormatWithSampleRate: hardwareFormat.mSampleRate,
+            channels: hardwareFormat.mChannelsPerFrame
+        ) else {
+            throw CaptureError.engineConfigurationFailed(
+                "Could not build AVAudioEngine client format from hardware "
+                + "ASBD (sampleRate=\(hardwareFormat.mSampleRate), "
+                + "channels=\(hardwareFormat.mChannelsPerFrame))"
+            )
+        }
+        var clientFormat = standardFormat.streamDescription.pointee
+        status = AudioUnitSetProperty(
+            inputUnit,
+            kAudioUnitProperty_StreamFormat,
+            kAudioUnitScope_Output,
+            1,
+            &clientFormat,
+            UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        )
+        guard status == noErr else {
+            throw CaptureError.engineConfigurationFailed(
+                "Failed to set engine client stream format (deinterleaved Float32, "
+                + "rate=\(clientFormat.mSampleRate), ch=\(clientFormat.mChannelsPerFrame)): "
+                + "\(status)"
+            )
         }
     }
 

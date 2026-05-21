@@ -77,6 +77,7 @@ public enum AppError: Error, Equatable {
 public enum AppViewModelDefaultsKey {
     public static let graph: String = "lastSession.graph"
     public static let sourceBundleID: String = "lastSession.sourceBundleID"
+    public static let debugPanel: String = "debug.enabled"
 }
 
 /// The single owner of UI state for the menubar window.
@@ -128,13 +129,32 @@ public final class AppViewModel: ObservableObject {
         registry.registeredTypeIdentifiers
     }
 
+    /// In-memory ring of recent log lines. The debug panel observes this
+    /// and renders the entries; every `logger.*` call here also appends to
+    /// the store so the panel reflects exactly what the unified log sees.
+    public let debugLog: DebugLogStore
+
+    /// Whether the control panel renders the debug log panel below the
+    /// footer. Persisted under `debug.enabled` so the user's choice
+    /// survives relaunch.
+    @Published public private(set) var showDebugPanel: Bool
+
+    /// Toggle the debug-panel visibility and persist the new value.
+    public func toggleDebugPanel() {
+        showDebugPanel.toggle()
+        defaults.set(showDebugPanel, forKey: AppViewModelDefaultsKey.debugPanel)
+    }
+
     // MARK: Collaborators
 
     private let capture: CaptureControllerProtocol
     private let engine: AVAudioEngine
     private let registry: EffectNodeRegistry
     private let defaults: UserDefaults
-    private let logger: Logger
+    /// Instance logger. Writes go to the OS unified log AND the in-app
+    /// `debugLog` so the debug panel can show the same lines that
+    /// `log show --predicate 'subsystem == "tnf.app"'` would.
+    private let logger: TnfLogger
 
     private var stateCancellable: AnyCancellable?
     private var sourceRefreshTimer: Timer?
@@ -172,14 +192,20 @@ public final class AppViewModel: ObservableObject {
         engine: AVAudioEngine,
         registry: EffectNodeRegistry = .shared,
         defaults: UserDefaults = .standard,
-        logger: Logger = Logger(subsystem: "tnf.app", category: "AppViewModel")
+        debugLog: DebugLogStore = DebugLogStore()
     ) {
         self.capture = capture
         self.engine = engine
         self.registry = registry
         self.defaults = defaults
-        self.logger = logger
-        self.graph = AppViewModel.restoreGraph(from: defaults, registry: registry, logger: logger)
+        self.debugLog = debugLog
+        self.showDebugPanel = defaults.bool(forKey: AppViewModelDefaultsKey.debugPanel)
+        self.logger = TnfLogger(source: "AppViewModel", store: debugLog)
+        // The static restoreGraph uses its own os.Logger; the lines it
+        // emits are app-startup only and don't need to surface in the
+        // debug panel (which is unmounted until the user opens it).
+        let bootstrapLogger = Logger(subsystem: "tnf.app", category: "AppViewModel.bootstrap")
+        self.graph = AppViewModel.restoreGraph(from: defaults, registry: registry, logger: bootstrapLogger)
 
         // Capture state subscription is set up after init so the closure can
         // safely refer to self. The CurrentValueSubject delivers the current
@@ -353,6 +379,7 @@ public final class AppViewModel: ObservableObject {
             )
         } catch {
             stopCaptureLoggingRollbackError(primaryStage: "graph attach")
+            logger.error("Graph attach failed: \(error.localizedDescription) — full: \(String(describing: error))")
             lastError = .graph("Graph attach failed: \(error.localizedDescription)")
             return
         }
@@ -360,9 +387,23 @@ public final class AppViewModel: ObservableObject {
         do {
             try engine.start()
             engineIsRunning = true
+            logger.info("powerOn complete: engine started, capture running on \(resolvedSource.displayName)")
         } catch {
             graph.detach()
             stopCaptureLoggingRollbackError(primaryStage: "engine start")
+            // Engine start failures are often AVAudioEngineConfigurationException
+            // from a downstream node's format mismatch, or a hardware-format
+            // condition on the output device (Bluetooth handshake, sample-rate
+            // contention). Dump as much as we can read so the debug panel
+            // shows the actual cause, not just "engine start failed".
+            let nsError = error as NSError
+            let inFormat = engine.inputNode.inputFormat(forBus: 0)
+            let outFormat = engine.outputNode.outputFormat(forBus: 0)
+            logger.error("Engine start failed: domain=\(nsError.domain) code=\(nsError.code) desc=\(error.localizedDescription)")
+            logger.error("inputNode.inputFormat=\(inFormat.sampleRate) Hz × \(inFormat.channelCount) ch, outputNode.outputFormat=\(outFormat.sampleRate) Hz × \(outFormat.channelCount) ch")
+            if !nsError.userInfo.isEmpty {
+                logger.error("userInfo: \(nsError.userInfo)")
+            }
             lastError = .engine("Engine start failed: \(error.localizedDescription)")
             return
         }
@@ -548,7 +589,7 @@ public final class AppViewModel: ObservableObject {
             try capture.stop()
         } catch {
             logger.error(
-                "Rollback after \(primaryStage, privacy: .public) failure: capture.stop also failed: \(error.localizedDescription, privacy: .public)"
+                "Rollback after \(primaryStage) failure: capture.stop also failed: \(error.localizedDescription)"
             )
         }
     }
@@ -558,11 +599,17 @@ public final class AppViewModel: ObservableObject {
     /// stopped, so a failed re-attach leaves the UI in a coherent idle state
     /// rather than "running" with no audio path.
     private func attemptReattach() {
+        // Same auto-wire-removal dance as powerOn: AVAudioEngine re-creates
+        // the inputNode → mainMixerNode passthrough whenever a connection
+        // to mainMixerNode is established. Without removing it, the
+        // reattached chain would compete with a parallel passthrough.
+        _ = engine.mainMixerNode
+        engine.disconnectNodeOutput(engine.inputNode)
         do {
             try graph.attach(
                 to: engine,
                 source: engine.inputNode,
-                destination: engine.outputNode
+                destination: engine.mainMixerNode
             )
             try engine.start()
             engineIsRunning = true
@@ -574,8 +621,9 @@ public final class AppViewModel: ObservableObject {
             do {
                 try capture.stop()
             } catch let stopError {
-                logger.error("capture.stop after reattach failure also failed: \(stopError.localizedDescription, privacy: .public)")
+                logger.error("capture.stop after reattach failure also failed: \(stopError.localizedDescription)")
             }
+            logger.error("Re-attach failed after graph mutation: \(error.localizedDescription) — full error: \(String(describing: error))")
             lastError = .engine("Re-attach failed after graph mutation: \(error.localizedDescription)")
         }
     }
@@ -672,7 +720,7 @@ public final class AppViewModel: ObservableObject {
                     self.currentSource = match
                 }
             } catch {
-                self.logger.warning("Source restore failed: \(error.localizedDescription, privacy: .public)")
+                self.logger.warning("Source restore failed: \(error.localizedDescription)")
             }
         }
     }
@@ -708,7 +756,7 @@ public final class AppViewModel: ObservableObject {
             let data = try JSONEncoder().encode(snapshot)
             defaults.set(data, forKey: AppViewModelDefaultsKey.graph)
         } catch {
-            logger.error("Failed to encode graph for persistence: \(error.localizedDescription, privacy: .public)")
+            logger.error("Failed to encode graph for persistence: \(error.localizedDescription)")
         }
         if let bundleID = currentSource?.bundleIdentifier {
             defaults.set(bundleID, forKey: AppViewModelDefaultsKey.sourceBundleID)
@@ -736,7 +784,7 @@ public final class AppViewModel: ObservableObject {
                 let sources = try await self?.fetchAvailableSourcesOffMain() ?? []
                 self?.availableSources = sources
             } catch {
-                self?.logger.warning("Source refresh failed: \(error.localizedDescription, privacy: .public)")
+                self?.logger.warning("Source refresh failed: \(error.localizedDescription)")
             }
         }
     }
