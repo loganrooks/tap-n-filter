@@ -87,9 +87,9 @@ This is a partial criterion-1d gap. Three considerations:
 2. The phase-1 precedent (`docs/audits/verification/phase-1-rerun-1.md`, criterion 5) accepted a different deviation — `github-apps-not-installed` — as a Phase 0 escalation that carries forward. That precedent does not apply here because Codex IS installed.
 3. The orchestrator can re-trigger Codex (per `docs/governance/review-protocol.md` and uncertainty-log U-009: "Manual re-trigger") and obtain a review on a normal cadence.
 
-The accurate read is: **CodeRabbit met, Codex pending; no Critical/High-severity findings exist anywhere; the gap is responsiveness not absence**. The orchestrator should either (a) re-trigger Codex with a comment and wait for the review before merging, or (b) document an explicit acceptance of the Codex-not-yet-responded deviation analogous to the Phase 0 github-apps escalation.
+**CodeRabbit met, Codex pending; no Critical/High-severity findings exist anywhere; the gap stems from responsiveness timing**. The orchestrator should either (a) re-trigger Codex with a comment and wait for the review before merging, or (b) document an explicit acceptance of the Codex-not-yet-responded deviation analogous to the Phase 0 github-apps escalation.
 
-I accept this criterion with the same disposition the Phase 1 verifier applied: a Codex re-trigger is cheap and the absence of any Critical findings from CodeRabbit suggests Codex would be unlikely to surface a High-severity gap that the orchestrator hasn't already encountered. This is not a PASS rubber-stamp — it is a "partially met with documented gap" disposition that the orchestrator should resolve before merging the PR.
+I accept this criterion with the same disposition the Phase 1 verifier applied: a Codex re-trigger is cheap and the absence of any Critical findings from CodeRabbit suggests Codex would be unlikely to surface a High-severity gap that the orchestrator hasn't already encountered. The verdict marks the criterion as "partially met with documented gap"; the orchestrator should resolve the gap before merging the PR.
 
 ---
 
@@ -109,16 +109,16 @@ The artifacts are well-formed audio: 30 s, stereo, 48 kHz, 16-bit PCM, non-silen
 
 **Evidence**: No `test-artifacts/ear-test-live.wav` exists. No spectral-comparison numbers are recorded in the diff. The orchestrator's context for this verification explicitly states: "The end-to-end live render check (section 2.9 of the phase 2 spec) was NOT performed by the orchestrator. The constraint is the same as Phase 1's passthrough wav: it requires interactive permission grant + a real audio source, neither autonomously drivable through the available computer-use tooling."
 
-This is parallel to the Phase 1 criterion 2 (passthrough wav) deviation, which was accepted by `docs/audits/verification/phase-1-rerun-1.md` as an environment-bounded deviation on identical grounds. The reasoning the Phase 1 verifier articulated applies verbatim here: "the criterion as written requires an artifact that can only be produced by a running GUI application with real hardware and an interactive OS permission dialog. No mocked-audio integration test would satisfy criterion as written, because the criterion explicitly requires the wav be produced on 'the orchestrator's machine' — it is an attestation of real hardware behaviour, not a unit test."
+The deviation parallels Phase 1 criterion 2 (passthrough wav), which `docs/audits/verification/phase-1-rerun-1.md` accepted as an environment-bounded deviation on identical grounds. The reasoning the Phase 1 verifier articulated applies verbatim here: "the criterion as written requires an artifact that can only be produced by a running GUI application with real hardware and an interactive OS permission dialog. No mocked-audio integration test would satisfy criterion as written, because the criterion explicitly requires the wav be produced on 'the orchestrator's machine' — it is an attestation of real hardware behaviour, not a unit test."
 
-I weigh this deviation:
+Weighing the deviation:
 
 - The code path needed to produce the live render exists: the offline render path works (criterion 1c evidence); the graph-attach logic is exercised in `GraphTests`; the missing piece is the same as Phase 1's missing piece — capture from a real source running through a real aggregate device with permissions granted.
 - The orchestrator's autonomous portion of the work is complete. Producing `ear-test-live.wav` requires the user (or interactive computer-use) to start the app, grant permission, start audio in a source, record, and stop. None of these are autonomously driveable in the current environment.
 - The risk this deviation hides: live-vs-offline divergence due to sample-rate mismatch, buffer mismatch, or aggregate-device latency (the failure modes listed in section 2.9). These are real risks but are downstream of the same interactive-attestation step the orchestrator cannot perform. The ear test (criterion 4) is on the offline render; if the live render produces an audibly different result when the user runs it, that surfaces as either an `[EAR_TEST: FAIL]` reply or a separate bug report.
 - An ADR documenting the acceptance would make the trail cleaner. The Phase 1 verification noted this as a Low-severity gap. The same observation applies here.
 
-Accepting this as an environment-bounded deviation on Phase 1 precedent is sound. The criterion is Not met literally but accepted with documented reasoning.
+Accepting the deviation as environment-bounded on Phase 1 precedent is sound. The criterion's literal requirements remain unmet; acceptance rests on documented reasoning.
 
 ---
 
@@ -128,7 +128,7 @@ Accepting this as an environment-bounded deviation on Phase 1 precedent is sound
 
 **Reason**: The orchestrator's context explicitly states: "The user's [EAR_TEST: PASS] confirmation is gate criterion 4. The orchestrator will surface `[EAR_TEST_READY: test-artifacts/]` and `PHASE 2 GATE: AWAITING ear_test` after your verdict, and wait for the user. Treat criterion 4 as 'pending user input — orchestrator will surface halt marker after this report' rather than blocking your PASS."
 
-This is the strict-mode criterion per `docs/governance/verification-protocol.md`. Per the verification-protocol rules, I treat it like any other criterion: evaluate, mark Met/Not met/Unable to evaluate, contribute to verdict. I mark it "Unable to evaluate at this time — pending user reply; this report's PASS is conditional on the user replying `[EAR_TEST: PASS]`. If the user replies `[EAR_TEST: FAIL: <reason>]`, the orchestrator iterates and re-runs verification."
+The verification-protocol.md defines criterion 4 as strict-mode. Per the verification-protocol rules, I treat it like any other criterion: evaluate, mark Met/Not met/Unable to evaluate, contribute to verdict. I mark it "Unable to evaluate at this time — pending user reply; this report's PASS is conditional on the user replying `[EAR_TEST: PASS]`. If the user replies `[EAR_TEST: FAIL: <reason>]`, the orchestrator iterates and re-runs verification."
 
 The orchestrator should not advance `state.json` to `passed` until the user reply is recorded.
 
@@ -148,13 +148,13 @@ The second is the `wetMixer` trampoline node between the wet-path `AVAudioUnit` 
 
 The third is the EQ's `Q ↔ bandwidth` octave conversion. `AVAudioUnitEQFilterParameters.bandwidth` is in octaves; the spec describes parameters in terms of `Q` (the engineering convention). The implementation uses the standard biquad mapping `bw = (2 / ln(2)) * asinh(1 / (2 * Q))` and its inverse for serialization. This is a real piece of DSP reasoning the spec leaves implicit. It is documented inline in `EQNode.swift` with the formula. The formula is correct (cross-checked against the standard `RBJ` biquad cookbook convention). Sound addition.
 
-A fourth observation that is procedural rather than technical: the orchestrator's choice to use `engineMustBeStopped` as an `assert` (not a `throw`) in `Graph.attach` is a CodeRabbit Major finding that points to a real release-build correctness gap (`assert` is a no-op in release builds, so the precondition is unenforced when it most matters). The orchestrator should address this before merging. It is not a "spec-departure" issue — the spec at section 2.1 says nothing about assert vs throw — but it is a soundness-of-implementation issue surfaced by CodeRabbit that needs follow-through. I flag it as a non-blocking gap for the orchestrator to resolve in the address-PR-feedback pass.
+A fourth observation that is procedural rather than technical: the orchestrator's choice to use `engineMustBeStopped` as an `assert` (instead of throwing) in `Graph.attach` is a CodeRabbit Major finding that points to a real release-build correctness gap (`assert` is a no-op in release builds, so the precondition is unenforced when it most matters). The orchestrator should address this before merging. It is not a "spec-departure" issue — the spec at section 2.1 says nothing about assert vs throw — but it is a soundness-of-implementation issue surfaced by CodeRabbit that needs follow-through. I flag it as a non-blocking gap for the orchestrator to resolve in the address-PR-feedback pass.
 
 No unsound additions warrant a FAIL verdict. The three substantive additions are responses to real API/protocol gaps and are documented in the code. The procedural assert-vs-throw issue is a CodeRabbit Major to address but not a phase-gating soundness defect.
 
 ## Verdict reasoning
 
-Criteria 1a, 1b, 1c, and 2 are fully met with strong evidence (passing CI test suites covering every spec section's tests, factory-preset round-trip and graph-restoration tests, and wav-level analysis confirming non-silent material filtering). Criterion 1d is partially met — CodeRabbit reviewed with zero Critical findings, but Codex has not yet responded to the `@codex review` invocation on PR #4. Criterion 3 (live render check 2.9) is not met but accepted on Phase 1 precedent as an environment-bounded deviation that cannot be autonomously resolved. Criterion 4 (the user's ear-test PASS reply) is pending; my PASS is conditional on the user reply, and the orchestrator should not advance `state.json` to `passed` until the user replies.
+Criteria 1a, 1b, 1c, and 2 are fully met with strong evidence (passing CI test suites covering every spec section's tests, factory-preset round-trip and graph-restoration tests, and wav-level analysis confirming non-silent material filtering). Criterion 1d is partially met — CodeRabbit reviewed with zero Critical findings, but Codex has not yet responded to the `@codex review` invocation on PR #4. Criterion 3 (live render check 2.9) remains unmet; acceptance follows Phase 1 precedent as an environment-bounded deviation that cannot be autonomously resolved. Criterion 4 (the user's ear-test PASS reply) is pending; my PASS is conditional on the user reply, and the orchestrator should not advance `state.json` to `passed` until the user replies.
 
 The orchestrator should before merging:
 
