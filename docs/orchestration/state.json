@@ -83,7 +83,16 @@
     ],
     "ear_test": null,
     "acceptance": null,
-    "other_escalations": []
+    "other_escalations": [
+      {
+        "id": "github-repo-create-blocked",
+        "phase": "0",
+        "question": "Public GitHub repo creation (gh repo create loganrooks/tap-n-filter --public) was blocked by the auto-mode classifier as a hard-to-reverse public-state action. Options: (1) user runs the command, (2) user grants permission, (3) user creates the repo manually.",
+        "raised_at": "2026-05-21",
+        "responded_at": null,
+        "user_response": null
+      }
+    ]
   },
   "logs": {
     "dissent": "../decisions/dissent-log.md",
