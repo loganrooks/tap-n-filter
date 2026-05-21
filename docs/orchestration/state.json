@@ -1,7 +1,7 @@
 {
   "project": "tap-n-filter",
   "version": "0.1.0-pre",
-  "current_phase": "2",
+  "current_phase": "3",
   "release_candidate_path": null,
   "phases": {
     "-1": {
@@ -36,18 +36,18 @@
     },
     "2": {
       "name": "DSP Chain",
-      "status": "in_progress",
+      "status": "passed",
       "spec": "phases/02-dsp-chain.md",
       "started_at": "2026-05-21",
-      "completed_at": null,
-      "verification_report": null,
-      "ear_test_artifact": null,
-      "ear_test_result": null,
-      "pr_url": null
+      "completed_at": "2026-05-21",
+      "verification_report": "../audits/verification/phase-2.md",
+      "ear_test_artifact": "test-artifacts/youtube/ear-test-output.wav",
+      "ear_test_result": "PASS",
+      "pr_url": "https://github.com/loganrooks/tap-n-filter/pull/4"
     },
     "3": {
       "name": "UI and Control",
-      "status": "blocked",
+      "status": "pending",
       "spec": "phases/03-ui-control.md",
       "started_at": null,
       "completed_at": null,
@@ -82,7 +82,13 @@
         ]
       }
     ],
-    "ear_test": null,
+    "ear_test": {
+      "raised_at": "2026-05-21",
+      "responded_at": "2026-05-21",
+      "user_response": "[EAR_TEST: PASS]",
+      "artifact": "test-artifacts/youtube/ear-test-output.wav",
+      "source_note": "User requested A/B against a 30s clip extracted from a YouTube video (61LmFVfOBt0, t=189s) via yt-dlp; original clip kept out of repo for copyright."
+    },
     "acceptance": null,
     "other_escalations": [
       {
