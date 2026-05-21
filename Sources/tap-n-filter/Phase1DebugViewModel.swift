@@ -91,48 +91,110 @@ final class Phase1DebugViewModel: ObservableObject {
     /// Enumerates available sources, finds the first whose `bundleIdentifier`
     /// matches `bundleID`, and calls `controller.start(source:into:)`. If no
     /// match is found the status line reflects the failure.
+    ///
+    /// HAL operations (source enumeration, `controller.start`,
+    /// `controller.stop` rollback) run on a `Task.detached` so the
+    /// permission-prompt delay and HAL latency don't stall the menu bar.
+    /// `AVAudioEngine` wiring stays on the main actor, per AVFoundation's
+    /// "configure on a single thread" guidance.
     func start() {
+        let bundleIDSnapshot = bundleID
+        let shouldRecord = recordOutput
+        let captureController = controller
+
         Task {
+            // Step 1: enumerate sources off the main actor.
+            let enumeration: Result<[CaptureSource], Error>
             do {
-                let sources = try controller.availableSources()
-                guard let source = sources.first(where: { $0.bundleIdentifier == bundleID }) else {
-                    // Surface a legible error — don't leave the user guessing.
-                    statusText = "No audio source found for \"\(bundleID)\". Is the app producing audio?"
-                    return
-                }
+                let sources = try await Task.detached(priority: .userInitiated) {
+                    try captureController.availableSources()
+                }.value
+                enumeration = .success(sources)
+            } catch {
+                enumeration = .failure(error)
+            }
 
-                if recordOutput {
-                    installRecordingTap()
-                }
+            let sources: [CaptureSource]
+            switch enumeration {
+            case .success(let result):
+                sources = result
+            case .failure(let error):
+                applyStartError(error)
+                return
+            }
 
-                try controller.start(source: source, into: engine)
+            guard let source = sources.first(where: { $0.bundleIdentifier == bundleIDSnapshot }) else {
+                statusText = "No audio source found for \"\(bundleIDSnapshot)\". Is the app producing audio?"
+                return
+            }
 
-                // Connect input → mixer → output and start the engine.
-                // The connections must be made after start() wires the engine's
-                // input node to the aggregate device.
+            // Step 2: install recording tap on main (engine touch).
+            var didInstallRecordingTap = false
+            if shouldRecord {
+                installRecordingTap()
+                didInstallRecordingTap = (outputFile != nil)
+            }
+
+            // Step 3: controller.start off the main actor (HAL latency +
+            // permission prompt). Cleanup on failure unwinds the recording
+            // tap so a retry doesn't re-install a tap on the same bus
+            // (AVAudioEngine forbids that and asserts).
+            do {
+                let startEngine = engine
+                try await Task.detached(priority: .userInitiated) {
+                    try captureController.start(source: source, into: startEngine)
+                }.value
+            } catch {
+                if didInstallRecordingTap { removeRecordingTap() }
+                applyStartError(error)
+                return
+            }
+
+            // Step 4: engine wiring + start on main. If engine.start() throws,
+            // roll back the controller (off main) and remove the recording
+            // tap so resources don't leak past the failed start.
+            do {
                 let inputFormat = engine.inputNode.outputFormat(forBus: 0)
                 engine.connect(engine.inputNode, to: engine.mainMixerNode, format: inputFormat)
                 engine.connect(engine.mainMixerNode, to: engine.outputNode, format: inputFormat)
                 try engine.start()
-
-            } catch let error as CaptureError {
-                statusText = userMessage(for: error)
-                isPermissionDenied = (error == .permissionDenied)
             } catch {
-                statusText = "Unexpected error: \(error.localizedDescription)"
+                _ = try? await Task.detached(priority: .userInitiated) {
+                    try captureController.stop()
+                }.value
+                if didInstallRecordingTap { removeRecordingTap() }
+                applyStartError(error)
             }
         }
     }
 
+    /// Apply a typed or untyped start error to the published status.
+    private func applyStartError(_ error: Error) {
+        if let captureError = error as? CaptureError {
+            statusText = userMessage(for: captureError)
+            isPermissionDenied = (captureError == .permissionDenied)
+        } else {
+            statusText = "Unexpected error: \(error.localizedDescription)"
+        }
+    }
+
     /// Stop the current capture and clean up the engine.
+    ///
+    /// Engine teardown runs on main (AVFoundation guidance); `controller.stop()`
+    /// hops off the main actor because the HAL teardown calls can briefly
+    /// block.
     func stop() {
+        let captureController = controller
         Task {
+            engine.stop()
+            engine.disconnectNodeOutput(engine.inputNode)
+            engine.disconnectNodeOutput(engine.mainMixerNode)
+            removeRecordingTap()
+
             do {
-                engine.stop()
-                engine.disconnectNodeOutput(engine.inputNode)
-                engine.disconnectNodeOutput(engine.mainMixerNode)
-                removeRecordingTap()
-                try controller.stop()
+                try await Task.detached(priority: .userInitiated) {
+                    try captureController.stop()
+                }.value
             } catch let error as CaptureError {
                 statusText = userMessage(for: error)
             } catch {
@@ -191,6 +253,10 @@ final class Phase1DebugViewModel: ObservableObject {
             return "macOS 14.4 or later is required."
         case .captureInterrupted(let reason):
             return "Capture interrupted: \(reason)"
+        case .alreadyRunning(let currentSource):
+            return "Already capturing \(currentSource.displayName). Stop the current capture before starting a new one."
+        case .transitionInProgress:
+            return "Another start/stop is in progress. Please retry in a moment."
         }
     }
 

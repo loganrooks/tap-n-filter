@@ -66,14 +66,19 @@ struct ContentView: View {
 
             // MARK: System Settings link (permission denied only)
             if viewModel.isPermissionDenied {
-                // The exact pane URL is tracked under U-008 and will be
-                // verified during the Phase 1 manual passthrough test.
-                // Privacy_Microphone is used as a conservative fallback;
-                // macOS 14.4+ may expose a distinct "Audio Capture" pane.
+                // The Core Audio process-tap API is gated by the same TCC
+                // bucket as Screen Recording in macOS 14.4+: System Settings
+                // → Privacy & Security → Screen & System Audio Recording.
+                // The URL fragment for that pane is `Privacy_ScreenCapture`
+                // (the same fragment used by the pre-14 "Screen Recording"
+                // pane). The exact pane label and URL fragment are still
+                // tracked under U-008 pending live verification, but
+                // Privacy_ScreenCapture is the documented best guess and
+                // closer to the right pane than Privacy_Microphone.
                 Link(
                     "Open System Settings",
                     destination: URL(
-                        string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
+                        string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
                     )!
                 )
                 .font(.caption)

@@ -7,12 +7,18 @@ import Combine
 /// `tap-n-filter` executable) can depend on the abstraction rather than the
 /// concrete `CaptureController` class, which makes UI-level tests trivial.
 public protocol CaptureControllerProtocol: AnyObject {
-    /// The current lifecycle state. Always read from the main thread when used
-    /// from UI; the publisher also publishes on the main thread.
+    /// The current lifecycle state. Reads are non-blocking and safe from any
+    /// thread.
     var state: CaptureState { get }
 
     /// A Combine publisher that emits on every state transition, including the
     /// current value at subscription time.
+    ///
+    /// Emissions arrive on whichever thread caused the transition — typically
+    /// the thread that called `start` or `stop`, or `deinit`'s thread for
+    /// cleanup. Subscribers that need main-thread delivery (SwiftUI bindings,
+    /// AppKit-bound `@Published` properties) must attach
+    /// `.receive(on: DispatchQueue.main)` before sinking.
     var statePublisher: AnyPublisher<CaptureState, Never> { get }
 
     /// List applications currently producing audio that can be captured.

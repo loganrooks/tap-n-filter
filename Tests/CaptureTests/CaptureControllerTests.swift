@@ -254,4 +254,183 @@ final class CaptureControllerTests: XCTestCase {
         try controller.stop()
         XCTAssertEqual(controller.state, .idle)
     }
+
+    // MARK: Idempotency and source/engine mismatch guards (codex feedback)
+
+    func test_start_while_running_same_source_and_engine_is_noop() throws {
+        let fake = makeFake()
+        let controller = CaptureController(coreAudio: fake)
+        let source = makeSource()
+        let engine = AVAudioEngine()
+        try controller.start(source: source, into: engine)
+
+        // Second start with identical args: must not call HAL again.
+        try controller.start(source: source, into: engine)
+
+        XCTAssertEqual(controller.state, .running(source: source))
+        XCTAssertEqual(fake.createTapCallProcessIDs.count, 1)
+        XCTAssertEqual(fake.createAggregateDeviceCallTapIDs.count, 1)
+    }
+
+    func test_start_while_running_different_source_throws_alreadyRunning() throws {
+        let fake = makeFake()
+        fake.audioProcessIDsByPID = [
+            knownPID: knownAudioProcessID,
+            6_000: 43,
+        ]
+        let controller = CaptureController(coreAudio: fake)
+        let firstSource = makeSource()
+        let engine = AVAudioEngine()
+        try controller.start(source: firstSource, into: engine)
+
+        let differentSource = CaptureSource(
+            pid: 6_000,
+            audioProcessID: 43,
+            bundleIdentifier: "com.example.other",
+            displayName: "Other"
+        )
+        XCTAssertThrowsError(try controller.start(source: differentSource, into: engine)) { error in
+            XCTAssertEqual(error as? CaptureError, .alreadyRunning(currentSource: firstSource))
+        }
+        XCTAssertEqual(controller.state, .running(source: firstSource))
+        // HAL still only called once — second start did not create a new tap.
+        XCTAssertEqual(fake.createTapCallProcessIDs.count, 1)
+    }
+
+    func test_start_while_running_different_engine_throws_alreadyRunning() throws {
+        let fake = makeFake()
+        let controller = CaptureController(coreAudio: fake)
+        let source = makeSource()
+        let firstEngine = AVAudioEngine()
+        try controller.start(source: source, into: firstEngine)
+
+        let secondEngine = AVAudioEngine()
+        XCTAssertThrowsError(try controller.start(source: source, into: secondEngine)) { error in
+            XCTAssertEqual(error as? CaptureError, .alreadyRunning(currentSource: source))
+        }
+        XCTAssertEqual(controller.state, .running(source: source))
+        XCTAssertEqual(fake.createTapCallProcessIDs.count, 1)
+    }
+
+    // MARK: Concurrent transition guards (codex feedback)
+
+    func test_start_during_starting_throws_transitionInProgress() throws {
+        let fake = makeFake()
+        let inTapCreation = expectation(description: "background thread reached createTap")
+        let proceedFromTap = DispatchSemaphore(value: 0)
+        let startCompleted = expectation(description: "background start returned")
+
+        fake.createTapResult = { id in
+            inTapCreation.fulfill()
+            proceedFromTap.wait()
+            return id + 1_000
+        }
+
+        let controller = CaptureController(coreAudio: fake)
+        let source = makeSource()
+        let engine = AVAudioEngine()
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            // Result intentionally discarded; we only need this thread to be
+            // pinned inside `start` so the foreground call observes `.starting`.
+            _ = try? controller.start(source: source, into: engine)
+            startCompleted.fulfill()
+        }
+
+        wait(for: [inTapCreation], timeout: 5.0)
+        XCTAssertEqual(controller.state, .starting)
+
+        XCTAssertThrowsError(try controller.start(source: source, into: engine)) { error in
+            XCTAssertEqual(error as? CaptureError, .transitionInProgress)
+        }
+
+        proceedFromTap.signal()
+        wait(for: [startCompleted], timeout: 5.0)
+    }
+
+    func test_stop_during_starting_throws_transitionInProgress() throws {
+        let fake = makeFake()
+        let inTapCreation = expectation(description: "background thread reached createTap")
+        let proceedFromTap = DispatchSemaphore(value: 0)
+        let startCompleted = expectation(description: "background start returned")
+
+        fake.createTapResult = { id in
+            inTapCreation.fulfill()
+            proceedFromTap.wait()
+            return id + 1_000
+        }
+
+        let controller = CaptureController(coreAudio: fake)
+        let source = makeSource()
+        let engine = AVAudioEngine()
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            _ = try? controller.start(source: source, into: engine)
+            startCompleted.fulfill()
+        }
+
+        wait(for: [inTapCreation], timeout: 5.0)
+        XCTAssertEqual(controller.state, .starting)
+
+        XCTAssertThrowsError(try controller.stop()) { error in
+            XCTAssertEqual(error as? CaptureError, .transitionInProgress)
+        }
+
+        proceedFromTap.signal()
+        wait(for: [startCompleted], timeout: 5.0)
+        // The in-flight start should still complete normally.
+        XCTAssertEqual(controller.state, .running(source: source))
+    }
+
+    func test_stop_during_stopping_throws_transitionInProgress() throws {
+        let fake = makeFake()
+        let controller = CaptureController(coreAudio: fake)
+        let source = makeSource()
+        let engine = AVAudioEngine()
+        try controller.start(source: source, into: engine)
+
+        let inDestroyAggregate = expectation(description: "background thread reached destroyAggregateDevice")
+        let proceedFromDestroy = DispatchSemaphore(value: 0)
+        let stopCompleted = expectation(description: "background stop returned")
+
+        fake.destroyAggregateDeviceResult = { _ in
+            inDestroyAggregate.fulfill()
+            proceedFromDestroy.wait()
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            _ = try? controller.stop()
+            stopCompleted.fulfill()
+        }
+
+        wait(for: [inDestroyAggregate], timeout: 5.0)
+        XCTAssertEqual(controller.state, .stopping)
+
+        XCTAssertThrowsError(try controller.stop()) { error in
+            XCTAssertEqual(error as? CaptureError, .transitionInProgress)
+        }
+
+        proceedFromDestroy.signal()
+        wait(for: [stopCompleted], timeout: 5.0)
+        XCTAssertEqual(controller.state, .idle)
+    }
+
+    // MARK: Deinit cleanup (codex feedback)
+
+    func test_deinit_while_running_tears_down_resources() throws {
+        let fake = makeFake()
+        let source = makeSource()
+        let engine = AVAudioEngine()
+
+        do {
+            let controller = CaptureController(coreAudio: fake)
+            try controller.start(source: source, into: engine)
+            XCTAssertEqual(fake.destroyTapCallIDs.count, 0)
+            XCTAssertEqual(fake.destroyAggregateDeviceCallIDs.count, 0)
+            // `controller` goes out of scope here; deinit must clean up.
+        }
+
+        XCTAssertEqual(fake.destroyTapCallIDs.count, 1)
+        XCTAssertEqual(fake.destroyAggregateDeviceCallIDs.count, 1)
+    }
 }
