@@ -93,16 +93,24 @@ extension EffectNode {
         try snapshot().encode(to: encoder)
     }
 
-    /// Default `init(from:)` traps because protocols cannot construct
+    /// Default `init(from:)` throws because protocols cannot construct
     /// conforming types. The primary deserialization path is
     /// `Graph.restore(from:using:)` (via `EffectNodeRegistry`), which never
     /// calls this initializer. Concrete types may override for the future
     /// "import single effect" feature; V1 does not exercise that path.
+    ///
+    /// Throwing here (rather than `fatalError`) keeps a misuse recoverable
+    /// and avoids a hard crash in release builds if this path is accidentally
+    /// exercised.
     public init(from decoder: Decoder) throws {
-        fatalError(
-            "Concrete EffectNode types must implement init(from:) if direct "
-            + "decoding is required. The primary load path is "
-            + "Graph.restore(from:using:) — see docs/specs/preset-format.md."
+        throw DecodingError.dataCorrupted(
+            .init(
+                codingPath: decoder.codingPath,
+                debugDescription:
+                    "Concrete EffectNode types must implement init(from:) if direct "
+                    + "decoding is required. The primary load path is "
+                    + "Graph.restore(from:using:) — see docs/specs/preset-format.md."
+            )
         )
     }
 }

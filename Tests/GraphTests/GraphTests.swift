@@ -74,11 +74,14 @@ final class GraphTests: XCTestCase {
         let restoredEQ = restored.nodes[0] as? EQNode
         XCTAssertNotNil(restoredEQ)
         XCTAssertEqual(restoredEQ?.parameterValue("hp.frequency"), 100.0)
+        // Node identity must survive the save/load cycle.
+        XCTAssertEqual(restoredEQ?.id, eq.id, "EQNode id must be preserved across restore")
 
         let restoredReverb = restored.nodes[1] as? ReverbNode
         XCTAssertNotNil(restoredReverb)
         XCTAssertEqual(restoredReverb?.preset, .mediumHall)
         XCTAssertEqual(restoredReverb?.wetDryMix ?? 0, 0.4, accuracy: 0.0001)
+        XCTAssertEqual(restoredReverb?.id, reverb.id, "ReverbNode id must be preserved across restore")
     }
 
     func test_restore_skips_unknown_effect_with_warning() throws {
@@ -142,6 +145,32 @@ final class GraphTests: XCTestCase {
         XCTAssertEqual(graph.nodes.count, 2)
         XCTAssertTrue(graph.nodes[0] === c)
         XCTAssertTrue(graph.nodes[1] === a)
+    }
+
+    func test_move_to_end_accepted() throws {
+        // destination == nodes.count is the "move to end" idiom used by
+        // SwiftUI List.onMove. The pre-fix guard rejected it with invalidIndex.
+        let graph = Graph()
+        let a = EQNode()
+        let b = ReverbNode()
+        try graph.add(a)
+        try graph.add(b)
+        // Move the first node to the end.
+        XCTAssertNoThrow(try graph.move(from: 0, to: 2))
+        XCTAssertTrue(graph.nodes[0] === b)
+        XCTAssertTrue(graph.nodes[1] === a)
+    }
+
+    func test_restore_clamps_outputGain() throws {
+        let preset = GraphPreset(
+            formatVersion: 1,
+            name: "gain-test",
+            outputGain: 5.0,  // out of the 0–2 range
+            nodes: []
+        )
+        let graph = try Graph.restore(from: preset, using: EffectNodeRegistry())
+        XCTAssertEqual(graph.outputGain, 2.0, accuracy: 0.0001,
+                       "outputGain must be clamped to 0–2 on restore")
     }
 
     func test_mutations_against_attached_graph_throw() throws {
