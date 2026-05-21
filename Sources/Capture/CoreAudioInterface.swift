@@ -82,6 +82,31 @@ public protocol CoreAudioInterface {
 public struct RealCoreAudioInterface: CoreAudioInterface {
     public init() {}
 
+    // MARK: Permission-denied status detection
+
+    /// Returns `true` when `status` most likely indicates the audio-capture
+    /// permission was denied rather than some other HAL failure.
+    ///
+    /// Best-guess mapping; verified against real denial during Phase 1 manual
+    /// passthrough test; refine if the observed code differs (U-008).
+    ///
+    /// Candidate codes:
+    ///
+    /// - `kAudioHardwareNotRunningError` (-66626): returned by some macOS 14.x
+    ///   versions when the HAL cannot honour the request due to a policy gate
+    ///   (permission not granted). The constant name is misleading — the HAL
+    ///   *is* running, but it refuses the call.
+    ///
+    /// - The range −66731 … −66749 covers HAL permission/policy error codes
+    ///   observed in beta builds and reported on the Apple Developer Forums.
+    ///   The exact member of this range that surfaces for audio-capture denial
+    ///   is macOS-version-dependent; we match the whole range conservatively.
+    private func isPermissionDeniedStatus(_ status: OSStatus) -> Bool {
+        if status == kAudioHardwareNotRunningError { return true }
+        let permissionRange: ClosedRange<OSStatus> = -66_749 ... -66_731
+        return permissionRange.contains(status)
+    }
+
     // MARK: PID ↔ AudioObjectID translation
 
     public func audioProcessID(forPID pid: pid_t) throws -> AudioObjectID {
@@ -102,6 +127,13 @@ public struct RealCoreAudioInterface: CoreAudioInterface {
             &size,
             &processID
         )
+        // The PID→AudioObjectID translation requires HAL access. If permission
+        // has not been granted the HAL returns an error here before we ever
+        // call AudioHardwareCreateProcessTap. Detect that case explicitly so
+        // the UI can surface .permissionDenied rather than .sourceNotFound.
+        if status != noErr, isPermissionDeniedStatus(status) {
+            throw CaptureError.permissionDenied
+        }
         guard status == noErr, processID != kAudioObjectUnknown else {
             throw CaptureError.sourceNotFound(pid)
         }
@@ -145,6 +177,13 @@ public struct RealCoreAudioInterface: CoreAudioInterface {
         var tapID: AudioObjectID = kAudioObjectUnknown
         let status = AudioHardwareCreateProcessTap(description, &tapID)
         guard status == noErr else {
+            // Map permission-denial status codes to .permissionDenied so the
+            // UI can offer a targeted "Open System Settings" recovery path.
+            // See isPermissionDeniedStatus(_:) for the candidate OSStatus
+            // values and U-008 for verification against a live denial.
+            if isPermissionDeniedStatus(status) {
+                throw CaptureError.permissionDenied
+            }
             throw CaptureError.tapCreationFailed(status)
         }
         return tapID
