@@ -81,7 +81,7 @@ The orchestrator responds to every actionable finding with a reasoning trace, no
 
 3. **Consider the wider blast radius.** Before applying a suggested patch, the orchestrator checks: does the change touch a protocol other types implement? Does it interact with ADR-codified trade-offs? Does it conflict with how the same code is used elsewhere? Are there callers whose assumptions would now be wrong? The narrower the reviewer's framing, the more likely a literal patch breaks something off-screen.
 
-4. **Pick the right scope for the fix.** Sometimes the right fix is the one the reviewer suggested. Sometimes it's a smaller intervention (a doc fix, a comment, a guard). Sometimes it's a larger change (lift a method onto a protocol, refactor a chain of callers). Sometimes the right answer is to defer with an `uncertainty-log` entry because the proper fix requires infrastructure the current build environment lacks.
+4. **Pick the right scope for the fix.** The right fix might be the one the reviewer suggested, or a smaller intervention (a doc fix, a comment, a guard), or a larger change (lift a method onto a protocol, refactor a chain of callers). The right answer can also be to defer with an `uncertainty-log` entry because the proper fix requires infrastructure the current build environment lacks.
 
 5. **Document the reasoning in the commit, the PR response, or both.** When the orchestrator pushes back, accepts with modifications, or defers, the reasoning is written down. The next session (with no memory of this conversation) needs to be able to read the commit message, the PR summary comment, or the ADR and understand why each finding was resolved the way it was. Hidden reasoning is the failure mode the audit catches (`CLAUDE.md`).
 

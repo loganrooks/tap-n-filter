@@ -10,10 +10,8 @@
   },
   "environment" : {
     "adrReference" : "docs\/decisions\/ADR-011-no-xcui-in-spm.md",
-    "hostingMode" : "in-process NSHostingView (no AXUIElement permission)",
-    "macOSVersion" : "Version 26.3 (Build 25D125)"
+    "hostingMode" : "in-process NSHostingView (no AXUIElement permission)"
   },
-  "generatedAt" : "2026-05-21T20:49:21Z",
   "tree" : {
     "children" : [
       {

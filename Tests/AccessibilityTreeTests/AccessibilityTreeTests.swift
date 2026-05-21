@@ -35,13 +35,15 @@ final class AccessibilityTreeTests: XCTestCase {
 
     func test_dump_environment_metadata_is_present() throws {
         let dump = try loadDump()
-        XCTAssertFalse(dump.environment.macOSVersion.isEmpty)
         XCTAssertFalse(dump.environment.hostingMode.isEmpty)
         XCTAssertEqual(
             dump.environment.adrReference,
             "docs/decisions/ADR-011-no-xcui-in-spm.md"
         )
-        XCTAssertFalse(dump.generatedAt.isEmpty)
+        // generatedAt and macOSVersion now live in the gitignored sidecar
+        // `phase-3-accessibility-diagnostics.json` so the committed tree
+        // artifact stays deterministic across regenerations on different
+        // hosts. See the AccessibilityDump executable for the split.
     }
 
     /// The structural counts in the dump have to be plausible for a control
@@ -221,7 +223,6 @@ final class AccessibilityTreeTests: XCTestCase {
 
 private struct AccessibilityDumpDocument: Decodable {
     struct Environment: Decodable {
-        let macOSVersion: String
         let hostingMode: String
         let adrReference: String
     }
@@ -234,7 +235,6 @@ private struct AccessibilityDumpDocument: Decodable {
         let nodesWithLabel: Int
         let nodesWithValue: Int
     }
-    let generatedAt: String
     let environment: Environment
     let counts: Counts
     let tree: TreeNode

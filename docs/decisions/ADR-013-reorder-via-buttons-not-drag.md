@@ -65,8 +65,9 @@ fail.
 Rejected. `List` in a `MenuBarExtra` window introduces its own sizing
 quirks (the implicit `ScrollView` it embeds fights the parent `VStack`'s
 intrinsic-height layout), and the row backgrounds the chain editor draws
-clash with `List`'s default selection/hover treatment. Two regressions to
-gain one feature.
+clash with `List`'s default selection/hover treatment. The sizing
+quirks and the styling conflict are both regressions; reorder is the
+only feature gained, so the tradeoff is unfavourable.
 
 ### Defer reorder to V0.2
 

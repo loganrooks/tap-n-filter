@@ -74,9 +74,9 @@ Entries are added at the bottom. They are not edited after commit (except for ty
 
 ---
 
-## 2026-05-21 — Picker selection keyed by pid_t, not CaptureSource
+## 2026-05-21 — Picker selection keyed by pid_t
 
-**Decision**: `SourcePickerView` uses `Binding<pid_t?>` rather than `Binding<CaptureSource?>` for the SwiftUI `Picker`'s selection.
+**Decision**: `SourcePickerView` uses `Binding<pid_t?>` for the SwiftUI `Picker`'s selection. The closure maps the selected pid back to the matching `CaptureSource` on set.
 
 **Phase**: 3
 

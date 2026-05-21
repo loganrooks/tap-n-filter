@@ -97,18 +97,29 @@ func runDump() {
     // can read the env caveats without cross-referencing the ADR. Counts of
     // interactive elements (sliders, popups, buttons) give the auditor a
     // quick structural sanity check.
+    //
+    // The committed artifact is deterministic: only stable fields land in
+    // `phase-3-accessibility-tree.json`. The volatile metadata (timestamp,
+    // host macOS version) goes to a sidecar `phase-3-accessibility-diagnostics.json`
+    // that is gitignored, so regenerating the tree on a different host or
+    // at a different time doesn't churn the committed file when nothing about
+    // the accessibility tree itself has changed.
     let dump = DumpDocument(
-        generatedAt: ISO8601DateFormatter().string(from: Date()),
         environment: DumpDocument.Environment(
-            macOSVersion: ProcessInfo.processInfo.operatingSystemVersionString,
             hostingMode: "in-process NSHostingView (no AXUIElement permission)",
             adrReference: "docs/decisions/ADR-011-no-xcui-in-spm.md"
         ),
         counts: tree.interactiveCounts(),
         tree: tree
     )
+    let diagnostics = DiagnosticsDocument(
+        generatedAt: ISO8601DateFormatter().string(from: Date()),
+        macOSVersion: ProcessInfo.processInfo.operatingSystemVersionString
+    )
     let outURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         .appendingPathComponent("test-artifacts/phase-3-accessibility-tree.json")
+    let diagnosticsURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        .appendingPathComponent("test-artifacts/phase-3-accessibility-diagnostics.json")
     try? FileManager.default.createDirectory(
         at: outURL.deletingLastPathComponent(),
         withIntermediateDirectories: true
@@ -119,6 +130,9 @@ func runDump() {
         let data = try encoder.encode(dump)
         try data.write(to: outURL)
         FileHandle.standardOutput.write(Data("Wrote \(outURL.path)\n".utf8))
+        let diagnosticsData = try encoder.encode(diagnostics)
+        try diagnosticsData.write(to: diagnosticsURL)
+        FileHandle.standardOutput.write(Data("Wrote \(diagnosticsURL.path)\n".utf8))
     } catch {
         FileHandle.standardError.write(Data("Failed: \(error)\n".utf8))
         exit(1)
@@ -127,7 +141,6 @@ func runDump() {
 
 struct DumpDocument: Codable {
     struct Environment: Codable {
-        let macOSVersion: String
         let hostingMode: String
         let adrReference: String
     }
@@ -140,10 +153,18 @@ struct DumpDocument: Codable {
         let nodesWithLabel: Int
         let nodesWithValue: Int
     }
-    let generatedAt: String
     let environment: Environment
     let counts: Counts
     let tree: AccessibilityNode
+}
+
+/// Sidecar that captures volatile diagnostic metadata (timestamp, host
+/// macOS version) so the committed tree artifact stays deterministic.
+/// This file is gitignored; it's only useful when triaging a specific
+/// run that the CI/dev environment produced.
+struct DiagnosticsDocument: Codable {
+    let generatedAt: String
+    let macOSVersion: String
 }
 
 struct AccessibilityNode: Codable {

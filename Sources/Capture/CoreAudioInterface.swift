@@ -441,13 +441,30 @@ public struct RealCoreAudioInterface: CoreAudioInterface {
                 "Failed to read back installed client stream format: \(status)"
             )
         }
+        // Compare the full ASBD, not just sample rate + channel count. The
+        // AUHAL is known to silently coerce a requested non-interleaved Float32
+        // into an interleaved layout (or a different bit depth) while still
+        // returning noErr on the SetProperty call — then engine.start surfaces
+        // a kAudioUnitErr_FormatNotSupported (-10868) downstream when the
+        // graph's first AVAudioMixer tries to connect. Catching the mismatch
+        // here makes the failure mode obvious instead of inscrutable.
         guard installedFormat.mSampleRate == clientFormat.mSampleRate,
-              installedFormat.mChannelsPerFrame == clientFormat.mChannelsPerFrame
+              installedFormat.mChannelsPerFrame == clientFormat.mChannelsPerFrame,
+              installedFormat.mFormatID == clientFormat.mFormatID,
+              installedFormat.mFormatFlags == clientFormat.mFormatFlags,
+              installedFormat.mBytesPerPacket == clientFormat.mBytesPerPacket,
+              installedFormat.mFramesPerPacket == clientFormat.mFramesPerPacket,
+              installedFormat.mBytesPerFrame == clientFormat.mBytesPerFrame,
+              installedFormat.mBitsPerChannel == clientFormat.mBitsPerChannel
         else {
             throw CaptureError.engineConfigurationFailed(
                 "Client stream format readback mismatch: requested "
-                + "\(clientFormat.mSampleRate) Hz × \(clientFormat.mChannelsPerFrame) ch, "
-                + "installed \(installedFormat.mSampleRate) Hz × \(installedFormat.mChannelsPerFrame) ch"
+                + "\(clientFormat.mSampleRate) Hz × \(clientFormat.mChannelsPerFrame) ch "
+                + "(formatID=\(clientFormat.mFormatID), flags=\(clientFormat.mFormatFlags), "
+                + "bytesPerFrame=\(clientFormat.mBytesPerFrame), bitsPerChannel=\(clientFormat.mBitsPerChannel)), "
+                + "installed \(installedFormat.mSampleRate) Hz × \(installedFormat.mChannelsPerFrame) ch "
+                + "(formatID=\(installedFormat.mFormatID), flags=\(installedFormat.mFormatFlags), "
+                + "bytesPerFrame=\(installedFormat.mBytesPerFrame), bitsPerChannel=\(installedFormat.mBitsPerChannel))"
             )
         }
     }

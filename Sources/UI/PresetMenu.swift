@@ -1,7 +1,8 @@
 import AppKit
-import Presets
 import SwiftUI
 import UniformTypeIdentifiers
+
+import Presets
 import ViewModel
 
 /// Preset save/load menu. "Save As…" and "Open…" trigger AppKit panels
