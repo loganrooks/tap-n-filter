@@ -176,8 +176,20 @@ final class Phase1DebugViewModel: ObservableObject {
                 }
                 if didInstallRecordingTap { removeRecordingTap() }
                 if let rollbackError {
-                    isPermissionDenied = false
-                    statusText = "Engine start failed (\(error.localizedDescription)); rollback also failed (\(rollbackError.localizedDescription)). HAL resources may be leaked — restart the app."
+                    // controller.stop() emitted .stopping then .idle through
+                    // statePublisher, which delivers on main via
+                    // `.receive(on: DispatchQueue.main)`. Those events are
+                    // still queued at this point and would overwrite the
+                    // compound failure message via `apply(_:)` if we set
+                    // statusText synchronously. Defer the final assignment
+                    // so it runs after the queued state updates.
+                    let primary = error.localizedDescription
+                    let secondary = rollbackError.localizedDescription
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self else { return }
+                        self.isPermissionDenied = false
+                        self.statusText = "Engine start failed (\(primary)); rollback also failed (\(secondary)). HAL resources may be leaked — restart the app."
+                    }
                 } else {
                     applyStartError(error)
                 }
