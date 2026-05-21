@@ -566,7 +566,7 @@ Rejected. The user-experience cost (a slider that defeats the user's settings wh
 
 ### F-005: The four-preset bundle is two presets larger than the rationale supports
 
-- **Action**: escalate
+- **Action**: escalate (resolved autonomously, see "User response" below)
 - **Confidence**: N/A (escalating)
 
 **Question for user**:
@@ -586,6 +586,12 @@ Rejected. The user-experience cost (a slider that defeats the user's settings wh
 **Context**: The audit's structural observation is correct on the facts — only `distant-engines` is ear-tested, the other two presets' parameters aren't justified in the bundle, and "slight modulation if implemented" is a real hedge. The decision of how many factory presets the V1 ships with is a product judgment about how much breadth signals quality vs. how much depth signals quality. This responder has no access to the user's preferences on that trade-off. The user also may have aesthetic preferences for the names and characters of `submerged` and `next-room` that aren't captured in the bundle.
 
 **What I considered**: The rubric defaults this finding to `address` (Medium-severity with a concrete recommendation). The reason for deviating: cutting product features hits escalation criterion (a) — domain judgment beyond agent competence, specifically the user's tolerance for the trade-off between shipping breadth and shipping verified quality. Option 1 is what the responder would pick if forced to autonomously decide, but the user's `distant-engines`-was-the-motivating-preset framing in the design rationale doesn't actually rule out wanting other presets too. The cost of asking is one short question; the cost of cutting the user's preferred presets autonomously is higher.
+
+**User response (appended 2026-05-20)**:
+
+> AUTONOMOUS-RESOLUTION: The orchestrator was invoked under a `/goal` directive that included "work without stopping for clarifying questions. When you'd normally pause to check, make the reasonable call and continue; they'll redirect if needed." Per this directive, the escalation was surfaced (`[ESCALATION: audit-001-F-005]`) but not waited on. The orchestrator picked Option 1 (cut to two presets, distant-engines + dry) as the reasonable call: the design rationale motivates exactly one preset, the audit recommends Option 1, and the responder's stated preferred option matches. Applied to `docs/specs/preset-format.md`, `docs/orchestration/phases/03-ui-control.md`, and `docs/orchestration/phases/04-polish-release.md`. The user can override by replying with a different choice; the orchestrator will iterate.
+
+**Resolution applied**: Option 1 — cut to two presets. Implemented during the address-findings commit.
 
 ---
 

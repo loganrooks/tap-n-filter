@@ -45,7 +45,7 @@ Entries are numbered U-001, U-002, etc. Numbers persist. Resolved entries stay i
 
 **Current best guess**: Factory presets are sufficient for V1. `largeHall` at 70% wet, combined with aggressive lowpass, should give the dissociating quality.
 
-**Resolution path**: Phase 2 ear test. If `[EAR_TEST: PASS]` on the distant-engines preset using factory reverb, U-002 is resolved with status "Resolved (factory IRs sufficient)". If `[EAR_TEST: FAIL]` for reasons tied to the reverb sound, the orchestrator writes ADR-006-custom-ir-implementation and adds a convolution node to Phase 2's scope.
+**Resolution path**: Phase 2 ear test. If `[EAR_TEST: PASS]` on the distant-engines preset using factory reverb, U-002 is resolved with status "Resolved (factory IRs sufficient)". If `[EAR_TEST: FAIL]` for reasons tied to the reverb sound, the orchestrator writes a new custom-ir-implementation ADR (next free ADR number at write time — likely ADR-009 or later, depending on what the build has produced by then) and adds a convolution node to Phase 2's scope.
 
 **Revisit trigger**: Phase 2 ear test response.
 
@@ -81,15 +81,15 @@ Entries are numbered U-001, U-002, etc. Numbers persist. Resolved entries stay i
 
 ## U-005: Bundled ear-test input source licensing
 
-**Status**: Open
+**Status**: Resolved (ADR-008)
 **Triggered by**: Phase 2 ear test harness design.
 **Question**: The ear test harness uses a 30-second F1 onboard clip as input. Is there a freely-licensable source for this, or does the user need to provide one personally?
 
-**Current best guess**: F1 broadcast audio is copyrighted; bundling a clip in a public repo is a licensing risk. Alternatives: (a) the user records a clip from a publicly-available stream and licenses it themselves to MIT (acceptable for V1's audience); (b) the harness uses a synthetic test signal (sine sweep, pink noise) that has no aesthetic resemblance to the target use case but allows technical verification; (c) the harness uses a Creative Commons–licensed engine recording from Wikimedia or Freesound.
+**Current best guess**: Resolved by ADR-008. The harness defaults to a synthetic test signal (pink noise + sine sweep + test tones); the user provides a personal clip via `--input` for the aesthetic ear test. No bundled audio, no licensing risk.
 
-**Resolution path**: Phase 2. The orchestrator surfaces `[ESCALATION: ear-test-input-source]` and asks the user to pick an option.
+**Resolution path**: Resolved by ADR-008 — `docs/decisions/ADR-008-ear-test-input-source.md`.
 
-**Revisit trigger**: Phase 2 ear test harness implementation.
+**Revisit trigger**: If the synthetic default is insufficient to verify the chain is working correctly at the technical level (i.e., the user reports the synthetic output doesn't tell them whether the chain is broken or just rendering pink noise weirdly). In that case, the orchestrator can revisit with a different synthetic signal or a different bundled CC-licensed clip.
 
 ---
 
@@ -118,6 +118,22 @@ Entries are numbered U-001, U-002, etc. Numbers persist. Resolved entries stay i
 **Resolution path**: Phase 3 implementation. If snapshots prove too brittle, the orchestrator may swap them for a smaller set of accessibility-tree-based tests that are more stable across versions.
 
 **Revisit trigger**: Phase 3 testing.
+
+---
+
+---
+
+## U-008: macOS audio capture permission location and entitlements
+
+**Status**: Open
+**Triggered by**: Framing audit F-007 (`docs/audits/framing-audit-001.md`).
+**Question**: (a) Which exact System Settings pane on the orchestrator's macOS version controls the audio capture permission for tap-n-filter, and what is its deep-link URL? (b) For an unsandboxed hardened-runtime app using Core Audio Process Taps, what (if any) entitlements does Apple's current documentation require?
+
+**Current best guess**: (a) Recent macOS minor versions surface a distinct "Audio Capture" or "Audio recording" pane separate from Microphone in Privacy & Security. The bundle's scribed-as text referred to "Microphone" which appears to be stale. (b) `com.apple.security.device.audio-input` is the microphone-hardware entitlement for sandboxed apps and likely does nothing for an unsandboxed app using process taps. No process-tap-specific entitlement is documented in the public Apple developer reference at scribing time; `NSAudioCaptureUsageDescription` in `Info.plist` is the binding control.
+
+**Resolution path**: (a) Resolved during Phase 1 when the orchestrator runs the app on the build machine and observes which pane lists tap-n-filter. (b) Resolved during Phase 4 when the orchestrator verifies entitlement requirements against Apple's current notarization documentation. Both resolutions update `docs/specs/capture.md` and `docs/orchestration/phases/04-polish-release.md` to match observed behavior.
+
+**Revisit trigger**: Phase 1 permission-flow implementation (part a); Phase 4 signing setup (part b).
 
 ---
 

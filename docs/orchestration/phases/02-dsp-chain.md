@@ -208,13 +208,42 @@ The bundled "distant-engines" preset lives at `Resources/Presets/distant-engines
 ### 2.8 The ear test harness
 
 Build a small command-line target `tap-n-filter-eartest` that:
-1. Loads a known input wav from `Resources/EarTestInput/onboard-30s.wav` (a 30-second F1 onboard clip licensed for testing — the orchestrator surfaces `[ESCALATION: ear-test-input-source]` if no licensed clip is identified; an alternative is for the user to provide one).
+
+1. Loads an input wav from a path provided via a CLI flag (`--input <path>`). If no flag is provided, the harness generates a default test signal: a 30-second composite consisting of pink noise (10 s, broadband content for spectral verification), a logarithmic sine sweep from 20 Hz to 20 kHz (10 s, frequency-response verification), and a sequence of test tones at 100 Hz, 1 kHz, and 10 kHz (10 s, level verification). This synthetic default lets the harness run technically without depending on any third-party audio.
 2. Loads `distant-engines.tnf`.
 3. Renders the input offline through the graph (using `AVAudioEngine.enableManualRenderingMode`).
 4. Writes the result to `test-artifacts/ear-test-output.wav`.
-5. Also copies the input to `test-artifacts/ear-test-input.wav` for A/B comparison.
+5. Also copies the input (synthetic or user-provided) to `test-artifacts/ear-test-input.wav` for A/B comparison.
 
-The orchestrator surfaces `[EAR_TEST_READY: test-artifacts/]` in transcript.
+The synthetic default makes the Phase 2 technical gate runnable without any user input or licensing question. The aesthetic ear test — the human-in-loop gate where the user listens and confirms the preset character — is run separately:
+
+- The orchestrator surfaces `[EAR_TEST_READY: test-artifacts/]` with the synthetic-input artifacts.
+- The user listens to the synthetic A/B to confirm the chain is producing sensible spectral changes (technical aesthetic check).
+- For the substantive aesthetic check (does the preset achieve the dissociating "distant engines" character), the user provides their own 30-second clip and re-runs the harness with `--input <path>`. The user replies `[EAR_TEST: PASS]` or `[EAR_TEST: FAIL: <reason>]` once satisfied with the result.
+
+This resolves U-005: the harness runs out-of-the-box, the user-provided clip step is a one-line CLI action, and licensing is the user's choice for their own clip rather than something the project bundles. See `docs/decisions/ADR-008-ear-test-input-source.md`.
+
+### 2.9 End-to-end live render check
+
+In addition to the offline ear test, Phase 2 runs a live integration check that exercises capture + DSP together in real time. This is the orchestrator's confidence check, not a user-facing gate, but it is required for Phase 2 to pass.
+
+Steps:
+
+1. Open a known YouTube tab in Safari playing a track with broad spectral content (the orchestrator picks one; suggest a music track with bass and high-frequency content).
+2. Start the app's debug UI from Phase 1, configured to capture Safari.
+3. Load the `distant-engines` preset and engage the chain.
+4. Record the engine's output to `test-artifacts/ear-test-live.wav` for 10 seconds via `AVAudioEngine.installTap(onBus:bufferSize:format:)` on `mainMixerNode` writing to an `AVAudioFile`.
+5. Compare `ear-test-live.wav` to `ear-test-output.wav` from the offline render. The orchestrator runs a simple spectral comparison (FFT magnitude over 1-second windows, mean absolute difference in dB) to confirm the live and offline renders have similar spectral character.
+
+The orchestrator commits `ear-test-live.wav` (or omits it if size is a concern; the spectral-comparison numbers are sufficient as evidence) and documents the comparison in `docs/audits/verification/phase-2.md`.
+
+If the live render diverges substantially from the offline render (different aggregate-device sample rate produces format-conversion artifacts, the engine's real-time scheduling produces audible glitches, etc.), the orchestrator addresses the underlying cause before requesting the user's ear test. Common causes:
+
+- Sample-rate mismatch between the aggregate device and the EQ/Reverb units. Resolved by inserting an `AVAudioMixerNode`-based format converter at the graph's input.
+- Buffer-size mismatch producing dropouts. Resolved by setting the engine's preferred I/O buffer duration to a value compatible with the device's native size.
+- Aggregate-device latency producing audible echoes. Resolved by ensuring the engine's input format matches the aggregate device's format exactly.
+
+Document the resolution in `docs/decisions/ADR-NNN-<topic>.md` if it shapes the architecture.
 
 ## Gate criteria
 
@@ -226,13 +255,14 @@ Phase 2 PASSES when ALL of the following are true:
    c. The "distant-engines" preset loads correctly from disk and produces non-silent output through the offline render.
    d. CodeRabbit and Codex have reviewed the PR with High-severity findings addressed.
 2. The ear test artifact pair exists at `test-artifacts/`.
-3. The user has confirmed `[EAR_TEST: PASS]` in transcript.
+3. The end-to-end live render check (section 2.9) has been run and either (a) the live render matches the offline render within the spectral tolerance documented in the verification report, or (b) any divergence has been resolved with documented changes (typically an ADR).
+4. The user has confirmed `[EAR_TEST: PASS]` in transcript.
 
 If the user confirms `[EAR_TEST: FAIL: <reason>]`, the orchestrator analyzes the failure reason. If the failure is a parameter-tuning issue (e.g., "too wet", "lowpass not aggressive enough"), the orchestrator iterates on the preset and re-renders. If the failure is structural (e.g., "this doesn't sound right at any settings"), the orchestrator escalates: `[ESCALATION: ear-test-structural-fail]`. Three failed ear tests in a row triggers automatic escalation regardless of reason.
 
 ## Failure modes
 
-- **AVAudioUnitReverb factory presets don't achieve the dissociating quality.** The fallback is to implement a custom convolution node loading IRs from `Resources/IR/`. This is moved out of V1 by default but the architecture supports adding it. If the ear test fails for this reason, the orchestrator writes ADR-007-custom-ir-implementation and treats it as an in-scope extension to Phase 2 (not a new phase).
+- **AVAudioUnitReverb factory presets don't achieve the dissociating quality.** The fallback is to implement a custom convolution node loading IRs from `Resources/IR/`. This is moved out of V1 by default but the architecture supports adding it. If the ear test fails for this reason, the orchestrator writes a new ADR (next free number — likely ADR-009 or later, depending on what the build has produced by then) for custom-ir-implementation and treats it as an in-scope extension to Phase 2 (not a new phase).
 - **EffectNode protocol's Codable conformance is awkward for type-erased lists.** A type-safe Codable for `[any EffectNode]` requires an enum-based serialization wrapper. The spec at `docs/specs/effect-node-protocol.md` documents this pattern.
 - **The offline render mode produces different output than real-time.** AVAudioEngine's manual rendering mode is well-supported, but the orchestrator should sanity-check by also confirming the same audible result in real-time playback (route a tab's audio through the chain live, listen briefly). This is for the orchestrator's confidence; the user's ear test is on the offline-rendered file.
 

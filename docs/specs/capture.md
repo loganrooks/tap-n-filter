@@ -58,15 +58,48 @@ The orchestrator implements a concrete `CaptureController: CaptureControllerProt
 
 ### Process tap creation
 
+The Core Audio Process Tap API takes `AudioObjectID`s representing audio process objects, not raw `pid_t`s. The translation from a `pid_t` to the corresponding audio-process `AudioObjectID` is a HAL property lookup against the system object, using `kAudioHardwarePropertyTranslatePIDToProcessObject`. AudioCap performs this translation explicitly; tap-n-filter follows the same pattern.
+
 ```swift
-private func createTap(for pid: pid_t) throws -> AudioObjectID {
-    let description = CATapDescription(stereoMixdownOfProcesses: [pid])
+/// Translates a Unix process identifier to the AudioObjectID representing
+/// that process in the Core Audio HAL. Throws if the process is not known
+/// to Core Audio (e.g., it is not producing audio).
+private func audioProcessID(forPID pid: pid_t) throws -> AudioObjectID {
+    var pidCopy = pid
+    var address = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyTranslatePIDToProcessObject,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain
+    )
+    var processID: AudioObjectID = kAudioObjectUnknown
+    var size = UInt32(MemoryLayout<AudioObjectID>.size)
+
+    let status = AudioObjectGetPropertyData(
+        AudioObjectID(kAudioObjectSystemObject),
+        &address,
+        UInt32(MemoryLayout<pid_t>.size),
+        &pidCopy,
+        &size,
+        &processID
+    )
+    guard status == noErr, processID != kAudioObjectUnknown else {
+        throw CaptureError.sourceNotFound(pid)
+    }
+    return processID
+}
+
+/// Creates a Core Audio process tap for the given audio-process AudioObjectID.
+///
+/// The caller is responsible for translating from a `pid_t` to an
+/// AudioObjectID via `audioProcessID(forPID:)` before calling this.
+private func createTap(for audioProcessID: AudioObjectID) throws -> AudioObjectID {
+    let description = CATapDescription(stereoMixdownOfProcesses: [audioProcessID])
     description.uuid = UUID()
-    description.name = "tap-n-filter.tap.\(pid)" as CFString
-    description.privateTap = true
+    description.name = "tap-n-filter.tap.\(audioProcessID)" as CFString
+    description.isPrivate = true
     description.isExclusive = false
-    
-    var tapID: AudioObjectID = 0
+
+    var tapID: AudioObjectID = kAudioObjectUnknown
     let status = AudioHardwareCreateProcessTap(description, &tapID)
     guard status == noErr else {
         throw CaptureError.tapCreationFailed(status)
@@ -75,15 +108,40 @@ private func createTap(for pid: pid_t) throws -> AudioObjectID {
 }
 ```
 
-`stereoMixdownOfProcesses:` is the constructor pattern AudioCap uses; it produces a 2-channel mixdown of the source process's output. For tap-n-filter's V1 stereo-only model, this is the right choice.
+`stereoMixdownOfProcesses:` is the constructor AudioCap uses; it produces a 2-channel mixdown of the source process's output. For tap-n-filter's V1 stereo-only model this is the right choice. Note that `CATapDescription`'s property is `isPrivate` (not `privateTap`); verify against the AudioCap source at implementation time.
 
 ### Aggregate device creation
 
-The tap on its own is not directly readable by `AVAudioEngine`. We create an aggregate device that contains the tap as one of its sub-streams:
+The tap on its own is not directly readable by `AVAudioEngine`. We create an aggregate device that contains the tap as one of its sub-streams. The tap's UID is a CFString fetched from the tap object via `kAudioTapPropertyUID` — there is no `.uid` property on `AudioObjectID`, which is a typealias for `UInt32`.
 
 ```swift
+/// Reads the UID (a CFString) of a Core Audio tap object.
+private func tapUID(for tapID: AudioObjectID) throws -> CFString {
+    var address = AudioObjectPropertyAddress(
+        mSelector: kAudioTapPropertyUID,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain
+    )
+    var uid: Unmanaged<CFString>?
+    var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+
+    let status = AudioObjectGetPropertyData(
+        tapID,
+        &address,
+        0,
+        nil,
+        &size,
+        &uid
+    )
+    guard status == noErr, let uid else {
+        throw CaptureError.tapCreationFailed(status)
+    }
+    return uid.takeRetainedValue()
+}
+
 private func createAggregateDevice(containing tapID: AudioObjectID,
                                     forSource source: CaptureSource) throws -> AudioDeviceID {
+    let uid = try tapUID(for: tapID)
     let description: [String: Any] = [
         kAudioAggregateDeviceUIDKey as String: "tap-n-filter.aggregate.\(source.pid)",
         kAudioAggregateDeviceNameKey as String: "tap-n-filter for \(source.displayName)",
@@ -92,12 +150,12 @@ private func createAggregateDevice(containing tapID: AudioObjectID,
         kAudioAggregateDeviceTapListKey as String: [
             [
                 kAudioSubTapDriftCompensationKey as String: false,
-                kAudioSubTapUIDKey as String: tapID.uid
+                kAudioSubTapUIDKey as String: uid
             ]
         ]
     ]
-    
-    var deviceID: AudioDeviceID = 0
+
+    var deviceID: AudioDeviceID = kAudioObjectUnknown
     let status = AudioHardwareCreateAggregateDevice(description as CFDictionary, &deviceID)
     guard status == noErr else {
         throw CaptureError.aggregateDeviceCreationFailed(status)
@@ -106,7 +164,7 @@ private func createAggregateDevice(containing tapID: AudioObjectID,
 }
 ```
 
-This is the central trick. The aggregate device is read by `AVAudioEngine` as if it were a normal input device, while internally it reads from the process tap.
+This is the central trick: the aggregate device is read by `AVAudioEngine` as if it were a normal input device, while internally it reads from the process tap. The exact property selectors and key names must be verified against AudioCap's source at implementation time; the API is sparsely documented and the strings above are written from the Apple-Framework reference rather than from a running build.
 
 ### Bridging to `AVAudioEngine`
 
@@ -139,7 +197,9 @@ The first call to `AudioHardwareCreateProcessTap` triggers the audio capture per
 
 If the user denies, subsequent calls return an error. The orchestrator detects this and throws `CaptureError.permissionDenied`. The UI surfaces the error with a link to System Settings.
 
-The exact path in System Settings as of macOS 14.4 is **Privacy & Security → Microphone**. (This conflates the audio capture permission with microphone access in the UI even though they are technically separate. Apple's UI organization here may change in future macOS versions; the orchestrator verifies during implementation and updates the user-facing text accordingly.)
+The exact path in System Settings for the audio capture permission must be verified against the orchestrator's current macOS version before being included in user-facing text. The relevant pane in macOS 14.4+ is reported by Apple Developer Forum threads to be a distinct "Audio Capture" or "Audio recording" pane separate from "Microphone," though Apple's terminology has shifted across minor releases. The orchestrator runs the app once on the build machine, confirms which pane controls the permission, and updates any user-facing text and any deep-link URL (e.g., `x-apple.systempreferences:com.apple.preference.security?Privacy_<PaneIdentifier>`) to match. This verification step is recorded in `docs/audits/verification/phase-1.md`.
+
+Until the verification step is performed in Phase 1, user-facing text refers generically to "the audio capture permission in System Settings → Privacy & Security" without naming a specific sub-pane. Uncertainty entry U-008 tracks the verification.
 
 ### Enumeration of sources
 

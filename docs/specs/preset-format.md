@@ -75,6 +75,80 @@ When the format version is bumped:
 - An ADR documents the change and the migration logic.
 - Tests verify migration produces equivalent graphs.
 
+## Swift Codable mechanism
+
+`GraphPreset.nodes` is declared `[EffectState]` in the on-disk representation (each element a fully-serialized state object with a `typeIdentifier`). The in-memory `Graph.nodes` is `[any EffectNode]`. The translation between the two is handled at the `GraphPreset` boundary, not the protocol boundary.
+
+Encoding (`Graph.snapshot()` → `GraphPreset` → JSON):
+
+```swift
+public struct GraphPreset: Codable {
+    public let formatVersion: Int
+    public let name: String
+    public let outputGain: Float
+    public let nodes: [EffectState]
+
+    public init(formatVersion: Int = 1,
+                name: String,
+                outputGain: Float,
+                nodes: [EffectState]) {
+        self.formatVersion = formatVersion
+        self.name = name
+        self.outputGain = outputGain
+        self.nodes = nodes
+    }
+}
+
+extension Graph {
+    public func snapshot() -> GraphPreset {
+        GraphPreset(
+            name: "snapshot",  // caller can rename
+            outputGain: outputGain,
+            nodes: nodes.map { $0.snapshot() }
+        )
+    }
+}
+```
+
+The `Codable` derivation on `GraphPreset` is automatic — `EffectState` is itself `Codable`, and an array of `Codable` is `Codable`.
+
+Decoding (JSON → `GraphPreset` → `Graph.restore`):
+
+```swift
+extension Graph {
+    public static func restore(from preset: GraphPreset,
+                                using registry: EffectNodeRegistry) throws -> Graph {
+        var nodes: [any EffectNode] = []
+        var warnings: [PresetLoadWarning] = []
+
+        for state in preset.nodes {
+            do {
+                let node = try registry.makeNode(typeIdentifier: state.typeIdentifier)
+                try node.restore(from: state)
+                nodes.append(node)
+            } catch RegistryError.unknownTypeIdentifier(let id) {
+                warnings.append(.unknownEffect(typeIdentifier: id))
+                // Skip this node; loader is best-effort per preset-format.md
+            }
+        }
+
+        let graph = Graph(nodes: nodes, outputGain: preset.outputGain)
+        if !warnings.isEmpty {
+            // Caller observes warnings via a side channel; one V1 approach is
+            // a static `lastLoadWarnings` on PresetStore that the view model
+            // reads after a load. V2 may pass warnings through directly.
+        }
+        return graph
+    }
+}
+```
+
+`EffectNodeRegistry.makeNode(typeIdentifier:)` returns a freshly-constructed node of the corresponding concrete type — typically by invoking the type's no-argument initializer, which produces a node in its default state. `restore(from:)` then writes the saved parameters, bypass, wet/dry, displayName, and id onto the fresh node.
+
+This pattern scales to V2's AUv3 hosting: `AUv3Node` registers with the same `EffectNodeRegistry` at app launch (or on-demand when an AUv3 plugin is loaded), `restore(from:)` reads the AUv3-specific state from `EffectState.extras`, and the discriminated-union behavior is unchanged.
+
+The `EffectNode` protocol's `init(from decoder: Decoder)` is not used by the preset I/O path — `GraphPreset` is the boundary. Concrete types may still provide `init(from:)` for direct decoding of a single node from JSON (a future "import single effect" feature), but it is not required for V1.
+
 ## Compatibility across effect versions
 
 A preset may reference effects that don't exist (older preset, newer build) or that have new/removed parameters. The loader:
@@ -88,14 +162,14 @@ The loader never throws on a recoverable mismatch. It returns the best-effort gr
 
 ## Bundled presets
 
-Four presets ship inside the app bundle at `Resources/Presets/`:
+Two presets ship inside the app bundle at `Resources/Presets/`:
 
-- `distant-engines.tnf` — the original ambient-engines preset. Heavy lowpass at 800Hz, large hall reverb at 70% wet.
-- `submerged.tnf` — lowpass at 500Hz, plate reverb, slight modulation if implemented.
-- `next-room.tnf` — gentle lowpass at 2.5kHz, small room reverb at 30% wet.
-- `dry.tnf` — passthrough with a small gain trim. Useful as a baseline.
+- `distant-engines.tnf` — the original ambient-engines preset. Heavy lowpass at 800Hz, large hall reverb at 70% wet. The motivating preset (per `docs/audits/design-rationale.md`); ear-tested in Phase 2.
+- `dry.tnf` — passthrough with a small gain trim. Useful as a baseline to confirm the chain wiring is correct.
 
-These are loaded by reference when the user selects from the "Factory Presets" menu. The actual file is read from the bundle on demand; the app does not copy them to a user-writable location.
+`submerged` and `next-room` were considered during scribing but cut from V1 per audit finding F-005 (`docs/audits/framing-audit-001.md`); they are deferred to V0.2 as TODOs in `CHANGELOG.md`. The cut keeps V1's factory set in line with what the design rationale motivates and avoids shipping presets whose parameter choices haven't been ear-tested.
+
+Factory presets are loaded by reference when the user selects from the "Factory Presets" menu. The actual file is read from the bundle on demand; the app does not copy them to a user-writable location.
 
 ## User presets
 

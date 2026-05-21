@@ -115,7 +115,9 @@ The menu's contents are sourced from `EffectNodeRegistry.shared`, so adding a ne
 └──────────────────────────────────────┘
 ```
 
-The chevron toggles expansion. The bypass toggle is a small SwiftUI `Toggle` styled minimally. The wet/dry slider is always visible (it's the most-used control). The trash icon removes the effect with confirmation (or with undo via a toast — V1 implements confirmation modal).
+The chevron toggles expansion. The bypass toggle is a small SwiftUI `Toggle` styled minimally. The wet/dry slider is visible by default for nodes whose effect is time-domain (e.g., reverb, future delay, future distortion) — for these the wet/dry control is the most-used adjustment. For nodes whose effect is spectral-shaping (e.g., EQ), the wet/dry slider is hidden by default and accessible only via the expanded controls panel; the rationale is that wet/dry on an EQ at any value other than 1.0 partially defeats the filter, which is rarely what a user adjusting the slider expects. The trash icon removes the effect with confirmation (or with undo via a toast — V1 implements confirmation modal).
+
+The decision of "show wet/dry by default" is per-node. Each `EffectNode` exposes a static property `showsWetDryByDefault: Bool` (default `true`) that the UI consults when rendering the `EffectRow` header. `EQNode` overrides this to `false`; `ReverbNode` uses the default `true`. See `docs/decisions/ADR-007-wet-dry-on-eq.md`.
 
 ## EffectControlsView
 

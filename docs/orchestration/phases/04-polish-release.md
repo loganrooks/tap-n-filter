@@ -37,9 +37,14 @@ The signing identity name is stored in `Build/signing-identity.txt` (gitignored,
 
 ### 4.3 Code signing
 
-Sign the app using `codesign --deep --force --options=runtime --entitlements ... --sign "<identity>" ...`. Entitlements include:
-- `com.apple.security.device.audio-input` (for the audio capture permission, if Apple's docs require it — verify against current docs).
-- Hardened runtime enabled.
+Sign the app using `codesign --deep --force --options=runtime --entitlements ... --sign "<identity>" ...`.
+
+Entitlements:
+- Hardened runtime is enabled (required for notarization).
+- App Sandbox is not enabled (ADR-003).
+- No additional capability entitlements are added by default. The audio capture flow for process taps in an unsandboxed app is governed by `NSAudioCaptureUsageDescription` in `Info.plist`, not by an entitlement. `com.apple.security.device.audio-input` is the microphone-hardware entitlement for sandboxed apps; adding it to an unsandboxed app has no documented effect and may produce notarization or Gatekeeper surprises that are hard to diagnose after the fact.
+
+The orchestrator verifies the exact entitlement requirements against current Apple documentation at the start of Phase 4. If current Apple documentation requires a process-tap-specific entitlement for unsandboxed apps with hardened runtime (none is documented as of the bundle's scribing date), the orchestrator adds it and writes a brief ADR. If no entitlement is required, the orchestrator commits the entitlements file (an empty `<dict/>` inside the plist, or omitted entirely) and records the verification in U-008.
 
 The orchestrator writes `Build/sign.sh` containing the exact `codesign` invocation, committed to the repo. Phase 4 PRs include this script.
 
@@ -80,7 +85,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Parametric EQ with high-pass and low-pass bands.
 - Reverb using AVAudioUnitReverb factory presets.
 - `.tnf` preset save/load.
-- Four bundled presets: distant-engines, submerged, next-room, dry.
+- Two bundled presets: distant-engines (the motivating preset) and dry (a baseline).
 - MenuBarExtra-based UI.
 - macOS 14.4+ support.
 ```

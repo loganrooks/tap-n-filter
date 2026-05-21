@@ -89,6 +89,8 @@ Reference `loganrooks/coderabbit` for the canonical config and instructions. The
 
 If `loganrooks/coderabbit` is not accessible (private), the orchestrator surfaces `[ESCALATION: coderabbit-config-access]` and waits for the user to either grant access or provide the config inline.
 
+Before committing the adapted `.coderabbit.yaml`, the orchestrator scans the file for references to private repositories, internal services, API keys, internal service URLs, or any identifiers that should not appear in a public repo. The `loganrooks/coderabbit` template is described as canonical config and instructions copied across the user's repos; while the base rate of secrets in such files is low, the adaptation step is the only guard. Any private-context references are removed or replaced with public-safe equivalents before the file is committed.
+
 The CodeRabbit GitHub App must be installed and authorized on the new repo. Verify by opening the no-op PR (step 0.7) and confirming a CodeRabbit comment appears within five minutes.
 
 ### 0.6 Verify Codex review path

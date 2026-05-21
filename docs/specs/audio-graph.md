@@ -47,15 +47,17 @@ public final class Graph {
 
 ### `attach`
 
-`attach` performs all engine mutations inside an `engine.pause()` / `engine.prepare()` block. The sequence:
+`attach` is called only when the engine is in a state where reconfiguration is permitted: either before `engine.start()` has been called for this session, or after `engine.stop()` (a full stop, not `engine.pause()`). Calling `attach` against a running or paused engine is a programming error in V1; the graph asserts on this and the caller (`AppViewModel`) is responsible for stopping the engine before any graph attach or mutation.
 
-1. For each node in `nodes`, call `node.attach(to: engine)`. The node attaches its own underlying `AVAudioUnit` (or composite) to the engine.
-2. Connect `source` to `nodes[0].inputBus`.
-3. For each adjacent pair `(nodes[i], nodes[i+1])`, connect `nodes[i].outputBus` to `nodes[i+1].inputBus`.
-4. Connect `nodes[last].outputBus` to a `AVAudioMixerNode` that applies `outputGain`.
-5. Connect that mixer to `destination`.
+The sequence:
 
-Format negotiation: each `connect` uses the source node's `outputFormat(forBus: 0)`. The graph does not insert format converters; nodes are expected to produce a format compatible with the next node's input.
+1. For each node in `nodes`, call `node.attach(to: engine)`. The node creates its mixer scaffolding (per the wet/dry mixing convention in `effect-node-protocol.md`), attaches its underlying `AVAudioUnit`s plus mixers to the engine, and connects its internal dry and wet paths to the appropriate input buses on its `outputBus`.
+2. Connect `source` to `nodes[0].inputBus` on bus 0 with the source's `outputFormat(forBus: 0)`.
+3. For each adjacent pair `(nodes[i], nodes[i+1])`, connect `nodes[i].outputBus` bus 0 to `nodes[i+1].inputBus` bus 0 with the upstream output format.
+4. Connect `nodes[last].outputBus` bus 0 to a graph-owned `AVAudioMixerNode` that applies `outputGain` (set via its single-input bus volume).
+5. Connect that mixer to `destination` bus 0.
+
+Format negotiation: each `connect` uses the source node's `outputFormat(forBus: 0)`. The graph does not insert format converters; nodes are expected to produce a format compatible with the next node's input. The aggregate device's native format is the format the chain runs at; sample rate and channel layout are determined by the device, not by the graph.
 
 ### `detach`
 
@@ -93,15 +95,18 @@ Adding a new effect type to the app means writing the `EffectNode` and registeri
 
 ## Graph mutations during playback
 
-Adding, removing, or reordering nodes while audio is flowing requires care. The standard pattern:
+Adding, removing, or reordering nodes while audio is flowing requires care. `AVAudioEngine.pause()` is not sufficient — `attach`, `connect`, and `detach` calls on an engine that has been started require the engine to be fully stopped (`engine.stop()`), or the engine reports the connection as a no-op and audio routing silently breaks. The standard pattern:
 
 1. Save the current graph snapshot (in case rollback is needed).
-2. Pause the engine: `engine.pause()`.
-3. Mutate the graph.
-4. Detach and re-attach the graph (sequence preserved across the mutation).
-5. Resume: `engine.prepare()` and `engine.start()`.
+2. Stop the engine: `engine.stop()`. This drains the render loop fully.
+3. Detach all nodes from the engine via `graph.detach()`.
+4. Mutate the graph (add/remove/move).
+5. Re-attach via `graph.attach(to:source:destination:)` with the same source and destination as the prior attach.
+6. Start the engine: `engine.start()`.
 
-The UI layer (Phase 3) presents this as instant, but internally there's a brief pause (typically a few milliseconds). Users notice the silence; the orchestrator can mitigate by fading output gain to zero, mutating, then fading back, but V1 does not implement this — the brief click on mutations is acceptable.
+The UI layer (Phase 3) presents this as instant, but internally there's a brief silence (typically 50–150 ms). Users notice the silence; the orchestrator can mitigate by fading output gain to zero, mutating, then fading back, but V1 does not implement this — the brief silence on mutations is acceptable.
+
+The lifecycle constraint here is documented in `ADR-006-graph-mutation-lifecycle.md`.
 
 ## Error handling
 

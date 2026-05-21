@@ -10,8 +10,8 @@
       "spec": "phases/-1-framing-audit.md",
       "started_at": "2026-05-20",
       "completed_at": null,
-      "audit_report": null,
-      "audit_response": null,
+      "audit_report": "../audits/framing-audit-001.md",
+      "audit_response": "../audits/audit-response-001.md",
       "pr_url": null
     },
     "0": {
@@ -65,7 +65,21 @@
     }
   },
   "human_inputs": {
-    "audit_escalations": [],
+    "audit_escalations": [
+      {
+        "id": "audit-001-F-005",
+        "phase": "-1",
+        "question": "Cut two of four bundled factory presets (audit F-005). Three options: (1) cut to two presets [distant-engines, dry]; (2) keep all four with extra Phase 2 ear-testing; (3) keep all four untested.",
+        "raised_at": "2026-05-20",
+        "responded_at": "2026-05-20",
+        "user_response": "AUTONOMOUS-RESOLUTION: Per the goal's 'work without stopping for clarifying questions' directive, orchestrator resolved with Option 1 (cut to two presets: distant-engines + dry). Reasoning: the design rationale explicitly motivates one preset (distant-engines), the audit's recommended option, and the responder's preferred option. User can correct by replying with a different choice; orchestrator will iterate.",
+        "applied_to": [
+          "docs/specs/preset-format.md",
+          "docs/orchestration/phases/03-ui-control.md",
+          "docs/orchestration/phases/04-polish-release.md"
+        ]
+      }
+    ],
     "ear_test": null,
     "acceptance": null,
     "other_escalations": []
@@ -74,5 +88,5 @@
     "dissent": "../decisions/dissent-log.md",
     "uncertainty": "../decisions/uncertainty-log.md"
   },
-  "_schema_note": "Status values: pending | in_progress | passed | failed | blocked. The orchestrator transitions a phase from pending or blocked to in_progress when starting work, then to passed only on verification PASS. Failed phases remain failed until the orchestrator addresses findings and re-runs verification. State transitions are committed with messages of the form 'state: <phase> -> <new_status> (<short reason>)'."
+  "_schema_note": "Status values: pending | in_progress | passed | failed | blocked. The orchestrator transitions a phase from pending or blocked to in_progress when starting work, then to passed only on verification PASS. Failed phases remain failed until the orchestrator addresses findings and re-runs verification. State transitions are committed with messages of the form 'state: <phase> -> <new_status> (<short reason>)'. Phase re-entry after a downstream REVISE: when a user [REVISE: <what>] reply in Phase 4 directs the orchestrator back to phase N (typically 2 or 3), that phase transitions passed -> in_progress; the orchestrator writes a new verification report under a -revise-K suffix (e.g., phase-2-revise-1.md) when the re-run completes; state.json records the loop in human_inputs.other_escalations with a 'phase_revise' entry pointing to the new verification report. Phase 4 then re-runs after the upstream phase returns to passed."
 }

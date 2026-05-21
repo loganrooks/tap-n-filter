@@ -42,7 +42,7 @@ Would also work technically. Rejected for three reasons:
 
 3. Apple's own engineers, on the developer forums, have explicitly recommended Core Audio Process Taps over ScreenCaptureKit for audio-only cases. This is an official-channel signal, not a third-party opinion.
 
-ScreenCaptureKit retains some appeal as a fallback if Core Audio Process Taps prove untenable (a possibility tracked in `uncertainty-log.md`). The architecture in `docs/specs/capture.md` is structured so that swapping the capture backend would be a contained change.
+ScreenCaptureKit remains a potential fallback if Core Audio Process Taps prove untenable (tracked in `uncertainty-log.md`). The fallback is a substantial rewrite, not a contained change: `docs/specs/capture.md`'s CaptureController is structured around aggregate-device + HAL-property-setter calls that are specific to the process-tap backend. The public `CaptureControllerProtocol` exposes nothing that abstracts over the underlying capture mechanism. Swapping backends would mean replacing the concrete `CaptureController` implementation entirely. V1 commits to the process-tap path; if the fallback is needed, that work is its own design pass and likely its own ADR superseding this one.
 
 ### Audio Hardware Plug-In
 

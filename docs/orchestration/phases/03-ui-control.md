@@ -10,7 +10,7 @@ In:
 - Effect chain editor: ordered list of effects, add/remove/reorder, per-effect controls.
 - Per-effect parameter controls: sliders for continuous params, picker for enum params, toggle for bypass.
 - Preset save/load via `NSSavePanel` and `NSOpenPanel`. Loading a `.tnf` replaces the current graph. Saving captures the current graph state.
-- A "factory presets" submenu with `distant-engines`, `submerged`, `next-room`, `dry`.
+- A "factory presets" submenu with `distant-engines` and `dry` (the two V1 bundled presets; see `docs/specs/preset-format.md`).
 - Persistence: the app remembers the last-used graph and source between launches via `UserDefaults` (graph stored as serialized `GraphPreset` JSON).
 - Master power toggle: start/stop the entire chain.
 - A status line showing capture state and current source.
@@ -116,10 +116,27 @@ On every change to the graph or source, the view model serializes the current st
 
 ### 3.8 Accessibility audit
 
-Every control has:
-- `accessibilityLabel` (what it is).
-- `accessibilityValue` for sliders and pickers (current value spoken).
-- `accessibilityHint` where the action is non-obvious.
+The accessibility gate has two parts: a programmatic check the verification subagent can re-run, and a manual VoiceOver pass the orchestrator performs.
+
+Programmatic check:
+
+1. The orchestrator builds the app and launches an `XCUIApplication` test target that walks the menubar UI.
+2. The test uses `XCUIElementQuery` to enumerate every interactive element in the `ControlPanelView` hierarchy.
+3. For each element, the test asserts:
+   - `accessibilityLabel` is non-empty.
+   - For sliders and pickers, `accessibilityValue` is non-empty when the element has a current value.
+   - For elements identified by the spec as `accessibilityHint`-eligible (controls whose action is non-obvious), the hint is non-empty.
+4. The test dumps the full accessibility tree as JSON to `test-artifacts/phase-3-accessibility-tree.json` and commits it as evidence.
+
+The verification subagent re-runs this test (or reads the committed JSON dump plus the test-pass log) to confirm the assertions hold.
+
+Manual VoiceOver pass:
+
+1. The orchestrator runs the app with VoiceOver enabled.
+2. The orchestrator navigates through every control using only VoiceOver gestures + keyboard, and confirms each control is reachable and produces a sensible spoken response.
+3. The orchestrator records observations in `docs/audits/verification/phase-3-accessibility.md`.
+
+The manual pass catches qualitative issues (labels that are technically present but unhelpful, navigation order that's surprising). The programmatic check catches structural omissions (a control with no label at all). Both are required for the phase to pass.
 
 Keyboard navigation:
 - Tab cycles through controls.
@@ -140,7 +157,7 @@ Phase 3 PASSES when the verification subagent confirms:
 2. Source switching, effect add/remove/reorder, parameter changes, preset save/load, persistence, and power toggle all work without crashes.
 3. Snapshot tests pass.
 4. View model tests pass.
-5. Accessibility audit shows no major issues (VoiceOver reads every control, keyboard navigation reaches every control).
+5. The accessibility audit passes both parts: (a) the programmatic accessibility-tree test at `test-artifacts/phase-3-accessibility-tree.json` shows every interactive element has a non-empty `accessibilityLabel` (and non-empty `accessibilityValue` where applicable), confirmed by the verification subagent re-reading the JSON or the test log; and (b) the manual VoiceOver pass documented in `docs/audits/verification/phase-3-accessibility.md` reports no major issues.
 6. CodeRabbit and Codex review pass.
 7. `state.json` shows phase `3` → `passed`.
 
