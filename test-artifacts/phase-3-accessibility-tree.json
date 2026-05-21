@@ -1,0 +1,140 @@
+{
+  "counts" : {
+    "buttons" : 4,
+    "interactiveElements" : 11,
+    "nodesWithLabel" : 2,
+    "nodesWithValue" : 15,
+    "popUpButtons" : 1,
+    "sliders" : 6,
+    "totalNodes" : 19
+  },
+  "environment" : {
+    "adrReference" : "docs\/decisions\/ADR-011-no-xcui-in-spm.md",
+    "hostingMode" : "in-process NSHostingView (no AXUIElement permission)",
+    "macOSVersion" : "Version 26.3 (Build 25D125)"
+  },
+  "generatedAt" : "2026-05-21T17:05:17Z",
+  "tree" : {
+    "children" : [
+      {
+        "children" : [
+
+        ],
+        "role" : "AXPopUpButton",
+        "value" : "Select a source"
+      },
+      {
+        "children" : [
+          {
+            "children" : [
+
+            ],
+            "role" : "AXButton",
+            "value" : "1"
+          },
+          {
+            "children" : [
+              {
+                "children" : [
+
+                ],
+                "role" : "AXValueIndicator",
+                "value" : "0.125"
+              }
+            ],
+            "role" : "AXSlider",
+            "value" : "0.125"
+          },
+          {
+            "children" : [
+              {
+                "children" : [
+
+                ],
+                "role" : "AXValueIndicator",
+                "value" : "1"
+              }
+            ],
+            "role" : "AXSlider",
+            "value" : "1"
+          },
+          {
+            "children" : [
+              {
+                "children" : [
+
+                ],
+                "role" : "AXValueIndicator",
+                "value" : "0.0337078645825386"
+              }
+            ],
+            "role" : "AXSlider",
+            "value" : "0.0337078645825386"
+          },
+          {
+            "children" : [
+              {
+                "children" : [
+
+                ],
+                "role" : "AXValueIndicator",
+                "value" : "1"
+              }
+            ],
+            "role" : "AXSlider",
+            "value" : "1"
+          },
+          {
+            "children" : [
+              {
+                "children" : [
+
+                ],
+                "role" : "AXValueIndicator",
+                "value" : "1"
+              }
+            ],
+            "role" : "AXSlider",
+            "value" : "1"
+          },
+          {
+            "children" : [
+
+            ],
+            "role" : "AXButton",
+            "value" : "1"
+          },
+          {
+            "children" : [
+              {
+                "children" : [
+
+                ],
+                "role" : "AXValueIndicator",
+                "value" : "0.5"
+              }
+            ],
+            "role" : "AXSlider",
+            "value" : "0.5"
+          }
+        ],
+        "role" : "AXScrollArea"
+      },
+      {
+        "children" : [
+
+        ],
+        "label" : "Add Effect",
+        "role" : "AXMenuButton"
+      },
+      {
+        "children" : [
+
+        ],
+        "label" : "Presets",
+        "role" : "AXMenuButton"
+      }
+    ],
+    "role" : "AXUnknown"
+  }
+}
