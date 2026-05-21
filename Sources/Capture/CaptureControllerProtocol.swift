@@ -14,11 +14,14 @@ public protocol CaptureControllerProtocol: AnyObject {
     /// A Combine publisher that emits on every state transition, including the
     /// current value at subscription time.
     ///
-    /// Emissions arrive on whichever thread caused the transition — typically
-    /// the thread that called `start` or `stop`, or `deinit`'s thread for
-    /// cleanup. Subscribers that need main-thread delivery (SwiftUI bindings,
+    /// Emissions arrive on whichever thread called `start` or `stop`.
+    /// Subscribers that need main-thread delivery (SwiftUI bindings,
     /// AppKit-bound `@Published` properties) must attach
     /// `.receive(on: DispatchQueue.main)` before sinking.
+    ///
+    /// `deinit` does NOT publish a state transition: a released controller
+    /// has no subscribers left to receive one, and best-effort teardown is
+    /// not a contractually observable event.
     var statePublisher: AnyPublisher<CaptureState, Never> { get }
 
     /// List applications currently producing audio that can be captured.

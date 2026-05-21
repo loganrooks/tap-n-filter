@@ -92,11 +92,19 @@ final class Phase1DebugViewModel: ObservableObject {
     /// matches `bundleID`, and calls `controller.start(source:into:)`. If no
     /// match is found the status line reflects the failure.
     ///
-    /// HAL operations (source enumeration, `controller.start`,
-    /// `controller.stop` rollback) run on a `Task.detached` so the
-    /// permission-prompt delay and HAL latency don't stall the menu bar.
-    /// `AVAudioEngine` wiring stays on the main actor, per AVFoundation's
-    /// "configure on a single thread" guidance.
+    /// Source enumeration hops off the main actor via `Task.detached` so the
+    /// HAL's `kAudioHardwarePropertyProcessObjectList` lookup doesn't stall
+    /// the menu bar. `controller.start(source:into:)` and `engine.start()`
+    /// stay on the main actor because `controller.start` calls into
+    /// `configureEngineInput`, which mutates `engine.inputNode.audioUnit` —
+    /// AVAudioEngine is not Sendable, and AVFoundation guidance is to
+    /// configure the engine serially on a single thread.
+    ///
+    /// The codex P2 "run blocking capture startup off main actor" finding
+    /// is partly deferred: enumeration moves off main here; the permission
+    /// prompt is a system modal so the brief UI stall while it appears is
+    /// acceptable. Phase 3's real UI will split HAL prep from engine binding
+    /// so the full pipeline can run off main.
     func start() {
         let bundleIDSnapshot = bundleID
         let shouldRecord = recordOutput
@@ -124,6 +132,9 @@ final class Phase1DebugViewModel: ObservableObject {
             }
 
             guard let source = sources.first(where: { $0.bundleIdentifier == bundleIDSnapshot }) else {
+                // Reset isPermissionDenied so stale red status from a prior
+                // failure doesn't survive an unrelated lookup miss.
+                isPermissionDenied = false
                 statusText = "No audio source found for \"\(bundleIDSnapshot)\". Is the app producing audio?"
                 return
             }
@@ -135,15 +146,11 @@ final class Phase1DebugViewModel: ObservableObject {
                 didInstallRecordingTap = (outputFile != nil)
             }
 
-            // Step 3: controller.start off the main actor (HAL latency +
-            // permission prompt). Cleanup on failure unwinds the recording
-            // tap so a retry doesn't re-install a tap on the same bus
-            // (AVAudioEngine forbids that and asserts).
+            // Step 3: controller.start on main. controller.start calls
+            // configureEngineInput which mutates engine.inputNode.audioUnit;
+            // staying on main keeps AVAudioEngine touches single-threaded.
             do {
-                let startEngine = engine
-                try await Task.detached(priority: .userInitiated) {
-                    try captureController.start(source: source, into: startEngine)
-                }.value
+                try controller.start(source: source, into: engine)
             } catch {
                 if didInstallRecordingTap { removeRecordingTap() }
                 applyStartError(error)
@@ -151,17 +158,15 @@ final class Phase1DebugViewModel: ObservableObject {
             }
 
             // Step 4: engine wiring + start on main. If engine.start() throws,
-            // roll back the controller (off main) and remove the recording
-            // tap so resources don't leak past the failed start.
+            // roll back the controller and remove the recording tap so
+            // resources don't leak past the failed start.
             do {
                 let inputFormat = engine.inputNode.outputFormat(forBus: 0)
                 engine.connect(engine.inputNode, to: engine.mainMixerNode, format: inputFormat)
                 engine.connect(engine.mainMixerNode, to: engine.outputNode, format: inputFormat)
                 try engine.start()
             } catch {
-                _ = try? await Task.detached(priority: .userInitiated) {
-                    try captureController.stop()
-                }.value
+                try? controller.stop()
                 if didInstallRecordingTap { removeRecordingTap() }
                 applyStartError(error)
             }
@@ -169,22 +174,26 @@ final class Phase1DebugViewModel: ObservableObject {
     }
 
     /// Apply a typed or untyped start error to the published status.
+    /// `isPermissionDenied` is set exactly once per call: `true` only for
+    /// `.permissionDenied`, otherwise `false`. This avoids the stale-flag
+    /// bug where the permission link could remain visible after an
+    /// unrelated failure.
     private func applyStartError(_ error: Error) {
         if let captureError = error as? CaptureError {
             statusText = userMessage(for: captureError)
             isPermissionDenied = (captureError == .permissionDenied)
         } else {
+            isPermissionDenied = false
             statusText = "Unexpected error: \(error.localizedDescription)"
         }
     }
 
     /// Stop the current capture and clean up the engine.
     ///
-    /// Engine teardown runs on main (AVFoundation guidance); `controller.stop()`
-    /// hops off the main actor because the HAL teardown calls can briefly
-    /// block.
+    /// Runs on the main actor because `controller.stop()` internally calls
+    /// `resetEngineInput`, which mutates `engine.inputNode.audioUnit`.
+    /// AVAudioEngine teardown is single-threaded by AVFoundation guidance.
     func stop() {
-        let captureController = controller
         Task {
             engine.stop()
             engine.disconnectNodeOutput(engine.inputNode)
@@ -192,9 +201,7 @@ final class Phase1DebugViewModel: ObservableObject {
             removeRecordingTap()
 
             do {
-                try await Task.detached(priority: .userInitiated) {
-                    try captureController.stop()
-                }.value
+                try controller.stop()
             } catch let error as CaptureError {
                 statusText = userMessage(for: error)
             } catch {
