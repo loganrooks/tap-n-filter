@@ -342,17 +342,25 @@ public final class AppViewModel: ObservableObject {
         // Re-resolve the source from the live HAL list so the audioProcessID
         // we use is fresh. Match by PID first — that's what the picker keys on
         // and what uniquely identifies the running process. Fall back to
-        // bundleIdentifier only if the PID is gone (e.g. the source app was
-        // killed and relaunched between selection and start), so we still do
-        // something sensible rather than refusing to start.
+        // bundleIdentifier only if the PID is gone AND the saved source had a
+        // non-empty bundle ID (e.g. the source app was killed and relaunched
+        // between selection and start). Without the non-empty guard, a saved
+        // source with nil bundleIdentifier (CoreAudio processes without an
+        // owning app bundle) would match the first unrelated candidate that
+        // also has nil — capturing the wrong process silently.
         let resolvedSource: CaptureSource
         do {
             let candidates = try await Task.detached(priority: .userInitiated) { [capture] in
                 try capture.availableSources()
             }.value
-            let match = candidates.first(where: { $0.pid == source.pid })
-                ?? candidates.first(where: { $0.bundleIdentifier == source.bundleIdentifier })
-            guard let match else {
+            let matchByPID = candidates.first(where: { $0.pid == source.pid })
+            let matchByBundleID: CaptureSource?
+            if let bundleID = source.bundleIdentifier, !bundleID.isEmpty {
+                matchByBundleID = candidates.first(where: { $0.bundleIdentifier == bundleID })
+            } else {
+                matchByBundleID = nil
+            }
+            guard let match = matchByPID ?? matchByBundleID else {
                 lastError = .capture(.sourceNotFound(source.pid))
                 return
             }
