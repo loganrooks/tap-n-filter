@@ -159,16 +159,28 @@ final class Phase1DebugViewModel: ObservableObject {
 
             // Step 4: engine wiring + start on main. If engine.start() throws,
             // roll back the controller and remove the recording tap so
-            // resources don't leak past the failed start.
+            // resources don't leak past the failed start. A rollback that
+            // also throws is surfaced to the user — silently swallowing it
+            // hides leaked tap/aggregate-device resources.
             do {
                 let inputFormat = engine.inputNode.outputFormat(forBus: 0)
                 engine.connect(engine.inputNode, to: engine.mainMixerNode, format: inputFormat)
                 engine.connect(engine.mainMixerNode, to: engine.outputNode, format: inputFormat)
                 try engine.start()
             } catch {
-                try? controller.stop()
+                var rollbackError: Error?
+                do {
+                    try controller.stop()
+                } catch {
+                    rollbackError = error
+                }
                 if didInstallRecordingTap { removeRecordingTap() }
-                applyStartError(error)
+                if let rollbackError {
+                    isPermissionDenied = false
+                    statusText = "Engine start failed (\(error.localizedDescription)); rollback also failed (\(rollbackError.localizedDescription)). HAL resources may be leaked — restart the app."
+                } else {
+                    applyStartError(error)
+                }
             }
         }
     }

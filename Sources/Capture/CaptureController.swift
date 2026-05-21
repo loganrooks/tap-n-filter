@@ -48,7 +48,14 @@ public final class CaptureController: CaptureControllerProtocol, @unchecked Send
     // MARK: Collaborators
 
     private let coreAudio: CoreAudioInterface
-    private let lock = NSLock()
+    /// Recursive so a synchronous Combine subscriber that calls back into
+    /// `state` (or even `start`/`stop` — unwise but not catastrophic) cannot
+    /// deadlock by re-acquiring the lock on the same thread. The cost is the
+    /// usual NSRecursiveLock overhead; the alternative (release lock before
+    /// publishing) opens a race window where another thread can validate
+    /// state against a value we've already decided to mutate. Recursive
+    /// acquisition is the simpler robust choice.
+    private let lock = NSRecursiveLock()
 
     /// Currently active resources, set during `running` and cleared during
     /// `stopping`. Held under `lock` because the controller may be touched
