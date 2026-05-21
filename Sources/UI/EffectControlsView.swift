@@ -227,6 +227,17 @@ private struct ParameterSlider: View {
             cancellable?.cancel()
             cancellable = nil
         }
+        // Resync `liveValue` from the latest `initialValue` whenever the
+        // parent passes a new one. Without this, `@State` seeds the slider
+        // once at view-identity creation and a preset load (or any
+        // programmatic parameter write that bypasses the slider's own set)
+        // would leave the thumb stuck at the prior value even as the
+        // underlying node moves. The parent rebuilds `initialValue` from
+        // `currentValue(for:)` on each body evaluation, so a change here
+        // means the node actually moved.
+        .onChange(of: initialValue) { _, newValue in
+            liveValue = newValue
+        }
     }
 
     private func format(_ value: Float) -> String {
