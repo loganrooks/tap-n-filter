@@ -175,23 +175,25 @@ final class Phase1DebugViewModel: ObservableObject {
                     rollbackError = error
                 }
                 if didInstallRecordingTap { removeRecordingTap() }
-                if let rollbackError {
-                    // controller.stop() emitted .stopping then .idle through
-                    // statePublisher, which delivers on main via
-                    // `.receive(on: DispatchQueue.main)`. Those events are
-                    // still queued at this point and would overwrite the
-                    // compound failure message via `apply(_:)` if we set
-                    // statusText synchronously. Defer the final assignment
-                    // so it runs after the queued state updates.
-                    let primary = error.localizedDescription
-                    let secondary = rollbackError.localizedDescription
-                    DispatchQueue.main.async { [weak self] in
-                        guard let self else { return }
+                // controller.stop() emits .stopping then .idle through
+                // statePublisher, which delivers on main via
+                // `.receive(on: DispatchQueue.main)`. Those events are
+                // still queued at this point and would overwrite any
+                // failure message via `apply(_:)` if we set it
+                // synchronously here. Defer BOTH branches so the final
+                // assignment runs after the queued state updates — the
+                // success-rollback branch has the same race as the
+                // failed-rollback branch.
+                let primary = error.localizedDescription
+                let secondary = rollbackError?.localizedDescription
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    if let secondary {
                         self.isPermissionDenied = false
                         self.statusText = "Engine start failed (\(primary)); rollback also failed (\(secondary)). HAL resources may be leaked — restart the app."
+                    } else {
+                        self.applyStartError(error)
                     }
-                } else {
-                    applyStartError(error)
                 }
             }
         }
