@@ -91,47 +91,116 @@ final class Phase1DebugViewModel: ObservableObject {
     /// Enumerates available sources, finds the first whose `bundleIdentifier`
     /// matches `bundleID`, and calls `controller.start(source:into:)`. If no
     /// match is found the status line reflects the failure.
+    ///
+    /// Source enumeration hops off the main actor via `Task.detached` so the
+    /// HAL's `kAudioHardwarePropertyProcessObjectList` lookup doesn't stall
+    /// the menu bar. `controller.start(source:into:)` and `engine.start()`
+    /// stay on the main actor because `controller.start` calls into
+    /// `configureEngineInput`, which mutates `engine.inputNode.audioUnit` —
+    /// AVAudioEngine is not Sendable, and AVFoundation guidance is to
+    /// configure the engine serially on a single thread.
+    ///
+    /// The codex P2 "run blocking capture startup off main actor" finding
+    /// is partly deferred: enumeration moves off main here; the permission
+    /// prompt is a system modal so the brief UI stall while it appears is
+    /// acceptable. Phase 3's real UI will split HAL prep from engine binding
+    /// so the full pipeline can run off main.
     func start() {
+        let bundleIDSnapshot = bundleID
+        let shouldRecord = recordOutput
+        let captureController = controller
+
         Task {
+            // Step 1: enumerate sources off the main actor.
+            let enumeration: Result<[CaptureSource], Error>
             do {
-                let sources = try controller.availableSources()
-                guard let source = sources.first(where: { $0.bundleIdentifier == bundleID }) else {
-                    // Surface a legible error — don't leave the user guessing.
-                    statusText = "No audio source found for \"\(bundleID)\". Is the app producing audio?"
-                    return
-                }
+                let sources = try await Task.detached(priority: .userInitiated) {
+                    try captureController.availableSources()
+                }.value
+                enumeration = .success(sources)
+            } catch {
+                enumeration = .failure(error)
+            }
 
-                if recordOutput {
-                    installRecordingTap()
-                }
+            let sources: [CaptureSource]
+            switch enumeration {
+            case .success(let result):
+                sources = result
+            case .failure(let error):
+                applyStartError(error)
+                return
+            }
 
+            guard let source = sources.first(where: { $0.bundleIdentifier == bundleIDSnapshot }) else {
+                // Reset isPermissionDenied so stale red status from a prior
+                // failure doesn't survive an unrelated lookup miss.
+                isPermissionDenied = false
+                statusText = "No audio source found for \"\(bundleIDSnapshot)\". Is the app producing audio?"
+                return
+            }
+
+            // Step 2: install recording tap on main (engine touch).
+            var didInstallRecordingTap = false
+            if shouldRecord {
+                installRecordingTap()
+                didInstallRecordingTap = (outputFile != nil)
+            }
+
+            // Step 3: controller.start on main. controller.start calls
+            // configureEngineInput which mutates engine.inputNode.audioUnit;
+            // staying on main keeps AVAudioEngine touches single-threaded.
+            do {
                 try controller.start(source: source, into: engine)
+            } catch {
+                if didInstallRecordingTap { removeRecordingTap() }
+                applyStartError(error)
+                return
+            }
 
-                // Connect input → mixer → output and start the engine.
-                // The connections must be made after start() wires the engine's
-                // input node to the aggregate device.
+            // Step 4: engine wiring + start on main. If engine.start() throws,
+            // roll back the controller and remove the recording tap so
+            // resources don't leak past the failed start.
+            do {
                 let inputFormat = engine.inputNode.outputFormat(forBus: 0)
                 engine.connect(engine.inputNode, to: engine.mainMixerNode, format: inputFormat)
                 engine.connect(engine.mainMixerNode, to: engine.outputNode, format: inputFormat)
                 try engine.start()
-
-            } catch let error as CaptureError {
-                statusText = userMessage(for: error)
-                isPermissionDenied = (error == .permissionDenied)
             } catch {
-                statusText = "Unexpected error: \(error.localizedDescription)"
+                try? controller.stop()
+                if didInstallRecordingTap { removeRecordingTap() }
+                applyStartError(error)
             }
         }
     }
 
+    /// Apply a typed or untyped start error to the published status.
+    /// `isPermissionDenied` is set exactly once per call: `true` only for
+    /// `.permissionDenied`, otherwise `false`. This avoids the stale-flag
+    /// bug where the permission link could remain visible after an
+    /// unrelated failure.
+    private func applyStartError(_ error: Error) {
+        if let captureError = error as? CaptureError {
+            statusText = userMessage(for: captureError)
+            isPermissionDenied = (captureError == .permissionDenied)
+        } else {
+            isPermissionDenied = false
+            statusText = "Unexpected error: \(error.localizedDescription)"
+        }
+    }
+
     /// Stop the current capture and clean up the engine.
+    ///
+    /// Runs on the main actor because `controller.stop()` internally calls
+    /// `resetEngineInput`, which mutates `engine.inputNode.audioUnit`.
+    /// AVAudioEngine teardown is single-threaded by AVFoundation guidance.
     func stop() {
         Task {
+            engine.stop()
+            engine.disconnectNodeOutput(engine.inputNode)
+            engine.disconnectNodeOutput(engine.mainMixerNode)
+            removeRecordingTap()
+
             do {
-                engine.stop()
-                engine.disconnectNodeOutput(engine.inputNode)
-                engine.disconnectNodeOutput(engine.mainMixerNode)
-                removeRecordingTap()
                 try controller.stop()
             } catch let error as CaptureError {
                 statusText = userMessage(for: error)
@@ -191,6 +260,10 @@ final class Phase1DebugViewModel: ObservableObject {
             return "macOS 14.4 or later is required."
         case .captureInterrupted(let reason):
             return "Capture interrupted: \(reason)"
+        case .alreadyRunning(let currentSource):
+            return "Already capturing \(currentSource.displayName). Stop the current capture before starting a new one."
+        case .transitionInProgress:
+            return "Another start/stop is in progress. Please retry in a moment."
         }
     }
 

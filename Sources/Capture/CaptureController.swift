@@ -22,7 +22,14 @@ import Foundation
 /// The Core Audio HAL calls are delegated to a `CoreAudioInterface`. The
 /// production instance uses `RealCoreAudioInterface`; tests inject
 /// `FakeCoreAudioInterface`.
-public final class CaptureController: CaptureControllerProtocol {
+public final class CaptureController: CaptureControllerProtocol, @unchecked Sendable {
+    // The controller carries its own NSLock-based thread safety, so
+    // @unchecked Sendable is the truthful annotation. The audit covers two
+    // concerns:
+    //
+    //   - `subject.value` reads are atomic (CurrentValueSubject is documented
+    //     to be safe from any thread).
+    //   - All `active` reads/writes are guarded by `lock`.
 
     // MARK: State
 
@@ -110,16 +117,44 @@ public final class CaptureController: CaptureControllerProtocol {
     /// failure, transitions to `failed(error)`, unwinds any partially-created
     /// resources, and re-throws. The engine is not started here — that
     /// remains the caller's responsibility, after wiring downstream nodes.
+    ///
+    /// Concurrent-call behaviour:
+    ///
+    /// - During `.running` with the **same** source and engine: idempotent
+    ///   no-op return.
+    /// - During `.running` with a different source or engine: throws
+    ///   `.alreadyRunning(currentSource:)`.
+    /// - During `.starting` or `.stopping`: throws `.transitionInProgress`.
     public func start(source: CaptureSource, into engine: AVAudioEngine) throws {
+        // Phase 1: atomic validation + transition mark. Holding the lock
+        // across `subject.send(.starting)` is intentional — it ensures no
+        // other thread can see `.idle` and race past the guard. Internal
+        // sinks (test recorders) do not re-enter; external sinks should not
+        // either, but if they do, switching to NSRecursiveLock is the
+        // controlled escape hatch.
         lock.lock()
-        if case .running = subject.value {
+        let current = subject.value
+        switch current {
+        case .running(let activeSource):
+            // Compare engine identity (and tolerate a weak-reference that
+            // has been deallocated by treating it as a permission to bind
+            // to the new engine).
+            let sameSource = activeSource == source
+            let activeEngine = active?.engine
+            let sameEngine = activeEngine === engine
             lock.unlock()
-            // Idempotent: caller may re-issue start with the same source.
-            return
+            if sameSource && sameEngine {
+                return // idempotent
+            }
+            throw CaptureError.alreadyRunning(currentSource: activeSource)
+        case .starting, .stopping:
+            lock.unlock()
+            throw CaptureError.transitionInProgress
+        case .idle, .failed:
+            break
         }
+        subject.send(.starting)
         lock.unlock()
-
-        publish(.starting)
 
         do {
             // Verify the HAL still recognises this source. The audioProcessID
@@ -170,17 +205,22 @@ public final class CaptureController: CaptureControllerProtocol {
                 aggregateDeviceID: aggregateID,
                 engine: engine
             )
+            subject.send(.running(source: source))
             lock.unlock()
-
-            publish(.running(source: source))
         } catch let error as CaptureError {
-            publish(.failed(error))
+            lock.lock()
+            active = nil
+            subject.send(.failed(error))
+            lock.unlock()
             throw error
         } catch {
             let wrapped = CaptureError.engineConfigurationFailed(
                 "Unexpected error during start: \(error)"
             )
-            publish(.failed(wrapped))
+            lock.lock()
+            active = nil
+            subject.send(.failed(wrapped))
+            lock.unlock()
             throw wrapped
         }
     }
@@ -195,50 +235,89 @@ public final class CaptureController: CaptureControllerProtocol {
     /// of `start`. Cleanup errors are swallowed after the first because the
     /// goal is "leave no orphaned resources" rather than "report every
     /// status code".
+    ///
+    /// Concurrent-call behaviour:
+    ///
+    /// - During `.starting` or `.stopping`: throws `.transitionInProgress`
+    ///   rather than racing the in-flight transition. `active` is preserved
+    ///   throughout teardown so a concurrent observer never sees the
+    ///   "active is nil but state is running/stopping" inconsistency.
     public func stop() throws {
         lock.lock()
         let current = subject.value
-        let resources = active
-        active = nil
-        lock.unlock()
-
         switch current {
         case .idle:
+            lock.unlock()
             return
         case .failed:
-            // Reset to idle without throwing — the failure was already
-            // surfaced to the caller. Best-effort teardown if we somehow
-            // still hold resources.
+            let resources = active
+            active = nil
+            subject.send(.idle)
+            lock.unlock()
             if let resources {
                 _ = performTearDown(resources)
             }
-            publish(.idle)
             return
-        case .running, .starting, .stopping:
-            break
+        case .starting, .stopping:
+            lock.unlock()
+            throw CaptureError.transitionInProgress
+        case .running:
+            // Keep `active` set during teardown so concurrent observers see
+            // a consistent (state, resources) pair. We copy the reference
+            // for the actual HAL calls, which happen outside the lock.
+            guard let resources = active else {
+                // .running with no active is an internal invariant violation;
+                // defensive recovery instead of crashing.
+                active = nil
+                subject.send(.idle)
+                lock.unlock()
+                return
+            }
+            subject.send(.stopping)
+            lock.unlock()
+
+            do {
+                try tearDown(resources)
+                lock.lock()
+                active = nil
+                subject.send(.idle)
+                lock.unlock()
+            } catch let error as CaptureError {
+                // Even on teardown error, return to idle so a fresh start can
+                // be attempted. Resources may already be partially released
+                // by `performTearDown`; reset `active` to avoid double-free.
+                lock.lock()
+                active = nil
+                subject.send(.idle)
+                lock.unlock()
+                throw error
+            } catch {
+                lock.lock()
+                active = nil
+                subject.send(.idle)
+                lock.unlock()
+                throw CaptureError.engineConfigurationFailed(
+                    "Unexpected error during stop: \(error)"
+                )
+            }
         }
+    }
 
-        publish(.stopping)
+    // MARK: Deinit cleanup
 
-        guard let resources else {
-            // Nothing to do; should not happen in practice but is harmless.
-            publish(.idle)
-            return
-        }
-
-        do {
-            try tearDown(resources)
-            publish(.idle)
-        } catch let error as CaptureError {
-            // Even on teardown error, return to idle so a fresh start can be
-            // attempted. The error is reported but state does not get stuck.
-            publish(.idle)
-            throw error
-        } catch {
-            publish(.idle)
-            throw CaptureError.engineConfigurationFailed(
-                "Unexpected error during stop: \(error)"
-            )
+    /// Best-effort teardown when the controller is released while still
+    /// holding HAL resources — typically because the owning view model was
+    /// torn down without calling `stop()`. Without this, the tap and
+    /// aggregate device would persist until process exit (and the aggregate
+    /// device might survive even that).
+    ///
+    /// We do not take `lock` here: by definition no other strong references
+    /// to `self` exist when `deinit` runs, so the only possible contender is
+    /// a sink holding a `weak self` — those would observe `self` as nil
+    /// before deinit completes, and would not call back into the controller.
+    deinit {
+        if let resources = active {
+            _ = performTearDown(resources)
         }
     }
 
@@ -279,11 +358,5 @@ public final class CaptureController: CaptureControllerProtocol {
         if let error = performTearDown(resources) {
             throw error
         }
-    }
-
-    // MARK: State publishing
-
-    private func publish(_ newState: CaptureState) {
-        subject.send(newState)
     }
 }

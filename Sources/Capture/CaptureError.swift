@@ -32,4 +32,17 @@ public enum CaptureError: Error, Equatable, Sendable {
     /// Capture stopped unexpectedly while running — for example the source
     /// process exited or the output device was unplugged.
     case captureInterrupted(reason: String)
+
+    /// `start(...)` was called while a capture is already running against a
+    /// different source or `AVAudioEngine`. The active source is included so
+    /// the caller can compose a useful diagnostic. Callers that want to switch
+    /// sources must `stop()` first.
+    case alreadyRunning(currentSource: CaptureSource)
+
+    /// `start(...)` or `stop()` was called while another lifecycle transition
+    /// (an in-flight `start` or `stop`) is still in progress. Retry after the
+    /// publisher reports `.idle` or `.running`. Concurrent calls returning
+    /// this error is the controller's defense against overlapping state
+    /// machines.
+    case transitionInProgress
 }
