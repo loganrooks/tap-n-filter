@@ -49,9 +49,9 @@ Save the current chain as a preset via the File menu. Load a preset via the same
 A starter set of presets ships with the app:
 
 - **distant-engines** — heavy lowpass at 800Hz, large hall reverb at 70% wet. The original ambient-engine-noise preset that drove the project.
-- **submerged** — lowpass at 500Hz, plate reverb, slight modulation.
-- **next-room** — gentle lowpass at 2.5kHz, small room reverb at 30% wet.
 - **dry** — passthrough with a small gain trim. Useful as a baseline.
+
+Additional presets (`submerged`, `next-room`) were considered for V1 and deferred to V0.2; see `CHANGELOG.md`.
 
 ## For developers
 
@@ -69,16 +69,19 @@ A future plugin format will let third-party developers ship effects as separate 
 ```sh
 git clone https://github.com/loganrooks/tap-n-filter.git
 cd tap-n-filter
-open Package.swift  # opens in Xcode
+swift build -c release
 ```
 
-You'll need Xcode 16 or later and macOS 14.4 SDK.
+You need Swift 5.10+ and the macOS 14.4 SDK. A full Xcode install is required to run the test suite (`swift test`); Command Line Tools alone are enough for `swift build`. See `docs/decisions/ADR-009-spm-only-project-structure.md` for the SPM-only layout rationale.
 
-To build a release `.app`:
+To build a distributable `.app` bundle and `.dmg`:
 
 ```sh
-xcodebuild -scheme tap-n-filter -configuration Release archive
+./Build/bundle.sh        # produces Build/Release/tap-n-filter.app
+./Build/package-dmg.sh   # produces Build/Release/tap-n-filter-v0.1.0.dmg (after sign + notarize)
 ```
+
+The signing and notarization scripts live under `Build/` and are exercised during Phase 4.
 
 ## Project governance
 

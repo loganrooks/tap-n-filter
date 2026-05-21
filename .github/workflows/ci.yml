@@ -20,26 +20,16 @@ jobs:
         with:
           xcode-version: latest-stable
 
-      - name: Show Xcode version
-        run: xcodebuild -version
-
-      - name: Build (Debug)
+      - name: Show toolchain versions
         run: |
-          set -o pipefail
-          xcodebuild \
-            -scheme tap-n-filter \
-            -configuration Debug \
-            -destination 'platform=macOS' \
-            build | xcpretty
+          xcodebuild -version
+          swift --version
+
+      - name: Build (Swift Package Manager)
+        run: swift build -c debug
 
       - name: Test
-        run: |
-          set -o pipefail
-          xcodebuild \
-            -scheme tap-n-filter \
-            -configuration Debug \
-            -destination 'platform=macOS' \
-            test | xcpretty
+        run: swift test -c debug --enable-code-coverage
 
   # Integration tests are gated behind a workflow_dispatch trigger because
   # they require real Core Audio devices and are slow on the CI runner.
@@ -61,10 +51,4 @@ jobs:
       - name: Run integration tests
         env:
           RUN_INTEGRATION_TESTS: "1"
-        run: |
-          set -o pipefail
-          xcodebuild \
-            -scheme tap-n-filter-IntegrationTests \
-            -configuration Debug \
-            -destination 'platform=macOS' \
-            test | xcpretty
+        run: swift test -c debug --filter CaptureIntegrationTests
