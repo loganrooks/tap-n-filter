@@ -429,6 +429,82 @@ the maintainer to actually go post a verdict block on the thread.
 
 ---
 
+## Running Codex review without Codex Cloud (the `openai/codex-action` path)
+
+Codex Cloud's PR review feature requires per-repo environment setup via
+`chatgpt.com/codex/cloud/settings/environments`. That setup is UI-only,
+opaque, and known to fail silently when the environment is disconnected or
+when the trial expires. The journal tool ships an alternative: a GitHub
+Actions workflow that runs Codex review through `openai/codex-action` using
+only an `OPENAI_API_KEY` repo secret.
+
+### Why use this instead of Codex Cloud
+
+- **No UI dependency** — adding/removing the integration is a YAML edit.
+- **No environment-disconnect failures** — the action runs every job from
+  scratch.
+- **Full prompt control** — `tools/review-journal/install/codex-review-prompt.md`
+  is the prompt; edit it to match your project's conventions.
+- **Structured output** — Codex returns JSON matching
+  `codex-review-schema.json` so the journal parses severity / path / line
+  cleanly without scraping prose.
+- **Direct cost basis** — billed against OpenAI API usage rather than the
+  Codex Plus subscription pool, which makes spend predictable.
+
+### Setup (one-time, per repo)
+
+1. Add `OPENAI_API_KEY` as a repo secret (Settings → Secrets and variables → Actions).
+2. Copy the workflow into `.github/workflows/`:
+
+   ```bash
+   cp tools/review-journal/install/codex-action-review.yml .github/workflows/codex-review.yml
+   ```
+
+3. (Optional) Edit the prompt at
+   `tools/review-journal/install/codex-review-prompt.md` to match your repo's
+   conventions.
+4. Register a journal profile for the GitHub identity codex-action posts
+   under. The shipped tap-n-filter config has one for `github-actions[bot]`
+   that you can copy.
+
+### What it posts
+
+The workflow runs on PR open / synchronize / ready-for-review and on
+`@codex review` comments. It checks out the PR's merge commit, asks Codex
+to review the diff against `BASE_SHA..HEAD_SHA`, and posts the structured
+output as a real PR review (inline comments per finding, summary as the
+review body). Each inline comment starts with `**P0**` / `**P1**` / `**P2**`
+/ `**P3**` so the journal's severity-extraction works.
+
+### Limitations
+
+- **Fork PRs do not have secrets** — GitHub's standard `pull_request`
+  trigger does not expose `OPENAI_API_KEY` to forks. This is intentional
+  security; if you want fork-PR reviews you would need `pull_request_target`
+  (which runs in the base-branch context with full secret access on attacker
+  code — only do this with airtight prompt hardening + sandboxing).
+- **Model choice is currently Codex's default** — the workflow leaves
+  `model` and `effort` unset. Pin a cheaper model for cost control on
+  high-traffic repos.
+- **The bot identity is `github-actions[bot]`** — same as every other
+  workflow in the repo. Journal disambiguates by content (review body has a
+  `🤖 Codex review (via openai/codex-action; ...)` header). If you want a
+  distinct identity, create a dedicated GitHub App and post via its token
+  instead of `github.token`.
+
+### Comparison: Codex Cloud vs codex-action
+
+| | Codex Cloud (`@codex review`) | `openai/codex-action` |
+|---|---|---|
+| Setup surface | chatgpt.com UI clickthrough per repo | YAML + repo secret |
+| Posts as | `chatgpt-codex-connector[bot]` | `github-actions[bot]` |
+| Trigger | PR open / `@codex review` comment | Whatever `on:` you configure |
+| Cost basis | Codex Plus subscription pool | Direct OpenAI API usage |
+| Subject to env-disconnect bug | Yes (see openai/codex#20093) | No |
+| Customization | Limited to Codex Cloud's settings | Full prompt + schema |
+| Audit trail | Codex Cloud workspace | Your repo's Actions runs |
+| Output shape | Free-form prose | JSON-schema-validated |
+
 ## Integration with larger systems
 
 The journal's output shape is intentionally simple JSON. Downstream agentic
