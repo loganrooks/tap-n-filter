@@ -1,11 +1,15 @@
 import SwiftUI
 import ViewModel
 
-/// Root view shown in the menubar dropdown.
+/// Root view shown in the menu bar dropdown.
 ///
 /// Composed of `HeaderView`, `SourcePickerView`, `ChainEditorView`, and
-/// `FooterView`. Width is fixed at 320 pt per `docs/specs/ui.md`. Height is
-/// dynamic, capped at 600 pt with a `ScrollView` inside the chain editor.
+/// `FooterView`, with an optional `DebugPanel` rendered below the footer
+/// when `viewModel.showDebugPanel` is true (toggled via the ladybug button
+/// in `HeaderView`). Width is fixed at 320 pt per `docs/specs/ui.md`.
+/// Height is dynamic, capped at 600 pt by default and lifted to 820 pt
+/// while the debug panel is shown to keep the log readable without
+/// pushing the chain editor off-screen.
 public struct ControlPanelView: View {
 
     /// View model injected via `@EnvironmentObject` from the scene root.
