@@ -1,0 +1,88 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "reviewThreads": {
+          "pageInfo": {"hasNextPage": false, "endCursor": null},
+          "nodes": [
+            {
+              "id": "PRRT_block_ok",
+              "isResolved": true,
+              "isOutdated": false,
+              "path": "Sources/Foo.swift",
+              "line": 10,
+              "comments": {
+                "nodes": [
+                  {
+                    "id": "PRRC_finding_1",
+                    "author": {"login": "coderabbitai"},
+                    "body": "Suggestion: rename foo to bar for clarity.",
+                    "createdAt": "2026-05-21T20:00:00Z",
+                    "url": "https://github.com/test/repo/pull/1#discussion_r1"
+                  },
+                  {
+                    "id": "PRRC_reply_1",
+                    "author": {"login": "loganrooks"},
+                    "body": "```review-verdict\nverdict: ACCEPTED\ncommit: aaa1111\nfinding_category: style/naming\nreviewer: coderabbitai\nnotes: applied verbatim.\n```",
+                    "createdAt": "2026-05-21T21:00:00Z",
+                    "url": "https://github.com/test/repo/pull/1#discussion_r2"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "PRRT_block_missing",
+              "isResolved": true,
+              "isOutdated": false,
+              "path": "Sources/Bar.swift",
+              "line": 20,
+              "comments": {
+                "nodes": [
+                  {
+                    "id": "PRRC_finding_2",
+                    "author": {"login": "chatgpt-codex-connector"},
+                    "body": "Major: this can crash on nil input.",
+                    "createdAt": "2026-05-21T20:10:00Z",
+                    "url": "https://github.com/test/repo/pull/1#discussion_r3"
+                  },
+                  {
+                    "id": "PRRC_reply_2",
+                    "author": {"login": "loganrooks"},
+                    "body": "Fixed in bbb2222 by adding a guard.",
+                    "createdAt": "2026-05-21T21:10:00Z",
+                    "url": "https://github.com/test/repo/pull/1#discussion_r4"
+                  }
+                ]
+              }
+            },
+            {
+              "id": "PRRT_unresolved_with_block",
+              "isResolved": false,
+              "isOutdated": false,
+              "path": "Sources/Baz.swift",
+              "line": 30,
+              "comments": {
+                "nodes": [
+                  {
+                    "id": "PRRC_finding_3",
+                    "author": {"login": "coderabbitai"},
+                    "body": "Minor: missing docstring.",
+                    "createdAt": "2026-05-21T20:20:00Z",
+                    "url": "https://github.com/test/repo/pull/1#discussion_r5"
+                  },
+                  {
+                    "id": "PRRC_reply_3",
+                    "author": {"login": "loganrooks"},
+                    "body": "```review-verdict\nverdict: DEFERRED\nreviewer: coderabbitai\nnotes: tracked separately in U-099.\n```",
+                    "createdAt": "2026-05-21T21:20:00Z",
+                    "url": "https://github.com/test/repo/pull/1#discussion_r6"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
