@@ -159,7 +159,6 @@ public final class AppViewModel: ObservableObject {
     private var stateCancellable: AnyCancellable?
     private var sourceRefreshTimer: Timer?
     private var persistenceWorkItem: DispatchWorkItem?
-    private var parameterThrottleByKey: [String: TimeInterval] = [:]
     /// In-flight source refresh. Tracked so a new timer tick doesn't queue
     /// a second concurrent enumeration; HAL queries that overlap don't help
     /// the UI but do compete for the same lock inside the controller.
@@ -169,10 +168,6 @@ public final class AppViewModel: ObservableObject {
     /// queueing N concurrent `powerOff()` tasks, each of which would call
     /// `capture.stop()` and race against the controller's state machine.
     private var sourceChangeShutdownTask: Task<Void, Never>?
-
-    /// Minimum interval between consecutive `updateParameter` writes for the
-    /// same (nodeID, paramID) pair. 30 Hz per `docs/specs/ui.md`.
-    private static let parameterThrottleInterval: TimeInterval = 1.0 / 30.0
 
     /// Debounce interval for `UserDefaults` writes; 200 ms keeps slider drags
     /// from hammering the disk.
@@ -528,18 +523,16 @@ public final class AppViewModel: ObservableObject {
         }
     }
 
-    /// Update a single parameter, throttling consecutive writes for the same
-    /// (nodeID, paramID) pair at 30 Hz to avoid flooding the AVAudioUnit's
-    /// parameter setter.
+    /// Update a single parameter on a node.
+    ///
+    /// This method does not throttle. Continuous UI controls (sliders, knobs)
+    /// throttle their writes upstream via Combine before calling here; see
+    /// `EffectControlsView.ParameterSlider` for the 30 Hz `throttle(...)` that
+    /// keeps the AVAudioUnit parameter setter from being hammered. Discrete
+    /// controls (Stepper, Picker) and one-shot loads (preset restore) don't
+    /// need throttling. A future high-frequency caller must own its own
+    /// throttling at the input layer.
     public func updateParameter(nodeID: UUID, paramID: String, value: Float) {
-        let key = "\(nodeID.uuidString)#\(paramID)"
-        let now = Date().timeIntervalSince1970
-        if let last = parameterThrottleByKey[key],
-           now - last < Self.parameterThrottleInterval
-        {
-            return
-        }
-        parameterThrottleByKey[key] = now
         guard let node = graph.nodes.first(where: { $0.id == nodeID }) else {
             lastError = .parameter("Unknown node \(nodeID).")
             return
