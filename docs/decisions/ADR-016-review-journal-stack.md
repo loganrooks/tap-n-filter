@@ -87,6 +87,44 @@ This design is what lets the tool adapt as the upstream review ecosystem evolves
 
 Two physically separate scripts duplicate the GraphQL fetcher, the config loader, and the JSON schema. Folding them into one module means there's one place to fix a bug in the shared path. The wrappers exist so the documented command surface (`sync-pr.sh 7`) reads naturally to a maintainer who isn't thinking about the implementation.
 
+## Future-shape considerations (the seeds this PR plants)
+
+The tool is built for tap-n-filter today, but several design choices anticipate larger uses:
+
+### 1. Schema versioning
+
+Every journal file and index file declares `schema_version`. The shipped version is `1.0`. The `validate` subcommand refuses unsupported majors. Additive fields (e.g., a future `effort_estimate` on each thread) are minor-bumps; on-disk-incompatible changes (e.g., restructuring `verdict_history`) are major-bumps with a migration script.
+
+### 2. Inference rules as data, not code
+
+Inference logic is a list of dicts in the config. The shipped `DEFAULT_INFERENCE_RULES` cover the patterns we observe today (CR `Addressed in commit X`, `Fixed in <sha>`, `Deferred per ADR-NNN`, `obsolete`, `duplicate`). A maintainer adds a new pattern — say, "Reverted in `<sha>` → `REJECTED_REGRESSION`" — by appending one entry to `.review-journal.json`. The code-level inference engine is generic; it does not know about specific reviewers' phrasings.
+
+This is the seam through which the tool adapts to bots that don't exist yet.
+
+### 3. Reviewer aliases
+
+A profile carries an `aliases: []` list so the same reviewer kind survives GitHub renames, marketplace-vs-app suffix variation, and human-vs-bot dual identity. The journal records the canonical login's `reviewer_kind`, not whichever variant happened to post the comment.
+
+### 4. `extras` map per thread
+
+Each thread record has an `extras: {}` map preserved across syncs. Downstream consumers — an agentic-devops router attaching `risk_surface`, a learning system attaching `embeddings_id`, a metrics consumer attaching `time_to_resolution_hours` — write into it without participating in the sync flow. The schema stays stable; the field is the extension point.
+
+### 5. Provenance (`verdict_history`, `verdict_refs`)
+
+`verdict_history` is an append-only log; transitions from `inferred` to `manual` (or any verdict-source change) append a timestamped entry. `verdict_refs: []` complements `verdict_commit` for cases where a disposition cites multiple commits, ADRs, U-log entries, or sibling threads. Both fields are scaffolding for an audit-aware downstream consumer; today's tap-n-filter workflow uses them lightly but the shape is there.
+
+### 6. Validate subcommand + atomic writes
+
+`review_journal.py validate <path>` catches schema violations introduced by hand-edits. Journal writes go through `tempfile.mkstemp + os.replace`, so concurrent runs (CI on two pushes in rapid succession) cannot leave a truncated file behind. Both are correctness affordances that don't matter in the single-developer case but become load-bearing as more consumers depend on the journal.
+
+### 7. Pluggable fetcher seam
+
+The fetch step is decoupled from the rest of the pipeline. Today's `--threads-from <file>` lets tests bypass the network; `gh api graphql` is the default; a future GitLab / Gitea / Bitbucket plugin would slot in at the same seam without touching the parser or the writer.
+
+### 8. Alignment with the AgenticOpsResearch corpus
+
+The `AgenticOpsResearch` design notes (`system-design/01-multi-provider-architecture.md`, `system-design/02-pr-review-taxonomy-and-router.md`) define a role / provider / lens vocabulary for a future multi-provider PR-review router. The journal's output shape — `reviewer`, `reviewer_kind`, `severity`, `category`, `verdict`, `extras` — is designed so a router can consume it as a per-reviewer-kind quality signal. The journal tool does not implement the router; it produces the data the router needs.
+
 ## Consequences
 
 - **Operational dependency surface is `python3` + `gh`.** The tool docs (`tools/review-journal/README.md`) state both as prerequisites. The `gh` CLI must be authenticated; the script doesn't manage credentials.

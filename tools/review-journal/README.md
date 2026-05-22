@@ -175,6 +175,7 @@ You can override any of them, or register a new reviewer entirely, in
     "my-house-static-analyzer[bot]": {
       "kind": "bot:static-analyzer",
       "display_name": "House Analyzer",
+      "aliases": ["my-house-analyzer", "house-analyzer-old[bot]"],
       "severity_patterns": [
         {"pattern": "(?i)\\b(CRITICAL|SEV0)\\b", "severity": "critical"},
         {"pattern": "(?i)\\b(WARN|SEV1)\\b", "severity": "warning"}
@@ -194,8 +195,10 @@ Profile fields:
 |-------------------------|----------------|---------|
 | `kind`                  | string         | Free-form taxonomy. Conventional values: `bot:agentic-llm`, `bot:static-analyzer`, `bot:author`, `human`. Stored on each thread record as `reviewer_kind`. |
 | `display_name`          | string         | Optional; shown in summaries. |
+| `aliases`               | `[string]`     | Additional logins that map to this profile. Handles bot renames, marketplace-vs-app suffix variants, and the same human posting under multiple identities. |
 | `severity_patterns`     | `[{pattern,severity}]` | Ordered list; first match wins. `pattern` is a Python regex run against the original finding body. `severity` is the value stored on the thread record. |
-| `auto_resolve_patterns` | `[string]`     | List of regexes. A match in any comment body triggers `ACCEPTED_MODIFIED` inference. First capture group (if present) is treated as the commit sha. |
+| `auto_resolve_patterns` | `[string]`     | Convenience shorthand for the common case where a bot self-closes a thread with `<some prose> commit X`. The match emits `ACCEPTED_MODIFIED` with the first capture group as the commit sha. For richer rules (other verdicts, ref captures, reviewer-scoping) use `inference_rules` instead. |
+| `inference_rules`       | `[rule]`       | Profile-scoped inference rules; see below. Run before global rules. |
 | `notes`                 | string         | Free text. |
 
 The default profiles cover:
@@ -205,8 +208,91 @@ The default profiles cover:
 - **`copilot-pull-request-reviewer[bot]`** — High / Medium / Low severity. Stub; refine once GH Copilot review is enabled and patterns are observed in practice.
 
 When `reviewer_profiles` is present in the config, entries deep-replace the
-defaults for the same login. Unknown logins fall back to a `human` profile
-with no severity extraction or auto-resolution.
+defaults for the same login. Unknown logins (not in any profile's `aliases`
+either) fall back to a `human` profile with no severity extraction or
+auto-resolution.
+
+### Inference rules (the generic engine)
+
+`auto_resolve_patterns` covers one common case (a bot self-closes with a
+commit). For anything else — `DEFERRED` via an ADR reference, `DUPLICATE`
+via a thread cite, `REJECTED_REGRESSION` via "reverted in X" — register an
+inference rule directly.
+
+A rule is a dict:
+
+```json
+{
+  "inference_rules": [
+    {
+      "name": "duplicate-of-thread",
+      "pattern": "(?i)duplicate of\\s+(PRRT_[A-Za-z0-9_-]+)",
+      "match_against": "all_bodies",
+      "verdict": "DUPLICATE",
+      "ref_group": 1,
+      "notes_template": "Inferred duplicate of {ref}."
+    },
+    {
+      "name": "regression-reverted",
+      "pattern": "(?i)reverted in\\s+([0-9a-f]{7,40})",
+      "verdict": "REJECTED_REGRESSION",
+      "commit_group": 1,
+      "notes_template": "Inferred regression; reverted in {commit}."
+    }
+  ]
+}
+```
+
+Rule fields:
+
+| Field                  | Type     | Purpose |
+|------------------------|----------|---------|
+| `name`                 | string   | Human label; appears in inferred notes for diagnosis. |
+| `pattern`              | string   | Python regex. Use inline `(?i)` for case-insensitivity (default-ON for the shipped rules but explicit in your custom rules). |
+| `match_against`        | string   | `all_bodies` (default), `original_only`, or `reply_only`. |
+| `verdict`              | string   | Any of the 8 verdict values. |
+| `commit_group`         | int      | Capture-group number whose match is recorded as `verdict_commit` and substituted as `{commit}` in `notes_template`. |
+| `ref_group`            | int      | Capture-group number for non-commit references (ADRs, U-logs, thread IDs). Substituted as `{ref}` in `notes_template`. |
+| `notes_template`       | string   | Free-form; supports `{commit}`, `{ref}`, `{match}` placeholders. |
+| `applies_to_reviewer`  | string   | If set, the rule only fires when the thread's reviewer matches this login (or one of its aliases). Omit for global rules. |
+
+Rule precedence (highest first):
+
+1. Profile `inference_rules`
+2. Profile `auto_resolve_patterns` (sugar for the common case)
+3. Repo-level `inference_rules` from `.review-journal.json`
+4. The shipped `DEFAULT_INFERENCE_RULES` (cr-range, fixed-in, deferred-per-ADR, obsolete, duplicate, etc.)
+
+A custom rule with the same name as a default rule does NOT replace the default — it adds to it, and the higher-precedence rule simply fires first.
+
+### Per-thread `extras` map
+
+Each thread record has an `extras: {}` map that downstream consumers can write
+into without participating in the sync flow. Use cases:
+
+- An agentic-devops router attaches `risk_surface`, `effort_estimate`, or
+  `router_confidence`.
+- A metrics consumer attaches `time_to_resolution_hours`,
+  `commits_per_thread`.
+- A learning system attaches `embeddings_id`, `cluster_id`, or
+  `learned_category`.
+
+The map is preserved across `sync-pr` / `extract-pr` runs; the tool never
+reads or overwrites it. The keys are entirely up to the consumer.
+
+### `verdict_history` provenance log
+
+Each thread record carries an append-only `verdict_history: []` log capturing
+state transitions. A new entry is appended whenever `verdict_source` or
+`verdict` changes (e.g., promotion from `inferred` to `manual`, or a
+re-inference that yields a different verdict). Entries are dicts:
+
+```json
+{"at": "2026-05-22T18:00:00Z", "source": "inferred", "verdict": "ACCEPTED_MODIFIED", "by": "tool"}
+```
+
+`verdict_refs: []` complements `verdict_commit` for cases where a disposition
+references multiple commits, ADRs, U-log entries, or other threads.
 
 ---
 
@@ -254,14 +340,34 @@ ad-hoc validation.
 --all   Return ALL blocks in the body (including any RECONSIDERED block) as a JSON array.
 ```
 
+### `review_journal.py validate <path>`
+
+Validates a journal file against the schema. Checks:
+
+- `schema_version` is present and matches the supported major (`1.x`).
+- All required top-level keys are present.
+- Every thread has the required fields.
+- Every `verdict` is in the canonical 8-value vocabulary.
+- `ACCEPTED` / `ACCEPTED_MODIFIED` / `OBSOLETE` entries have a `verdict_commit`.
+- `REJECTED_*` / `DEFERRED` entries have `verdict_notes`.
+- `extras` is a dict if present; `verdict_history` is a list if present.
+
+Exit 0 on success, 1 on schema violation, 2 on argument or I/O error. Designed
+to be safe to run in CI on every push (in addition to `sync-pr.sh`) so
+hand-edits to journal files don't silently corrupt them.
+
 ---
 
 ## Output schema
+
+Schema version `1.0`. Future additive fields are minor-bumps; on-disk-incompatible
+changes are major-bumps with a migration path.
 
 `pr-{N}.json`:
 
 ```json
 {
+  "schema_version": "1.0",
   "pr_number": 7,
   "repo": "loganrooks/tap-n-filter",
   "last_synced_at": "2026-05-22T...",
@@ -277,11 +383,15 @@ ad-hoc validation.
       "finding_excerpt": "_🛠️ Refactor suggestion_ | _🟠 Major_ ...",
       "created_at": "2026-05-21T23:51:53Z",
       "resolved": true,
+      "outdated": false,
       "verdict": "REJECTED_BAD_FIT",
       "verdict_commit": "e083b9d",
+      "verdict_refs": [],
       "verdict_notes": "Generic suggestion from CR's training data that conflicts...",
       "verdict_source": "block",
-      "reconsidered_verdict": null
+      "reconsidered_verdict": null,
+      "verdict_history": [],
+      "extras": {}
     }
   ]
 }
@@ -291,6 +401,7 @@ ad-hoc validation.
 
 ```json
 {
+  "schema_version": "1.0",
   "generated_at": "2026-05-22T...",
   "entries": [
     {"pr_number": 7, "repo": "loganrooks/tap-n-filter", "last_synced_at": "...", "thread_count": 47, "file": "pr-7.json"}
@@ -363,6 +474,24 @@ profiles if they should be treated as the same reviewer kind.
 bash tools/review-journal/tests/run-tests.sh
 ```
 
-16 tests covering: block parsing (5), sync schema (4), inference (3),
-portability (1), config (1), PR #7 acceptance (1), profile flexibility (2).
-Tests use captured fixtures and golden expected outputs; no network.
+25 tests covering: block parsing (5), sync schema (4), inference (3),
+portability (1), config (1), PR #7 acceptance (1), profile flexibility (2),
+extensibility (4: schema_version, aliases, rules engine, validate),
+provenance (1: verdict_history), and robustness (4: edge cases, missing
+authors, outdated threads, extras pass-through). Tests use captured fixtures
+and golden expected outputs; no network.
+
+## Robustness notes
+
+Several edge cases the tool handles without crashing:
+
+- **Missing comment author** (deleted user, ghost account, app uninstalled mid-review) — thread is recorded with `reviewer: "unknown"`, no profile lookup is attempted.
+- **Empty or null comment body** — thread is recorded; the finding excerpt is the empty string.
+- **Thread with zero comments** — recorded with all body-derived fields null.
+- **Quoted or whitespace-padded block values** (`verdict: "ACCEPTED"`, `commit:   abc1234   `) — unquoted and trimmed.
+- **Multi-paragraph notes in a block** — continuation lines after `notes:` are captured (including blank lines preserving paragraph structure).
+- **Malformed regex in a custom rule** — the rule is skipped with a stderr warning; the rest of the inference continues.
+- **Invalid `verdict` value in a custom rule** — same: skip with warning.
+- **Concurrent invocations** — atomic write (temp file + `os.replace`) prevents truncation; the journal file never appears half-written.
+- **GraphQL pagination** — `hasNextPage` is honored; PRs with >100 threads paginate correctly.
+- **Outdated threads** (`isOutdated: true`) — recorded with `outdated: true` so downstream tools can distinguish a force-pushed-away resolution from a normal one.

@@ -22,10 +22,16 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
+
+# Schema version for the journal JSON files. Bumped when the on-disk shape
+# changes incompatibly. Minor bumps for additive fields with safe defaults;
+# major bumps require a migration path.
+SCHEMA_VERSION = "1.0"
 
 # Vocabulary defined by ADR-016 and the review-journal spec.
 VALID_VERDICTS = {
@@ -94,27 +100,62 @@ def find_blocks(body: str) -> list[tuple[str, str]]:
     return [(m.group("fence"), m.group("body")) for m in _BLOCK_PATTERN.finditer(body)]
 
 
+_QUOTED_RE = re.compile(r'^["\'](.*)["\']$')
+
+
+def _unquote(value: str) -> str:
+    """Strip surrounding whitespace and matching quotes from a block value."""
+    v = value.strip()
+    m = _QUOTED_RE.match(v)
+    if m:
+        return m.group(1).strip()
+    return v
+
+
 def parse_block_body(inner: str) -> dict[str, str]:
     """Parse a key: value block body. Values may span the rest of the line.
 
     The block is line-based. `notes:` is allowed to span multiple lines so long
     as continuation lines are not key: pairs. This keeps the format simple
     while letting maintainers explain themselves.
+
+    Values surrounded by matching single or double quotes are unquoted; this
+    keeps the format friendly to copy-pasting from places that auto-quote.
     """
     fields: dict[str, list[str]] = {}
     last_key: str | None = None
     KEY_RE = re.compile(r"^([a-z_]+):\s*(.*)$")
+    # Tracks whether the value started as a single line (eligible for
+    # quote-stripping) versus accumulated continuation lines (which must NOT
+    # be stripped of quotes because they're prose).
+    single_line: dict[str, bool] = {}
     for line in inner.splitlines():
         m = KEY_RE.match(line)
         if m:
             last_key = m.group(1)
             fields.setdefault(last_key, []).append(m.group(2))
+            # Mark single-line on first sight; flip to False if a continuation
+            # comes through.
+            single_line.setdefault(last_key, True)
         else:
             # Continuation line for the previous key. Skip if no prior key
             # (malformed) or line is whitespace-only.
             if last_key and line.strip():
                 fields[last_key].append(line.rstrip())
-    return {k: "\n".join(v).strip() for k, v in fields.items()}
+                single_line[last_key] = False
+            elif last_key and not line.strip() and fields.get(last_key):
+                # Empty line within a multi-paragraph value — preserve as a
+                # blank line to keep paragraph structure.
+                fields[last_key].append("")
+                single_line[last_key] = False
+
+    out: dict[str, str] = {}
+    for k, parts in fields.items():
+        joined = "\n".join(parts).strip()
+        if single_line.get(k, True):
+            joined = _unquote(joined)
+        out[k] = joined
+    return out
 
 
 def validate_block(parsed: dict[str, str], fence: str) -> VerdictBlock:
@@ -195,8 +236,8 @@ DEFAULT_PROFILES: dict[str, dict[str, Any]] = {
         "auto_resolve_patterns": [
             # Range pattern first — capture the LATER sha (the completion of
             # the range) rather than the earlier one.
-            r"(?:✅\s*)?Addressed in commits\s+`?[0-9a-f]{7,40}`?\s+to\s+`?([0-9a-f]{7,40})`?",
-            r"(?:✅\s*)?Addressed in commit\s+`?([0-9a-f]{7,40})`?",
+            r"(?i)(?:✅\s*)?Addressed in commits\s+`?[0-9a-f]{7,40}`?\s+to\s+`?([0-9a-f]{7,40})`?",
+            r"(?i)(?:✅\s*)?Addressed in commit\s+`?([0-9a-f]{7,40})`?",
         ],
         "notes": "Trial-version of CodeRabbit is the initial driver for the verdict-block discipline.",
     },
@@ -247,6 +288,7 @@ class Config:
     enforcement_mode: str = "warning"
     reviewers: list[str] = field(default_factory=lambda: ["coderabbitai", "chatgpt-codex-connector"])
     reviewer_profiles: dict[str, dict[str, Any]] = field(default_factory=dict)
+    inference_rules: list[dict[str, Any]] = field(default_factory=list)
     categories: list[str] = field(default_factory=list)
     journal_dir: str = "docs/governance/review-journal"
     config_root: Path | None = None  # Directory where .review-journal.json was found.
@@ -259,11 +301,19 @@ class Config:
         return root / self.journal_dir
 
     def profile_for(self, reviewer_login: str) -> dict[str, Any]:
-        """Return a profile dict, falling back to a human stub if unknown."""
-        return self.reviewer_profiles.get(
-            reviewer_login,
-            {"kind": "human", "severity_patterns": [], "auto_resolve_patterns": []},
-        )
+        """Return a profile dict, falling back to a human stub if unknown.
+
+        Looks up by canonical login first; if not found, scans every profile's
+        `aliases` list. The first profile whose canonical login OR aliases
+        contains `reviewer_login` wins.
+        """
+        if reviewer_login in self.reviewer_profiles:
+            return self.reviewer_profiles[reviewer_login]
+        for canonical, prof in self.reviewer_profiles.items():
+            aliases = prof.get("aliases") or []
+            if reviewer_login in aliases:
+                return prof
+        return {"kind": "human", "severity_patterns": [], "auto_resolve_patterns": []}
 
 
 def load_config(start: Path | None = None) -> Config:
@@ -280,6 +330,7 @@ def load_config(start: Path | None = None) -> Config:
                 enforcement_mode=data.get("enforcement_mode", "warning"),
                 reviewers=data.get("reviewers", ["coderabbitai", "chatgpt-codex-connector"]),
                 reviewer_profiles=merge_profiles(data.get("reviewer_profiles")),
+                inference_rules=list(data.get("inference_rules", []) or []),
                 categories=data.get("categories", []),
                 journal_dir=data.get("journal_dir", "docs/governance/review-journal"),
                 config_root=d,
@@ -354,144 +405,235 @@ def load_threads_from_file(path: Path) -> list[dict[str, Any]]:
     return payload["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"]
 
 
-# -------------- Inference --------------
+# -------------- Inference rules engine --------------
 
-# Best-effort regex patterns for inferring a verdict from a reply body or the
-# auto-resolution suffix that CodeRabbit appends to its own original comment.
+# Inference rules are data, not code. Each rule is a dict with:
+#
+#   name              — human label, shown in the inferred notes.
+#   pattern           — Python regex run against the candidate text.
+#   match_against     — one of "all_bodies" (default), "reply_only",
+#                       "original_only". Determines which comment text the
+#                       rule sees.
+#   verdict           — one of the VALID_VERDICTS to emit on match.
+#   commit_group      — int. If set, the named capture group is treated as
+#                       the commit sha and recorded in verdict_commit.
+#   ref_group         — int. If set, the named capture group is treated as
+#                       a reference (ADR, U-log, thread id, etc.) and
+#                       substituted into the notes_template as {ref}.
+#   notes_template    — string. Free-form; supports {commit}, {ref}, {match}
+#                       placeholders. {match} is the entire matched span.
+#   applies_to_reviewer — string. If set, only fires for threads where the
+#                       canonical reviewer login matches (or its aliases).
+#                       Omit for global rules.
+#
+# Default rules below encode the patterns the previous hardcoded heuristics
+# covered. The config can extend or override this list.
 
-# "Addressed in commit <sha>" or "fixed in <sha>" → ACCEPTED_MODIFIED with sha.
-RE_ADDRESSED_COMMIT = re.compile(
-    r"(?:✅\s*)?(?:Addressed|Fixed|Resolved|Implemented)\s+in\s+commit\s+`?([0-9a-f]{7,40})`?",
-    re.IGNORECASE,
-)
-# "Addressed in commits <sha1> to <sha2>" → ACCEPTED_MODIFIED with sha2.
-RE_ADDRESSED_RANGE = re.compile(
-    r"(?:✅\s*)?(?:Addressed|Fixed|Resolved|Implemented)\s+in\s+commits?\s+`?([0-9a-f]{7,40})`?\s+to\s+`?([0-9a-f]{7,40})`?",
-    re.IGNORECASE,
-)
-# "Fixed in <sha>" anywhere in the body.
-RE_FIXED_IN = re.compile(r"\bfixed in\s+`?([0-9a-f]{7,40})`?\b", re.IGNORECASE)
-# "per ADR-NNN" or "deferred to V0.N" → DEFERRED, capture the reference.
-RE_PER_ADR = re.compile(r"\bper\s+(ADR-\d{3})\b", re.IGNORECASE)
-RE_PER_ULOG = re.compile(r"\bper\s+(U-\d{3})\b", re.IGNORECASE)
-RE_DEFERRED_TO = re.compile(r"\bdeferred(?:\s+to)?\s+(?:to\s+)?(V0\.\d+|ADR-\d{3}|U-\d{3})\b", re.IGNORECASE)
-# "already addressed" / "obsolete" → OBSOLETE.
-RE_ALREADY_ADDRESSED = re.compile(
-    r"\balready\s+(?:addressed|fixed|resolved)\s+(?:in\s+`?([0-9a-f]{7,40})`?)?",
-    re.IGNORECASE,
-)
-RE_OBSOLETE = re.compile(r"\bobsolete\b", re.IGNORECASE)
-# "duplicate" / "see thread X" → DUPLICATE.
-RE_DUPLICATE = re.compile(r"\b(?:duplicate|same as|see thread)\b", re.IGNORECASE)
-# Generic "Deferred" word + we have an ADR/U-log ref in the same body.
-RE_DEFERRED_WORD = re.compile(r"\bdeferred\b", re.IGNORECASE)
+DEFAULT_INFERENCE_RULES: list[dict[str, Any]] = [
+    # CR auto-resolve range form — "Addressed in commits A to B" → final sha.
+    {
+        "name": "cr-auto-resolve-range",
+        "pattern": r"(?i)(?:✅\s*)?Addressed in commits\s+`?[0-9a-f]{7,40}`?\s+to\s+`?([0-9a-f]{7,40})`?",
+        "match_against": "all_bodies",
+        "verdict": "ACCEPTED_MODIFIED",
+        "commit_group": 1,
+        "notes_template": "Inferred from auto-resolve range; final commit {commit}.",
+        "applies_to_reviewer": "coderabbitai",
+    },
+    # CR / generic auto-resolve single commit.
+    {
+        "name": "auto-resolve-single-commit",
+        "pattern": r"(?i)(?:✅\s*)?(?:Addressed|Fixed|Resolved|Implemented) in commit\s+`?([0-9a-f]{7,40})`?",
+        "match_against": "all_bodies",
+        "verdict": "ACCEPTED_MODIFIED",
+        "commit_group": 1,
+        "notes_template": "Inferred from auto-resolve marker citing commit {commit}.",
+    },
+    # Generic "Fixed in <sha>" in a reply.
+    {
+        "name": "fixed-in-commit",
+        "pattern": r"(?i)\bfixed in\s+`?([0-9a-f]{7,40})`?\b",
+        "match_against": "all_bodies",
+        "verdict": "ACCEPTED_MODIFIED",
+        "commit_group": 1,
+        "notes_template": "Inferred from reply citing commit {commit}.",
+    },
+    # "already addressed in <sha>" → OBSOLETE.
+    {
+        "name": "already-addressed-with-commit",
+        "pattern": r"(?i)\balready\s+(?:addressed|fixed|resolved)\s+in\s+`?([0-9a-f]{7,40})`?",
+        "match_against": "all_bodies",
+        "verdict": "OBSOLETE",
+        "commit_group": 1,
+        "notes_template": "Inferred from reply: already addressed in {commit}.",
+    },
+    # "Deferred per ADR-NNN" / "Deferred per U-NNN" → DEFERRED.
+    {
+        "name": "deferred-per-adr",
+        "pattern": r"\b[Dd]eferred\b[^\n]{0,200}\bper\s+(ADR-\d{3})",
+        "match_against": "all_bodies",
+        "verdict": "DEFERRED",
+        "ref_group": 1,
+        "notes_template": "Inferred from reply: deferred per {ref}.",
+    },
+    {
+        "name": "deferred-per-ulog",
+        "pattern": r"\b[Dd]eferred\b[^\n]{0,200}\bper\s+(U-\d{3})",
+        "match_against": "all_bodies",
+        "verdict": "DEFERRED",
+        "ref_group": 1,
+        "notes_template": "Inferred from reply: deferred per {ref}.",
+    },
+    # "Deferred to V0.N"
+    {
+        "name": "deferred-to-version",
+        "pattern": r"\b[Dd]eferred\b[^\n]{0,200}\b(V0\.\d+)\b",
+        "match_against": "all_bodies",
+        "verdict": "DEFERRED",
+        "ref_group": 1,
+        "notes_template": "Inferred from reply: deferred to {ref}.",
+    },
+    # Bare "deferred" — last-resort DEFERRED with no ref.
+    {
+        "name": "deferred-bare",
+        "pattern": r"\b[Dd]eferred\b",
+        "match_against": "all_bodies",
+        "verdict": "DEFERRED",
+        "notes_template": "Inferred from reply: deferred (no reference).",
+    },
+    # "obsolete" bare word → OBSOLETE.
+    {
+        "name": "obsolete-bare",
+        "pattern": r"\bobsolete\b",
+        "match_against": "all_bodies",
+        "verdict": "OBSOLETE",
+        "notes_template": "Inferred from reply: obsolete.",
+    },
+    # "duplicate" / "same as" / "see thread" → DUPLICATE.
+    {
+        "name": "duplicate-bare",
+        "pattern": r"\b(?:duplicate|same as|see thread)\b",
+        "match_against": "all_bodies",
+        "verdict": "DUPLICATE",
+        "notes_template": "Inferred from reply: duplicate.",
+    },
+]
 
 
-def infer_verdict(thread: dict[str, Any], profile: dict[str, Any] | None = None) -> VerdictBlock | None:
-    """Return a VerdictBlock with kind='verdict' and verdict_source-equivalent
-    'inferred' status (caller marks the source). None if nothing matches.
+def _select_bodies(comments: list[dict[str, Any]], scope: str) -> str:
+    """Return the joined text to match against, per the rule's scope."""
+    if not comments:
+        return ""
+    if scope == "original_only":
+        return comments[0].get("body") or ""
+    if scope == "reply_only":
+        return "\n----\n".join((c.get("body") or "") for c in comments[1:])
+    # default: all_bodies
+    return "\n----\n".join((c.get("body") or "") for c in comments)
 
-    Honors the reviewer's profile-specific `auto_resolve_patterns` before
-    falling back to generic prose patterns.
-    """
+
+def _render_template(template: str, *, commit: str | None, ref: str | None, match: str | None) -> str:
+    """Best-effort template render with safe defaults for missing values."""
+    return (template or "").format(
+        commit=commit or "(no-commit)",
+        ref=ref or "(no-ref)",
+        match=match or "",
+    )
+
+
+def run_inference_rules(
+    thread: dict[str, Any],
+    rules: list[dict[str, Any]],
+    reviewer_login: str,
+    reviewer_aliases: list[str] | None = None,
+) -> VerdictBlock | None:
+    """Try each rule in order; return on first match. None if no rule fires."""
     comments = thread["comments"]["nodes"]
     if not comments:
         return None
-    # We look at the FIRST comment's body (where CR appends "Addressed in
-    # commit X") AND any subsequent replies.
-    bodies = [c.get("body") or "" for c in comments]
-    joined = "\n----\n".join(bodies)
-
-    # 0) Reviewer-profile auto-resolve patterns get first crack. These are
-    # what makes the tool adaptable to new bots without code changes.
-    if profile:
-        for pat in profile.get("auto_resolve_patterns", []) or []:
-            try:
-                rx = re.compile(pat)
-            except re.error:
-                continue
-            m = rx.search(joined)
-            if m:
-                commit = m.group(1) if m.lastindex else None
-                return VerdictBlock(
-                    verdict="ACCEPTED_MODIFIED",
-                    kind="verdict",
-                    commit=commit,
-                    notes=(
-                        f"Inferred from {profile.get('display_name') or 'reviewer'} auto-resolve pattern"
-                        + (f" citing commit {commit}." if commit else ".")
-                    ),
-                )
-
-    # 1) Commit range "Addressed in commits A to B" — use B.
-    m = RE_ADDRESSED_RANGE.search(joined)
-    if m:
-        return VerdictBlock(
-            verdict="ACCEPTED_MODIFIED",
-            kind="verdict",
-            commit=m.group(2),
-            notes=f"Inferred from auto-resolution range {m.group(1)}..{m.group(2)}.",
-        )
-    # 2) Single-commit "Addressed in commit X".
-    m = RE_ADDRESSED_COMMIT.search(joined)
-    if m:
-        return VerdictBlock(
-            verdict="ACCEPTED_MODIFIED",
-            kind="verdict",
-            commit=m.group(1),
-            notes=f"Inferred from auto-resolution marker citing commit {m.group(1)}.",
-        )
-    # 3) "Fixed in X" prose in a reply.
-    m = RE_FIXED_IN.search(joined)
-    if m:
-        return VerdictBlock(
-            verdict="ACCEPTED_MODIFIED",
-            kind="verdict",
-            commit=m.group(1),
-            notes=f"Inferred from reply citing commit {m.group(1)}.",
-        )
-    # 4) "already addressed in <sha>" → OBSOLETE if a sha is present, else
-    # OBSOLETE with no commit.
-    m = RE_ALREADY_ADDRESSED.search(joined)
-    if m:
-        sha = m.group(1)
-        if sha:
-            return VerdictBlock(
-                verdict="OBSOLETE",
-                kind="verdict",
-                commit=sha,
-                notes=f"Inferred from reply: already addressed in {sha}.",
+    aliases = set(reviewer_aliases or [])
+    for rule in rules:
+        applies = rule.get("applies_to_reviewer")
+        if applies and applies != reviewer_login and applies not in aliases:
+            # The rule is scoped to a specific reviewer that doesn't match.
+            continue
+        pattern = rule.get("pattern")
+        if not pattern:
+            continue
+        try:
+            rx = re.compile(pattern)
+        except re.error:
+            # Skip malformed regex rather than crashing the whole sync.
+            sys.stderr.write(
+                f"warning: skipping inference rule {rule.get('name', '?')} — invalid regex.\n"
             )
-        return VerdictBlock(
-            verdict="OBSOLETE",
-            kind="verdict",
-            notes="Inferred from reply: already addressed (no commit cited).",
+            continue
+        verdict = rule.get("verdict")
+        if verdict not in VALID_VERDICTS:
+            sys.stderr.write(
+                f"warning: skipping inference rule {rule.get('name', '?')} — invalid verdict {verdict!r}.\n"
+            )
+            continue
+        scope = rule.get("match_against", "all_bodies")
+        text = _select_bodies(comments, scope)
+        m = rx.search(text)
+        if not m:
+            continue
+        commit_group = rule.get("commit_group")
+        ref_group = rule.get("ref_group")
+        commit = m.group(commit_group) if commit_group else None
+        ref = m.group(ref_group) if ref_group else None
+        notes = _render_template(
+            rule.get("notes_template", ""),
+            commit=commit, ref=ref, match=m.group(0),
         )
-    # 5) DEFERRED — prose contains "deferred" and an ADR/U-log/V0.N ref.
-    if RE_DEFERRED_WORD.search(joined):
-        adr = RE_PER_ADR.search(joined) or RE_DEFERRED_TO.search(joined)
-        ulog = RE_PER_ULOG.search(joined)
-        ref = (adr.group(1) if adr else None) or (ulog.group(1) if ulog else None)
         return VerdictBlock(
-            verdict="DEFERRED",
+            verdict=verdict,
             kind="verdict",
-            notes=(f"Inferred from reply: deferred per {ref}." if ref else "Inferred from reply: deferred (no reference)."),
-        )
-    # 6) OBSOLETE — bare "obsolete" word.
-    if RE_OBSOLETE.search(joined):
-        return VerdictBlock(
-            verdict="OBSOLETE",
-            kind="verdict",
-            notes="Inferred from reply: obsolete.",
-        )
-    # 7) DUPLICATE.
-    if RE_DUPLICATE.search(joined):
-        return VerdictBlock(
-            verdict="DUPLICATE",
-            kind="verdict",
-            notes="Inferred from reply: duplicate.",
+            commit=commit,
+            notes=notes,
         )
     return None
+
+
+def assemble_inference_rules(cfg: Config, profile: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Compose the rule list to run for a given reviewer thread:
+       1) reviewer-profile-level rules (highest priority);
+       2) profile's auto_resolve_patterns, lifted to ACCEPTED_MODIFIED rules
+          (legacy/sugar form);
+       3) repo-config rules (additions / overrides for cross-cutting cases);
+       4) DEFAULT_INFERENCE_RULES (last-resort fallbacks).
+    """
+    out: list[dict[str, Any]] = []
+    if profile:
+        out.extend(profile.get("inference_rules", []) or [])
+        for pat in profile.get("auto_resolve_patterns", []) or []:
+            out.append({
+                "name": "profile-auto-resolve",
+                "pattern": pat,
+                "verdict": "ACCEPTED_MODIFIED",
+                "commit_group": 1,
+                "notes_template": (
+                    f"Inferred from {profile.get('display_name') or 'reviewer'} "
+                    f"auto-resolve pattern citing commit {{commit}}."
+                ),
+                "match_against": "all_bodies",
+            })
+    out.extend(cfg.inference_rules)
+    out.extend(DEFAULT_INFERENCE_RULES)
+    return out
+
+
+def infer_verdict(
+    thread: dict[str, Any],
+    cfg: Config,
+    profile: dict[str, Any] | None = None,
+    reviewer_login: str = "",
+) -> VerdictBlock | None:
+    """Backward-compatible wrapper. Composes the rules and runs them."""
+    rules = assemble_inference_rules(cfg, profile)
+    aliases = (profile or {}).get("aliases") or []
+    return run_inference_rules(thread, rules, reviewer_login, aliases)
 
 
 # -------------- Thread → record --------------
@@ -508,11 +650,15 @@ class ThreadRecord:
     finding_excerpt: str
     created_at: str | None
     resolved: bool
+    outdated: bool = False
     verdict: str | None = None
     verdict_commit: str | None = None
+    verdict_refs: list[str] = field(default_factory=list)
     verdict_notes: str | None = None
-    verdict_source: str | None = None  # block | inferred | manual
+    verdict_source: str | None = None  # block | inferred | manual (extensible)
     reconsidered_verdict: dict[str, Any] | None = None
+    verdict_history: list[dict[str, Any]] = field(default_factory=list)
+    extras: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -526,11 +672,15 @@ class ThreadRecord:
             "finding_excerpt": self.finding_excerpt,
             "created_at": self.created_at,
             "resolved": self.resolved,
+            "outdated": self.outdated,
             "verdict": self.verdict,
             "verdict_commit": self.verdict_commit,
+            "verdict_refs": list(self.verdict_refs),
             "verdict_notes": self.verdict_notes,
             "verdict_source": self.verdict_source,
             "reconsidered_verdict": self.reconsidered_verdict,
+            "verdict_history": list(self.verdict_history),
+            "extras": dict(self.extras),
         }
 
 
@@ -549,7 +699,11 @@ def extract_severity(body: str, profile: dict[str, Any]) -> str | None:
 def build_record(thread: dict[str, Any], cfg: Config) -> ThreadRecord:
     comments = thread["comments"]["nodes"]
     first = comments[0] if comments else {}
-    reviewer = (first.get("author") or {}).get("login", "unknown")
+    author = first.get("author")
+    if author and isinstance(author, dict):
+        reviewer = author.get("login") or "unknown"
+    else:
+        reviewer = "unknown"
     profile = cfg.profile_for(reviewer)
     body = first.get("body") or ""
     excerpt = body[:FINDING_EXCERPT_LEN].strip()
@@ -564,6 +718,7 @@ def build_record(thread: dict[str, Any], cfg: Config) -> ThreadRecord:
         finding_excerpt=excerpt,
         created_at=first.get("createdAt"),
         resolved=bool(thread.get("isResolved")),
+        outdated=bool(thread.get("isOutdated")),
     )
 
 
@@ -605,44 +760,118 @@ def sort_threads(records: list[ThreadRecord]) -> list[ThreadRecord]:
     return sorted(records, key=lambda r: (r.reviewer, r.created_at or "", r.id))
 
 
+def _atomic_write(path: Path, body: str) -> None:
+    """Write body to path atomically (temp file + os.replace).
+
+    Two parallel runs of the tool can't leave a half-written JSON file behind;
+    one process's write wholly succeeds before the other's, and at no instant
+    is the file empty or truncated.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_str = tempfile.mkstemp(dir=str(path.parent), prefix=".tmp-", suffix=path.name)
+    tmp = Path(tmp_str)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(body)
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+
 def write_journal(out_path: Path, pr_number: int, repo: str, records: list[ThreadRecord], synced_at: str) -> None:
     payload = {
+        "schema_version": SCHEMA_VERSION,
         "pr_number": pr_number,
         "repo": repo,
         "last_synced_at": synced_at,
         "threads": [r.to_dict() for r in records],
     }
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(payload, indent=2) + "\n")
+    _atomic_write(out_path, json.dumps(payload, indent=2) + "\n")
 
 
-def merge_manual_overrides(existing_path: Path, fresh: list[ThreadRecord]) -> list[ThreadRecord]:
-    """If a journal file already exists with `verdict_source: manual` entries,
-    preserve those entries' verdict fields over the freshly-derived ones."""
+def _history_entry(source: str, verdict: str | None, by: str = "tool", note: str | None = None) -> dict[str, Any]:
+    e: dict[str, Any] = {
+        "at": datetime.now(timezone.utc).isoformat(),
+        "source": source,
+        "verdict": verdict,
+        "by": by,
+    }
+    if note:
+        e["note"] = note
+    return e
+
+
+def merge_with_existing(existing_path: Path, fresh: list[ThreadRecord]) -> list[ThreadRecord]:
+    """Merge a freshly-derived record list with an existing journal file:
+
+    - `verdict_source: manual` entries take precedence — their verdict fields
+      win and overwrite the fresh values.
+    - `extras` from any prior record is preserved (downstream consumers attach
+      data to the journal without participating in the sync).
+    - `verdict_history` accumulates. A history entry is appended whenever the
+      verdict_source transitions or the verdict value changes.
+    """
+    def _seed_history(rec: ThreadRecord) -> None:
+        # Only seed history for inferred verdicts (the inference event is the
+        # decision worth timestamping). Block-derived verdicts are already
+        # audited by the block on GitHub; their "birth" is the comment's
+        # createdAt. Manual verdicts that arrive without prior history get a
+        # seed too — they're a maintainer decision worth recording.
+        if not rec.verdict or rec.verdict_history:
+            return
+        if rec.verdict_source in {"inferred", "manual"}:
+            rec.verdict_history = [_history_entry(rec.verdict_source, rec.verdict)]
+
     if not existing_path.is_file():
+        for rec in fresh:
+            _seed_history(rec)
         return fresh
     try:
         existing = json.loads(existing_path.read_text())
     except (json.JSONDecodeError, OSError):
         return fresh
-    manual_by_id = {
-        t["id"]: t for t in existing.get("threads", [])
-        if t.get("verdict_source") == "manual"
-    }
-    if not manual_by_id:
-        return fresh
-    merged: list[ThreadRecord] = []
+    by_id = {t["id"]: t for t in existing.get("threads", [])}
     for rec in fresh:
-        m = manual_by_id.get(rec.id)
-        if m:
-            rec.verdict = m.get("verdict")
-            rec.verdict_commit = m.get("verdict_commit")
-            rec.verdict_notes = m.get("verdict_notes")
+        prior = by_id.get(rec.id)
+        if not prior:
+            _seed_history(rec)
+            continue
+        # Carry over extras unchanged.
+        if isinstance(prior.get("extras"), dict):
+            rec.extras = dict(prior["extras"])
+        # Carry over history.
+        prior_history = list(prior.get("verdict_history") or [])
+        rec.verdict_history = prior_history
+        # Manual override wins.
+        if prior.get("verdict_source") == "manual":
+            rec.verdict = prior.get("verdict")
+            rec.verdict_commit = prior.get("verdict_commit")
+            rec.verdict_notes = prior.get("verdict_notes")
             rec.verdict_source = "manual"
-            if m.get("category"):
-                rec.category = m.get("category")
-        merged.append(rec)
-    return merged
+            if prior.get("category"):
+                rec.category = prior.get("category")
+            if prior.get("verdict_refs"):
+                rec.verdict_refs = list(prior.get("verdict_refs") or [])
+        # Detect source / verdict transition vs the last history entry; append
+        # a new history record if anything changed.
+        last = prior_history[-1] if prior_history else None
+        if rec.verdict or rec.verdict_source:
+            changed = (
+                last is None
+                or last.get("source") != rec.verdict_source
+                or last.get("verdict") != rec.verdict
+            )
+            if changed:
+                rec.verdict_history.append(_history_entry(rec.verdict_source or "unknown", rec.verdict))
+    return fresh
+
+
+# Backward-compat alias for older callers.
+merge_manual_overrides = merge_with_existing
 
 
 def write_backfill_md(out_path: Path, pr_number: int, repo: str, inferred: list[tuple[ThreadRecord, VerdictBlock]]) -> None:
@@ -700,10 +929,84 @@ def update_index(journal_dir: Path) -> None:
             "file": p.name,
         })
     index = {
+        "schema_version": SCHEMA_VERSION,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "entries": entries,
     }
-    (journal_dir / "index.json").write_text(json.dumps(index, indent=2) + "\n")
+    _atomic_write(journal_dir / "index.json", json.dumps(index, indent=2) + "\n")
+
+
+# -------------- Subcommand: validate --------------
+
+REQUIRED_THREAD_FIELDS = {
+    "id", "path", "line", "reviewer", "reviewer_kind", "severity", "category",
+    "finding_excerpt", "created_at", "resolved", "verdict", "verdict_commit",
+    "verdict_notes", "verdict_source", "reconsidered_verdict",
+}
+
+
+def validate_journal(payload: dict[str, Any]) -> list[str]:
+    """Return a list of validation errors. Empty list ⇒ journal is well-formed."""
+    errors: list[str] = []
+    sv = payload.get("schema_version")
+    if not sv:
+        errors.append("missing required top-level field: schema_version")
+    elif not isinstance(sv, str) or not sv.startswith("1."):
+        errors.append(f"unsupported schema_version: {sv!r} (expected 1.x)")
+    for key in ("pr_number", "repo", "last_synced_at", "threads"):
+        if key not in payload:
+            errors.append(f"missing required top-level field: {key}")
+    threads = payload.get("threads") or []
+    if not isinstance(threads, list):
+        errors.append("threads field is not a list")
+        return errors
+    for idx, t in enumerate(threads):
+        prefix = f"thread[{idx}] (id={t.get('id', '?')})"
+        if not isinstance(t, dict):
+            errors.append(f"{prefix}: is not a dict")
+            continue
+        missing = REQUIRED_THREAD_FIELDS - set(t.keys())
+        for m in sorted(missing):
+            errors.append(f"{prefix}: missing field {m!r}")
+        verdict = t.get("verdict")
+        if verdict is not None and verdict not in VALID_VERDICTS:
+            errors.append(
+                f"{prefix}: invalid verdict value {verdict!r}. Allowed: {sorted(VALID_VERDICTS)}"
+            )
+        # Per-verdict required fields.
+        if verdict in VERDICTS_REQUIRE_COMMIT and not t.get("verdict_commit"):
+            errors.append(f"{prefix}: verdict={verdict} requires verdict_commit")
+        if verdict in VERDICTS_REQUIRE_NOTES and not t.get("verdict_notes"):
+            errors.append(f"{prefix}: verdict={verdict} requires verdict_notes")
+        # extras shape, if present.
+        extras = t.get("extras")
+        if extras is not None and not isinstance(extras, dict):
+            errors.append(f"{prefix}: extras must be a dict if present")
+        # verdict_history shape, if present.
+        history = t.get("verdict_history")
+        if history is not None and not isinstance(history, list):
+            errors.append(f"{prefix}: verdict_history must be a list if present")
+    return errors
+
+
+def cmd_validate(args: argparse.Namespace) -> int:
+    path = Path(args.path)
+    if not path.is_file():
+        sys.stderr.write(f"error: {path} does not exist\n")
+        return 2
+    try:
+        payload = json.loads(path.read_text())
+    except json.JSONDecodeError as e:
+        sys.stderr.write(f"error: {path} is not valid JSON: {e}\n")
+        return 2
+    errors = validate_journal(payload)
+    if not errors:
+        if args.verbose:
+            print(f"OK: {path} validates clean.")
+        return 0
+    for err in errors:
+        sys.stderr.write(f"{err}\n")
+    return 1
 
 
 # -------------- Subcommand: parse-block --------------
@@ -766,7 +1069,7 @@ def _sync_core(args: argparse.Namespace, infer: bool, write_backfill: bool) -> i
             if rec.resolved:
                 if infer:
                     profile = cfg.profile_for(rec.reviewer)
-                    block = infer_verdict(t, profile=profile)
+                    block = infer_verdict(t, cfg, profile=profile, reviewer_login=rec.reviewer)
                     if block is not None:
                         apply_inferred_to_record(rec, block)
                         inferred_pairs.append((rec, block))
@@ -881,6 +1184,11 @@ def main(argv: list[str]) -> int:
     add_sync_args(p_ext)
     p_ext.add_argument("--accept-inferred", action="store_true", help="(Reserved; inferred verdicts are recorded as `inferred` until human confirmation flips them to `manual`.)")
     p_ext.set_defaults(func=cmd_extract)
+
+    p_val = sub.add_parser("validate", help="Validate a journal file against the schema")
+    p_val.add_argument("path", help="Path to pr-N.json")
+    p_val.add_argument("-v", "--verbose", action="store_true", help="Print OK on success")
+    p_val.set_defaults(func=cmd_validate)
 
     ns = p.parse_args(argv)
     return ns.func(ns)

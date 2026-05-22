@@ -18,13 +18,16 @@ assert_exit_code 0 "$ec" "sync exit code"
 out_path="$journal_dir/pr-1.json"
 assert_file_exists "$out_path" "journal file"
 
-# Strip the `last_synced_at` field (timestamp; non-deterministic) and compare
-# structurally to the golden file.
+# Strip non-deterministic fields (timestamps in last_synced_at and in any
+# verdict_history entries) and compare structurally to the golden file.
 diff_out=$(python3 -c "
 import json, sys
 got = json.load(open(sys.argv[1]))
 want = json.load(open(sys.argv[2]))
 got.pop('last_synced_at', None)
+for t in got.get('threads', []):
+    for h in t.get('verdict_history', []) or []:
+        h.pop('at', None)
 if got == want:
   print('OK')
 else:

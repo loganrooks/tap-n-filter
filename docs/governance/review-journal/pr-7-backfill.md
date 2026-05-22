@@ -1,6 +1,6 @@
 # PR #7 review-journal backfill — loganrooks/tap-n-filter
 
-Generated 2026-05-22 21:26:10 UTC.
+Generated 2026-05-22 21:44:39 UTC.
 
 Each thread below has an inferred verdict. Confirm by checking the box and either re-running `extract-pr.sh <N> --accept-inferred` to flip the source to `manual`, or by hand-editing the journal JSON.
 
@@ -12,7 +12,7 @@ Each thread below has an inferred verdict. Confirm by checking the box and eithe
 **Prevent nil bundle-ID fallback from selecting an unrelated source.**
 
 On Line 354, the fallback compares optional bundle IDs directly. If the select
-    - inference: Inferred from auto-resolution marker citing commit 814a751.
+    - inference: Inferred from auto-resolve marker citing commit 814a751.
 
 - [ ] **ACCEPTED_MODIFIED** — commit `d97fd20` — `docs/decisions/ADR-013-reorder-via-buttons-not-drag.md` (thread `PRRT_kwDOSjmLjM6D9tfu`)
     - finding: _⚠️ Potential issue_ | _🟡 Minor_ | _⚡ Quick win_
