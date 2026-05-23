@@ -444,7 +444,10 @@ public final class AppViewModel: ObservableObject {
         do {
             try engine.start()
             engineIsRunning = true
-            logger.info("powerOn complete: engine started, capture running on \(resolvedSource.displayName)")
+            let chainSummary = graph.nodes.isEmpty
+                ? "EMPTY (audio passes through unprocessed; add effects to hear filtering)"
+                : graph.nodes.map { type(of: $0).typeIdentifier }.joined(separator: " -> ")
+            logger.info("powerOn complete: engine started, capture running on \(resolvedSource.displayName), chain: \(chainSummary)")
         } catch {
             graph.detach()
             stopCaptureLoggingRollbackError(primaryStage: "engine start")
@@ -502,22 +505,27 @@ public final class AppViewModel: ObservableObject {
     /// The engine itself stays running across the transition; the audio will
     /// briefly hiccup as the chain is re-wired.
     public func addEffect(of typeIdentifier: String) {
+        logger.info("addEffect: \(typeIdentifier) (chain size before: \(self.graph.nodes.count))")
         mutateGraph { graph in
             let node = try registry.makeNode(typeIdentifier: typeIdentifier)
             try graph.add(node)
         }
+        logger.info("addEffect: complete (chain size after: \(self.graph.nodes.count))")
     }
 
     /// Remove the effect at `index` from the chain.
     public func removeEffect(at index: Int) {
+        logger.info("removeEffect: at index \(index) (chain size before: \(self.graph.nodes.count))")
         mutateGraph { graph in
             try graph.remove(at: index)
         }
+        logger.info("removeEffect: complete (chain size after: \(self.graph.nodes.count))")
     }
 
     /// Move the effect at `from` to `to`, using SwiftUI `List.onMove`'s
     /// post-removal indexing convention.
     public func moveEffect(from: Int, to: Int) {
+        logger.info("moveEffect: from \(from) to \(to)")
         mutateGraph { graph in
             try graph.move(from: from, to: to)
         }
@@ -533,14 +541,19 @@ public final class AppViewModel: ObservableObject {
     /// need throttling. A future high-frequency caller must own its own
     /// throttling at the input layer.
     public func updateParameter(nodeID: UUID, paramID: String, value: Float) {
+        // Short ID for log readability; full UUID stays in the lookup.
+        let shortID = String(nodeID.uuidString.prefix(8))
         guard let node = graph.nodes.first(where: { $0.id == nodeID }) else {
+            logger.warning("updateParameter: unknown node \(shortID) (param \(paramID)=\(value))")
             lastError = .parameter("Unknown node \(nodeID).")
             return
         }
         do {
             try node.setParameter(paramID, value: value)
+            logger.info("updateParameter: \(type(of: node).typeIdentifier)/\(shortID) \(paramID)=\(value)")
             schedulePersistence()
         } catch {
+            logger.error("updateParameter: \(type(of: node).typeIdentifier)/\(shortID) \(paramID)=\(value) failed: \(error.localizedDescription)")
             lastError = .parameter(error.localizedDescription)
         }
     }
@@ -548,11 +561,15 @@ public final class AppViewModel: ObservableObject {
     /// Set the wet/dry mix for a node. Lives outside `updateParameter` because
     /// `wetDryMix` is a protocol-level property rather than a catalog entry.
     public func updateWetDryMix(nodeID: UUID, value: Float) {
+        let shortID = String(nodeID.uuidString.prefix(8))
         guard let node = graph.nodes.first(where: { $0.id == nodeID }) else {
+            logger.warning("updateWetDryMix: unknown node \(shortID) (value \(value))")
             lastError = .parameter("Unknown node \(nodeID).")
             return
         }
-        node.wetDryMix = min(max(value, 0.0), 1.0)
+        let clamped = min(max(value, 0.0), 1.0)
+        node.wetDryMix = clamped
+        logger.info("updateWetDryMix: \(type(of: node).typeIdentifier)/\(shortID) wetDryMix=\(clamped)")
         objectWillChange.send()
         schedulePersistence()
     }
@@ -608,14 +625,17 @@ public final class AppViewModel: ObservableObject {
     /// detached graph) without exposing the dance to callers.
     private func mutateGraph(_ mutation: (Graph) throws -> Void) {
         let wasRunning = engineIsRunning
+        logger.info("mutateGraph: wasRunning=\(wasRunning)")
         if engineIsRunning {
             engine.stop()
             graph.detach()
             engineIsRunning = false
+            logger.info("mutateGraph: detached for live mutation")
         }
         do {
             try mutation(graph)
         } catch {
+            logger.error("mutateGraph: mutation failed: \(error.localizedDescription)")
             lastError = .graph(error.localizedDescription)
             // Re-attach if we were running; the chain is unchanged.
             if wasRunning {
@@ -629,6 +649,7 @@ public final class AppViewModel: ObservableObject {
         schedulePersistence()
 
         if wasRunning {
+            logger.info("mutateGraph: reattaching after live mutation")
             attemptReattach()
         }
     }
