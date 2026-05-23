@@ -45,7 +45,17 @@ test-artifacts/*
 .vscode/
 .idea/
 *.iml
-Build/
+
+# Build outputs (the .app / .dmg / etc.). Scripts and signing config live
+# under Build/ too and ARE tracked — the negations below preserve them.
+Build/*
+!Build/*.sh
+!Build/*.plist
+!Build/entitlements*
+!Build/sign.sh
+!Build/dmg.sh
+!Build/.gitkeep
+
 tools/review-journal/__pycache__/
 
 # Claude Code agent worktrees (transient session state)
