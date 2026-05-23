@@ -56,14 +56,16 @@
     },
     "4": {
       "name": "Polish and Release Prep",
-      "status": "pending",
+      "status": "blocked",
       "spec": "phases/04-polish-release.md",
       "started_at": null,
       "completed_at": null,
       "verification_report": null,
       "release_artifact": null,
       "user_acceptance": null,
-      "pr_url": null
+      "pr_url": null,
+      "blocked_on": "Phase 3 user-reported live-app bugs (PowerToggle indicator never flips on; effect parameter changes don't affect audio; missing exit/quit affordance; intermittent audio cutout). Phase 3's verification PASS was code-review + snapshot-test based; live-app testing was the autonomous-deviation gap that masked these. Phase 4 cannot start until the live app actually works end-to-end.",
+      "adr_drafted": "ADR-017 (Developer ID deferral) drafted during the premature Phase 4 kickoff. Kept on disk because the decision is still valid for whenever Phase 4 does start."
     }
   },
   "human_inputs": {

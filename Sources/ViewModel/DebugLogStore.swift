@@ -1,6 +1,84 @@
 import Foundation
 import OSLog
 
+/// File-backed sink for `TnfLogger`. Writes one line per entry to
+/// `~/Library/Logs/tap-n-filter/app.log`, the standard macOS user-logs
+/// location.
+///
+/// Why a third sink (alongside `os.Logger` and `DebugLogStore`): the OS
+/// unified log persists `info`/`warning` only in memory by default —
+/// reading them later via `log show` requires either `sudo log config
+/// --mode persist:info ...` or capturing while the app runs. Neither
+/// closes the test/review loop autonomously. A plain text log at a
+/// known path lets the orchestrator read live-app diagnostics without
+/// asking the user to copy-paste from the in-app debug panel.
+///
+/// Concurrency: a serial dispatch queue serializes writes so multiple
+/// loggers can append safely from any actor. Writes are best-effort —
+/// if the file or directory can't be created (sandbox-like environments,
+/// read-only `~/Library/Logs`), we silently fall back to no-op rather
+/// than crash the app's logging path.
+public final class FileLogSink: @unchecked Sendable {
+    public static let shared = FileLogSink()
+
+    /// Resolved at init time. Public so tests and the debug panel can
+    /// surface the path to the user / orchestrator.
+    public let logFileURL: URL?
+    private let queue = DispatchQueue(label: "tnf.app.filelogsink", qos: .utility)
+    private let dateFormatter: ISO8601DateFormatter
+
+    public init(
+        directory: URL? = nil,
+        filename: String = "app.log"
+    ) {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        self.dateFormatter = formatter
+
+        let baseDir: URL
+        if let directory = directory {
+            baseDir = directory
+        } else if let library = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first {
+            baseDir = library.appendingPathComponent("Logs/tap-n-filter", isDirectory: true)
+        } else {
+            self.logFileURL = nil
+            return
+        }
+        do {
+            try FileManager.default.createDirectory(at: baseDir, withIntermediateDirectories: true)
+            self.logFileURL = baseDir.appendingPathComponent(filename)
+        } catch {
+            // Best-effort: if we can't create the dir, file logging is
+            // silently disabled. The in-app debug panel + os.Logger still
+            // work, so the user-facing diagnostic story is unchanged.
+            self.logFileURL = nil
+        }
+    }
+
+    /// Append one entry as a line. Format:
+    ///   `<ISO8601 timestamp> [<LEVEL>] <source>: <message>`
+    /// Errors during the write are swallowed (best-effort).
+    public func append(level: DebugLogLevel, source: String, message: String, at date: Date = Date()) {
+        guard let url = logFileURL else { return }
+        let line = "\(dateFormatter.string(from: date)) [\(level.rawValue.uppercased())] \(source): \(message)\n"
+        let data = Data(line.utf8)
+        queue.async {
+            do {
+                if FileManager.default.fileExists(atPath: url.path) {
+                    let handle = try FileHandle(forWritingTo: url)
+                    defer { try? handle.close() }
+                    try handle.seekToEnd()
+                    try handle.write(contentsOf: data)
+                } else {
+                    try data.write(to: url, options: [.atomic])
+                }
+            } catch {
+                // Best-effort; in-app panel + unified log still carry the entry.
+            }
+        }
+    }
+}
+
 /// Severity of a `DebugLogEntry`. Mirrors `os.Logger`'s common levels so the
 /// in-app debug panel reflects the same hierarchy as the unified-log output.
 public enum DebugLogLevel: String, Codable, CaseIterable, Sendable {
@@ -115,15 +193,18 @@ public struct TnfLogger {
     public func info(_ message: String) {
         logger.info("\(message, privacy: .public)")
         store.append(level: .info, source: source, message: message)
+        FileLogSink.shared.append(level: .info, source: source, message: message)
     }
 
     public func warning(_ message: String) {
         logger.warning("\(message, privacy: .public)")
         store.append(level: .warning, source: source, message: message)
+        FileLogSink.shared.append(level: .warning, source: source, message: message)
     }
 
     public func error(_ message: String) {
         logger.error("\(message, privacy: .public)")
         store.append(level: .error, source: source, message: message)
+        FileLogSink.shared.append(level: .error, source: source, message: message)
     }
 }
