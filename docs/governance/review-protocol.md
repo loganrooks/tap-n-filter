@@ -141,6 +141,63 @@ The orchestrator does not bypass branch protection. If a PR can't be merged beca
 - Doesn't merge with unresolved critical or major findings unless the orchestrator's disagreement is documented and the user has approved the override.
 - Doesn't squash or rewrite reviewer comments. They persist on the PR as historical record.
 
+## Verdict-block discipline
+
+Every reply on a review thread starts with a fenced `review-verdict` block. The block is the parser anchor for the review-journal tool (`tools/review-journal/`) and the durable record of *why* the project reached its disposition.
+
+The block format:
+
+````markdown
+```review-verdict
+verdict: ACCEPTED_MODIFIED
+commit: 14b240b
+finding_category: source-resolution-correctness
+reviewer: chatgpt-codex-connector
+notes: PID-first match; bundle fallback kept for relaunch-between-pick-and-start.
+```
+````
+
+Vocabulary (mutually exclusive):
+
+| Verdict | Meaning |
+|---------|---------|
+| `ACCEPTED` | Applied the suggested patch as-is. `commit` required. |
+| `ACCEPTED_MODIFIED` | Fixed the finding via a different patch. `commit` required. |
+| `DEFERRED` | Valid but deferred to a future version. `notes` required (ADR or U-log link). |
+| `REJECTED_FALSE_POSITIVE` | Finding's premise is wrong. `notes` required. |
+| `REJECTED_BAD_FIT` | Generic suggestion conflicts with local convention. `notes` required. |
+| `REJECTED_REGRESSION` | Applying the fix would make code worse. `notes` required. |
+| `OBSOLETE` | Already addressed in an earlier commit. `commit` required. |
+| `DUPLICATE` | Same as thread X. `notes` should cite the thread ID. |
+
+A later reply can supersede an earlier verdict with a `review-verdict-reconsidered` block carrying a new `verdict`, `commit`, and revised `notes`. Both verdicts are preserved with timestamps.
+
+### Journal artifacts
+
+The tool produces per-PR JSON files under `docs/governance/review-journal/`:
+
+- `pr-{N}.json` — every thread on PR N with its verdict (block-parsed, inferred from history, or manually confirmed).
+- `index.json` — summary of every journal file in the directory.
+- `pr-{N}-backfill.md` — only when `extract-pr.sh` is run; lists threads whose verdict was inferred and need maintainer confirmation.
+
+For historical PRs that predate the discipline, run `bash tools/review-journal/extract-pr.sh <N>` to produce a triage doc with regex-inferred verdicts. Confirm each entry by editing the JSON.
+
+### Multiple bots, multiple severity vocabularies
+
+The journal records each thread's reviewer and that reviewer's `reviewer_kind` (`bot:agentic-llm` for CR / Codex / Copilot review; `bot:static-analyzer` for in-house lint bots; `human` for everyone else) plus the severity the reviewer assigned. Severity vocabularies differ — CodeRabbit uses Critical / Major / Minor / Nit; Codex uses P0–P3 — and the journal preserves whatever the reviewer wrote.
+
+Adding a new reviewer (e.g., switching from CodeRabbit to a different agentic review service, or enabling GitHub Copilot review) is a config change in `.review-journal.json`'s `reviewer_profiles` map. The tool does not hard-code a list of supported bots. See `tools/review-journal/README.md` for the profile schema.
+
+### Enforcement
+
+The tool's `--enforce` mode is configurable per repo:
+
+- `off` — never warn.
+- `warning` (default) — log `BACKFILL NEEDED` / `RESOLVE NEEDED` to stderr; exit 0. Suitable for CI commenting without blocking merge.
+- `strict` — non-zero exit on any violation. Suitable for branch-protection check.
+
+The CI workflow snippet under `tools/review-journal/install/ci-check.yml` runs in `warning` mode and comments on the PR when backfill is needed. It is opt-in — copy into `.github/workflows/` to enable.
+
 ## Self-review
 
 In addition to the automated reviewers, the orchestrator does a self-review pass before opening each PR:

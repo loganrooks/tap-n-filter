@@ -46,3 +46,7 @@ test-artifacts/*
 .idea/
 *.iml
 Build/
+tools/review-journal/__pycache__/
+
+# Claude Code agent worktrees (transient session state)
+.claude/worktrees/

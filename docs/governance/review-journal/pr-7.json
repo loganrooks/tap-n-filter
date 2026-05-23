@@ -1,0 +1,1420 @@
+{
+  "schema_version": "1.0",
+  "pr_number": 7,
+  "repo": "loganrooks/tap-n-filter",
+  "last_synced_at": "2026-05-23T01:08:31.623228+00:00",
+  "threads": [
+    {
+      "id": "PRRT_kwDOSjmLjM6D4UJ2",
+      "path": "Tests/UISnapshotTests/SnapshotHelper.swift",
+      "line": null,
+      "reviewer": "chatgpt-codex-connector",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "P1",
+      "category": "test/baseline-strategy",
+      "finding_excerpt": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Fail snapshot tests when baseline images are missing**\n\nWhen a baseline PNG is absent, `assertSnapshot` writes a new baseline and passes instead of failing. In this commit only `__Snapshots__/README.md` is added",
+      "created_at": "2026-05-21T17:18:38Z",
+      "resolved": true,
+      "outdated": true,
+      "verdict": "DEFERRED",
+      "verdict_commit": "796d11d",
+      "verdict_refs": [],
+      "verdict_notes": "Round 2 changed the helper to XCTSkip on missing baseline (vs the original silent write-and-pass). The deviation is documented in ADR-015 as env-bounded mirroring ADR-010. TNF_SNAPSHOT_REGEN=1 is the opt-in regen path for a maintainer with full Xcode. V0.2 ships a record-snapshots CI workflow per ADR-015's resolution path.",
+      "verdict_source": "block",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-05-22T21:44:39.984756+00:00",
+          "source": "block",
+          "verdict": "DEFERRED",
+          "by": "tool"
+        }
+      ],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6D4UJ6",
+      "path": "Tests/AccessibilityTreeTests/AccessibilityTreeTests.swift",
+      "line": null,
+      "reviewer": "chatgpt-codex-connector",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "P2",
+      "category": "ax/hosting-strategy",
+      "finding_excerpt": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Host AX audit view in a real window before dumping**\n\nThe accessibility test walks a bare `NSHostingView` immediately after `layoutSubtreeIfNeeded()`, but the same commit\u2019s dump utility documents that SwiftUI acc",
+      "created_at": "2026-05-21T17:18:38Z",
+      "resolved": true,
+      "outdated": true,
+      "verdict": "OBSOLETE",
+      "verdict_commit": "f591f8a",
+      "verdict_refs": [],
+      "verdict_notes": "AccessibilityTreeTests no longer hosts the view in-process at all. The XCTest target validates the committed JSON artifact + source-level .accessibilityLabel discipline. The NSHostingView walk lives in the tap-n-filter-a11y-dump executable target where a real NSWindow can be created. ADR-011 documents the split.",
+      "verdict_source": "block",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-05-22T21:44:39.984981+00:00",
+          "source": "block",
+          "verdict": "OBSOLETE",
+          "by": "tool"
+        }
+      ],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6D4UJ_",
+      "path": "Sources/ViewModel/AppViewModel.swift",
+      "line": null,
+      "reviewer": "chatgpt-codex-connector",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "P2",
+      "category": "concurrency/off-main",
+      "finding_excerpt": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Refresh available sources off the main actor**\n\n`refreshAvailableSources()` calls `capture.availableSources()` synchronously on the main actor, and the timer triggers it every 5 seconds. The same file already not",
+      "created_at": "2026-05-21T17:18:38Z",
+      "resolved": true,
+      "outdated": true,
+      "verdict": "OBSOLETE",
+      "verdict_commit": "7ac3816",
+      "verdict_refs": [],
+      "verdict_notes": "refreshAvailableSources already uses fetchAvailableSourcesOffMain (Task.detached) since the original Phase 3 commit. No separate fix required.",
+      "verdict_source": "block",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-05-22T21:44:39.984988+00:00",
+          "source": "block",
+          "verdict": "OBSOLETE",
+          "by": "tool"
+        }
+      ],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6D4UJm",
+      "path": "Sources/ViewModel/AppViewModel.swift",
+      "line": 754,
+      "reviewer": "chatgpt-codex-connector",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "P1",
+      "category": "lifecycle/preset-reattach",
+      "finding_excerpt": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Reattach and restart audio after loading a preset**\n\nWhen `installPreset` runs while capture is active, it stops the engine and detaches the current graph, but never re-attaches the new graph or restarts the engi",
+      "created_at": "2026-05-21T17:18:38Z",
+      "resolved": true,
+      "outdated": false,
+      "verdict": "ACCEPTED_MODIFIED",
+      "verdict_commit": "d6ce226",
+      "verdict_refs": [],
+      "verdict_notes": "installPreset now stops on entry and calls attemptReattach() when wasRunning. Restores the original graph if Graph.restore throws so a failed preset load doesn't silently kill live audio.",
+      "verdict_source": "block",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-05-22T21:44:39.984991+00:00",
+          "source": "block",
+          "verdict": "ACCEPTED_MODIFIED",
+          "by": "tool"
+        }
+      ],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6D4UJt",
+      "path": "Sources/UI/ChainEditorView.swift",
+      "line": 20,
+      "reviewer": "chatgpt-codex-connector",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "P2",
+      "category": "ui/reorder-affordance",
+      "finding_excerpt": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Wire effect-row reordering into the chain editor UI**\n\nThe chain editor renders rows inside a `ScrollView`/`LazyVStack` with no move gesture or `onMove` handler, so `AppViewModel.moveEffect(from:to:)` is never re",
+      "created_at": "2026-05-21T17:18:38Z",
+      "resolved": true,
+      "outdated": false,
+      "verdict": "ACCEPTED_MODIFIED",
+      "verdict_commit": "7ac3816",
+      "verdict_refs": [],
+      "verdict_notes": "Wired reorder via up/down chevron buttons in EffectRow.reorderButtons (per ADR-013) rather than SwiftUI .onMove gesture. MenuBarExtra + drag-and-drop is historically flaky on macOS 14.x and drag handles are invisible to keyboard/VoiceOver, which would have failed the accessibility gate.",
+      "verdict_source": "block",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-05-22T21:44:39.984994+00:00",
+          "source": "block",
+          "verdict": "ACCEPTED_MODIFIED",
+          "by": "tool"
+        }
+      ],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6D4UKC",
+      "path": "Tests/AccessibilityTreeTests/AccessibilityTreeTests.swift",
+      "line": null,
+      "reviewer": "chatgpt-codex-connector",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "P2",
+      "category": "ax/artifact-schema",
+      "finding_excerpt": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Keep accessibility artifact schema consistent across generators**\n\nThe test target writes `phase-3-accessibility-tree.json` as a raw `AccessibilityNode`, but the new `tap-n-filter-a11y-dump` executable writes a w",
+      "created_at": "2026-05-21T17:18:38Z",
+      "resolved": true,
+      "outdated": true,
+      "verdict": "OBSOLETE",
+      "verdict_commit": "f591f8a",
+      "verdict_refs": [],
+      "verdict_notes": "XCTest target defines its own AccessibilityDumpDocument struct mirroring DumpDocument from the executable. Schema is consistent; the test decodes independently so the test target doesn't link the executable.",
+      "verdict_source": "block",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-05-22T21:44:39.984996+00:00",
+          "source": "block",
+          "verdict": "OBSOLETE",
+          "by": "tool"
+        }
+      ],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6D4UKI",
+      "path": "Sources/UI/ChainEditorView.swift",
+      "line": null,
+      "reviewer": "chatgpt-codex-connector",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "P2",
+      "category": "ui/dependency-injection",
+      "finding_excerpt": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Build Add Effect menu from the injected registry**\n\n`AppViewModel` is designed to accept an injected `EffectNodeRegistry`, but `AddEffectButton` ignores that collaborator and always lists `EffectNodeRegistry.shar",
+      "created_at": "2026-05-21T17:18:38Z",
+      "resolved": true,
+      "outdated": true,
+      "verdict": "OBSOLETE",
+      "verdict_commit": "7ac3816",
+      "verdict_refs": [],
+      "verdict_notes": "AddEffectButton already iterates viewModel.availableEffectTypes which forwards to the injected EffectNodeRegistry. Already in place at the original Phase 3 commit; no separate fix needed.",
+      "verdict_source": "block",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-05-22T21:44:39.984998+00:00",
+          "source": "block",
+          "verdict": "OBSOLETE",
+          "by": "tool"
+        }
+      ],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6D4kdE",
+      "path": "Sources/ViewModel/AppViewModel.swift",
+      "line": null,
+      "reviewer": "chatgpt-codex-connector",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "P2",
+      "category": "source-resolution-correctness",
+      "finding_excerpt": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Match selected source by PID before bundle fallback**\n\n`powerOn()` re-resolves the source using only `bundleIdentifier`, even though the picker selection is keyed by `pid`. If two running processes share the same",
+      "created_at": "2026-05-21T17:33:44Z",
+      "resolved": true,
+      "outdated": true,
+      "verdict": "ACCEPTED",
+      "verdict_commit": "14b240b",
+      "verdict_refs": [],
+      "verdict_notes": "powerOn now resolves the source by PID first and falls back to bundle ID only if the PID is gone. The picker keys on PID; bundle-only matching could start the wrong process when two share a bundle ID. Edge case (nil bundle vs nil bundle) fixed in 814a751.",
+      "verdict_source": "block",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-05-22T21:44:39.985204+00:00",
+          "source": "block",
+          "verdict": "ACCEPTED",
+          "by": "tool"
+        }
+      ],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6D4kdG",
+      "path": "Sources/ViewModel/AppViewModel.swift",
+      "line": null,
+      "reviewer": "chatgpt-codex-connector",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "P2",
+      "category": "lifecycle/rollback-error",
+      "finding_excerpt": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Surface rollback stop failures instead of discarding them**\n\nThe failure rollback path uses `try? capture.stop()`, which swallows teardown errors when `graph.attach` or `engine.start` fails. In `CaptureController",
+      "created_at": "2026-05-21T17:33:44Z",
+      "resolved": true,
+      "outdated": true,
+      "verdict": "OBSOLETE",
+      "verdict_commit": "14b240b",
+      "verdict_refs": [],
+      "verdict_notes": "stopCaptureLoggingRollbackError helper logs the rollback failure to the unified log + debug-log ring instead of swallowing it with try?. Already present in the round-2 commit.",
+      "verdict_source": "block",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-05-22T21:44:39.985207+00:00",
+          "source": "block",
+          "verdict": "OBSOLETE",
+          "by": "tool"
+        }
+      ],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6D4kdI",
+      "path": "Tests/UISnapshotTests/ControlPanelViewSnapshotTests.swift",
+      "line": 90,
+      "reviewer": "chatgpt-codex-connector",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "P2",
+      "category": "test/state-propagation",
+      "finding_excerpt": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Wait for state publisher before rendering snapshots**\n\n`makeModel` returns immediately after constructing `AppViewModel`, but that model mirrors `captureState` via `.receive(on: DispatchQueue.main)`, which delive",
+      "created_at": "2026-05-21T17:33:44Z",
+      "resolved": true,
+      "outdated": false,
+      "verdict": "OBSOLETE",
+      "verdict_commit": "14b240b",
+      "verdict_refs": [],
+      "verdict_notes": "makeModel already polls captureState != state until a deadline (lines 73-76). Round 2 then upgraded this to a hard-fail on timeout via XCTFail + throw (also addresses thread 8ME6).",
+      "verdict_source": "block",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-05-22T21:44:39.985210+00:00",
+          "source": "block",
+          "verdict": "OBSOLETE",
+          "by": "tool"
+        }
+      ],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6D4kdL",
+      "path": "Sources/ViewModel/AppViewModel.swift",
+      "line": null,
+      "reviewer": "chatgpt-codex-connector",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "P2",
+      "category": "lifecycle/graph-detach",
+      "finding_excerpt": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Stop capture when graph reattach fails after mutation**\n\nAfter `mutateGraph` stops the engine and detaches the graph, `attemptReattach()` only records an error if re-attach/start fails, but it does not stop the c",
+      "created_at": "2026-05-21T17:33:44Z",
+      "resolved": true,
+      "outdated": true,
+      "verdict": "ACCEPTED_MODIFIED",
+      "verdict_commit": "14b240b",
+      "verdict_refs": [],
+      "verdict_notes": "attemptReattach now splits attach and engine.start into separate do/catch blocks. On engine.start failure (with attach already succeeded), handleReattachFailure detaches the graph before transitioning out of .running so the next attach call doesn't hit requireDetached.",
+      "verdict_source": "block",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-05-22T21:44:39.985212+00:00",
+          "source": "block",
+          "verdict": "ACCEPTED_MODIFIED",
+          "by": "tool"
+        }
+      ],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6D76Q6",
+      "path": "Sources/UI/EffectControlsView.swift",
+      "line": null,
+      "reviewer": "chatgpt-codex-connector",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "P2",
+      "category": "ui/binding-staleness",
+      "finding_excerpt": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Read live value in Stepper binding getter**\n\nThe Stepper binding reads from `current`, which is captured once when the view body is built, instead of reading the node\u2019s latest parameter value on each get. `update",
+      "created_at": "2026-05-21T21:10:21Z",
+      "resolved": true,
+      "outdated": true,
+      "verdict": "ACCEPTED",
+      "verdict_commit": "14b240b",
+      "verdict_refs": [],
+      "verdict_notes": "Stepper binding getter now reads currentValue(for:) on each invocation instead of a once-captured local. Theoretical staleness window covered, at the cost of slightly more verbose body.",
+      "verdict_source": "block",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-05-22T21:44:39.985214+00:00",
+          "source": "block",
+          "verdict": "ACCEPTED",
+          "by": "tool"
+        }
+      ],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6D76Q7",
+      "path": "Sources/UI/EffectControlsView.swift",
+      "line": null,
+      "reviewer": "chatgpt-codex-connector",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "P2",
+      "category": "ui/binding-staleness",
+      "finding_excerpt": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Avoid stale selection source in enum picker binding**\n\nThe Picker selection getter is derived from `current`, which is computed once per render and then captured, so it can drift from the actual node parameter af",
+      "created_at": "2026-05-21T21:10:21Z",
+      "resolved": true,
+      "outdated": true,
+      "verdict": "ACCEPTED",
+      "verdict_commit": "14b240b",
+      "verdict_refs": [],
+      "verdict_notes": "Picker selection getter now reads live; accessibility-value extracted into a helper for the same reason.",
+      "verdict_source": "block",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-05-22T21:44:39.985216+00:00",
+          "source": "block",
+          "verdict": "ACCEPTED",
+          "by": "tool"
+        }
+      ],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6D76Q9",
+      "path": "Sources/UI/EffectRow.swift",
+      "line": null,
+      "reviewer": "chatgpt-codex-connector",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "P2",
+      "category": "ui/reorder-arithmetic",
+      "finding_excerpt": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Move effect down by one position, not two**\n\nThe down-arrow handler calls `moveEffect(from: index, to: index + 2)`, which with the current `Graph.move` implementation moves many rows down two slots (for example i",
+      "created_at": "2026-05-21T21:10:21Z",
+      "resolved": true,
+      "outdated": true,
+      "verdict": "ACCEPTED",
+      "verdict_commit": "14b240b",
+      "verdict_refs": [],
+      "verdict_notes": "EffectRow move-down handler corrected from to:index+2 to to:index+1 per Graph.move's post-removal-index convention. The original was move-by-two for chains of length > 2.",
+      "verdict_source": "block",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-05-22T21:44:39.985218+00:00",
+          "source": "block",
+          "verdict": "ACCEPTED",
+          "by": "tool"
+        }
+      ],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6D76Qx",
+      "path": "Sources/ViewModel/AppViewModel.swift",
+      "line": null,
+      "reviewer": "chatgpt-codex-connector",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "P1",
+      "category": "audio-routing-correctness",
+      "finding_excerpt": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Route post-mutation reattach through main mixer**\n\n`attemptReattach()` reconnects the graph to `engine.outputNode`, but `powerOn()` explicitly uses `engine.mainMixerNode` to get the processed chain into the engin",
+      "created_at": "2026-05-21T21:10:21Z",
+      "resolved": true,
+      "outdated": true,
+      "verdict": "OBSOLETE",
+      "verdict_commit": "d108da2",
+      "verdict_refs": [],
+      "verdict_notes": "attemptReattach uses engine.mainMixerNode matching powerOn. Same fix as the CR Major thread on AppViewModel.swift:389. Already addressed before this round's review batch.",
+      "verdict_source": "block",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-05-22T21:44:39.985220+00:00",
+          "source": "block",
+          "verdict": "OBSOLETE",
+          "by": "tool"
+        }
+      ],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6D76Qy",
+      "path": "Sources/ViewModel/AppViewModel.swift",
+      "line": null,
+      "reviewer": "chatgpt-codex-connector",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "P2",
+      "category": "lifecycle/graph-detach",
+      "finding_excerpt": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Detach graph when reattach engine start fails**\n\nIf `engine.start()` throws inside `attemptReattach()`, the catch path stops capture but never detaches the graph. Since `Graph.attach` tracks attachment state, lea",
+      "created_at": "2026-05-21T21:10:21Z",
+      "resolved": true,
+      "outdated": true,
+      "verdict": "ACCEPTED",
+      "verdict_commit": "14b240b",
+      "verdict_refs": [],
+      "verdict_notes": "Duplicate of thread 4kdL. handleReattachFailure detaches the graph if attach succeeded before engine.start threw.",
+      "verdict_source": "block",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-05-22T21:44:39.985226+00:00",
+          "source": "block",
+          "verdict": "ACCEPTED",
+          "by": "tool"
+        }
+      ],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6D76RD",
+      "path": "Sources/ViewModel/AppViewModel.swift",
+      "line": 839,
+      "reviewer": "chatgpt-codex-connector",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "P2",
+      "category": "concurrency/restore-race",
+      "finding_excerpt": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Don\u2019t overwrite user-picked source from async restore**\n\n`restoreSourceFromDefaults()` launches an async source lookup and later assigns `currentSource` unconditionally when it finds a bundle-ID match. If the use",
+      "created_at": "2026-05-21T21:10:22Z",
+      "resolved": true,
+      "outdated": false,
+      "verdict": "ACCEPTED",
+      "verdict_commit": "14b240b",
+      "verdict_refs": [],
+      "verdict_notes": "restoreSourceFromDefaults now guards `guard self.currentSource == nil else { return }` before writing the restored source. Restore is best-effort and must not overwrite a user-set selection that landed during the async enumeration.",
+      "verdict_source": "block",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-05-22T21:44:39.985228+00:00",
+          "source": "block",
+          "verdict": "ACCEPTED",
+          "by": "tool"
+        }
+      ],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6D8ME2",
+      "path": "Sources/ViewModel/AppViewModel.swift",
+      "line": null,
+      "reviewer": "chatgpt-codex-connector",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "P2",
+      "category": "concurrency/task-coalescing",
+      "finding_excerpt": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Serialize source-change shutdown requests**\n\nAvoid launching a fresh `powerOff()` task on every source selection while capture is running. The picker remains interactive in `.running`, so rapid re-selection can q",
+      "created_at": "2026-05-21T21:25:46Z",
+      "resolved": true,
+      "outdated": true,
+      "verdict": "ACCEPTED",
+      "verdict_commit": "14b240b",
+      "verdict_refs": [],
+      "verdict_notes": "setSource now coalesces concurrent shutdowns into a single tracked sourceChangeShutdownTask. Rapid re-selection while running no longer queues N concurrent powerOff() calls racing the controller's state transitions.",
+      "verdict_source": "block",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-05-22T21:44:39.985230+00:00",
+          "source": "block",
+          "verdict": "ACCEPTED",
+          "by": "tool"
+        }
+      ],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6D8ME3",
+      "path": "Sources/UI/SourcePickerView.swift",
+      "line": null,
+      "reviewer": "chatgpt-codex-connector",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "P2",
+      "category": "ui/picker-sync",
+      "finding_excerpt": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Keep picker selection in sync with available tags**\n\nMake sure the picker\u2019s bound selection only returns a PID that exists in the current option list. `selection.get` always returns `currentSource?.pid`, but the",
+      "created_at": "2026-05-21T21:25:46Z",
+      "resolved": true,
+      "outdated": true,
+      "verdict": "ACCEPTED",
+      "verdict_commit": "14b240b",
+      "verdict_refs": [],
+      "verdict_notes": "SourcePicker selection getter returns nil when currentSource.pid is no longer in availableSources, killing the SwiftUI runtime warning and the silent first-row coercion.",
+      "verdict_source": "block",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-05-22T21:44:39.985232+00:00",
+          "source": "block",
+          "verdict": "ACCEPTED",
+          "by": "tool"
+        }
+      ],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6D8ME6",
+      "path": "Tests/UISnapshotTests/ControlPanelViewSnapshotTests.swift",
+      "line": 82,
+      "reviewer": "chatgpt-codex-connector",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "P2",
+      "category": "test/state-propagation",
+      "finding_excerpt": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Assert state propagation before snapshot rendering**\n\nFail the helper when the requested `CaptureState` never arrives before the timeout instead of silently returning the model. The wait loop exits after 200 ms e",
+      "created_at": "2026-05-21T21:25:46Z",
+      "resolved": true,
+      "outdated": false,
+      "verdict": "ACCEPTED_MODIFIED",
+      "verdict_commit": "14b240b",
+      "verdict_refs": [],
+      "verdict_notes": "makeModel throws SnapshotSetupError.statePropagationTimeout (and XCTFails) when captureState fails to propagate to the requested state within 200ms. No more silent return of a model in the wrong state.",
+      "verdict_source": "block",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-05-22T21:44:39.985234+00:00",
+          "source": "block",
+          "verdict": "ACCEPTED_MODIFIED",
+          "by": "tool"
+        }
+      ],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6D8k4v",
+      "path": "Sources/AccessibilityDump/main.swift",
+      "line": null,
+      "reviewer": "chatgpt-codex-connector",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "P2",
+      "category": "test/blocking-runloop",
+      "finding_excerpt": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Block until accessibility dump run completes**\n\nThe executable schedules `runDump()` asynchronously and then unconditionally exits the main run loop after 1.5 seconds, so on slower CI/GUI sessions (window creatio",
+      "created_at": "2026-05-21T21:58:16Z",
+      "resolved": true,
+      "outdated": true,
+      "verdict": "ACCEPTED_MODIFIED",
+      "verdict_commit": "14b240b",
+      "verdict_refs": [],
+      "verdict_notes": "Replaced 1.5s hardcoded RunLoop.run(until:) with a DispatchSemaphore signaled by runDump() inside the main-queue dispatch, polled in 50ms runloop slices, with a 30s hard timeout fallback.",
+      "verdict_source": "block",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-05-22T21:44:39.985236+00:00",
+          "source": "block",
+          "verdict": "ACCEPTED_MODIFIED",
+          "by": "tool"
+        }
+      ],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6D9dE5",
+      "path": "Sources/UI/EffectControlsView.swift",
+      "line": 192,
+      "reviewer": "chatgpt-codex-connector",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "P2",
+      "category": "ui/state-resync",
+      "finding_excerpt": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Resync slider state after preset or restore updates**\n\n`ParameterSlider` seeds `liveValue` from `initialValue` only once, so when a node parameter changes externally (for example loading a preset with the same no",
+      "created_at": "2026-05-21T23:22:41Z",
+      "resolved": true,
+      "outdated": false,
+      "verdict": "ACCEPTED",
+      "verdict_commit": "796d11d",
+      "verdict_refs": [],
+      "verdict_notes": "ParameterSlider now uses .onChange(of: initialValue) to resync the @State liveValue whenever the parent passes a new value (preset load, programmatic param write). The @State seeding happens once at view-identity creation; the .onChange is the idiomatic fix.",
+      "verdict_source": "block",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-05-22T21:44:39.985238+00:00",
+          "source": "block",
+          "verdict": "ACCEPTED",
+          "by": "tool"
+        }
+      ],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6D9dE8",
+      "path": "Tests/UISnapshotTests/SnapshotHelper.swift",
+      "line": 97,
+      "reviewer": "chatgpt-codex-connector",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "P1",
+      "category": "test/baseline-strategy",
+      "finding_excerpt": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Fail missing snapshot baselines instead of skipping**\n\nIn strict mode, a missing baseline throws `XCTSkip`, which lets CI pass without asserting any pixels for that snapshot. With this commit only adding `__Snaps",
+      "created_at": "2026-05-21T23:22:41Z",
+      "resolved": true,
+      "outdated": false,
+      "verdict": "DUPLICATE",
+      "verdict_commit": "796d11d",
+      "verdict_refs": [],
+      "verdict_notes": "Same disposition as thread 4UJ2 and CR thread 9r4U. Codex re-flagged the XCTSkip in round 3; the disposition is ADR-015 \u2014 accepted env-bounded deviation.",
+      "verdict_source": "block",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-05-22T21:44:39.985241+00:00",
+          "source": "block",
+          "verdict": "DUPLICATE",
+          "by": "tool"
+        }
+      ],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6D4Pc3",
+      "path": "Sources/AccessibilityDump/main.swift",
+      "line": null,
+      "reviewer": "coderabbitai",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "major",
+      "category": null,
+      "finding_excerpt": "_\u26a0\ufe0f Potential issue_ | _\ud83d\udfe0 Major_ | _\u26a1 Quick win_\n\n**Avoid force-unwrapping `UserDefaults` in production source.**\n\nLine 29 can crash if suite creation fails. Guard it and fail with a clear error path instead.\n\n \n\n<details>\n<summary>Proposed fix</summary>\n\n```diff\n `@MainActor`\n func runDump() {\n-",
+      "created_at": "2026-05-21T17:14:27Z",
+      "resolved": true,
+      "outdated": true,
+      "verdict": "ACCEPTED_MODIFIED",
+      "verdict_commit": "f591f8a",
+      "verdict_refs": [],
+      "verdict_notes": "AccessibilityDump/main.swift: force-unwrap UserDefaults \u2192 guard let defaults = UserDefaults(suiteName:) with stderr + exit(1). Per round-2 matrix.",
+      "verdict_source": "manual",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-05-22T21:44:12.043198+00:00",
+          "source": "inferred",
+          "verdict": "ACCEPTED_MODIFIED",
+          "by": "tool"
+        },
+        {
+          "at": "2026-05-22T21:44:39.985246+00:00",
+          "source": "manual",
+          "verdict": "ACCEPTED_MODIFIED",
+          "by": "tool"
+        }
+      ],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6D4PdP",
+      "path": "Sources/UI/EffectControlsView.swift",
+      "line": null,
+      "reviewer": "coderabbitai",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "major",
+      "category": null,
+      "finding_excerpt": "_\u26a0\ufe0f Potential issue_ | _\ud83d\udfe0 Major_ | _\ud83c\udfd7\ufe0f Heavy lift_\n\n**Non-EQ parameter controls are not reading current values.**\n\n`currentValue(for:)` on Line 150 only reads from `EQNode`; other node types always return `defaultValue`. This cascades into incorrect UI state for controls built on `currentValue(for:)",
+      "created_at": "2026-05-21T17:14:27Z",
+      "resolved": true,
+      "outdated": true,
+      "verdict": "ACCEPTED_MODIFIED",
+      "verdict_commit": "d6ce226",
+      "verdict_refs": [],
+      "verdict_notes": "EffectControlsView.swift: currentValue(for:) only reads EQNode \u2192 uses protocol-level node.parameterValue(parameter.identifier) ?? parameter.defaultValue. Per round-2 matrix.",
+      "verdict_source": "manual",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-05-22T21:44:12.043626+00:00",
+          "source": "inferred",
+          "verdict": "ACCEPTED_MODIFIED",
+          "by": "tool"
+        },
+        {
+          "at": "2026-05-22T21:44:39.985250+00:00",
+          "source": "manual",
+          "verdict": "ACCEPTED_MODIFIED",
+          "by": "tool"
+        }
+      ],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6D4PdR",
+      "path": "Sources/UI/PowerToggle.swift",
+      "line": null,
+      "reviewer": "coderabbitai",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "major",
+      "category": null,
+      "finding_excerpt": "_\u26a0\ufe0f Potential issue_ | _\ud83d\udfe0 Major_ | _\u26a1 Quick win_\n\n**`Retry` state does not retry capture.**\n\nOn Line 75, the UI presents \u201cRetry\u201d, but the handler only clears the error and powers off. This requires an extra tap and breaks expected behavior for the labeled action.\n\n \n\n<details>\n<summary>Suggested fix",
+      "created_at": "2026-05-21T17:14:27Z",
+      "resolved": true,
+      "outdated": true,
+      "verdict": "ACCEPTED_MODIFIED",
+      "verdict_commit": "580e0f1",
+      "verdict_refs": [],
+      "verdict_notes": "PowerToggle.swift: 'Retry' didn't retry \u2192 case .failed in tap() calls clearError() then Task { await viewModel.powerOn() }. Per round-2 matrix.",
+      "verdict_source": "manual",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-05-22T21:44:12.043630+00:00",
+          "source": "inferred",
+          "verdict": "ACCEPTED_MODIFIED",
+          "by": "tool"
+        },
+        {
+          "at": "2026-05-22T21:44:39.985253+00:00",
+          "source": "manual",
+          "verdict": "ACCEPTED_MODIFIED",
+          "by": "tool"
+        }
+      ],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6D4Pdf",
+      "path": "Sources/ViewModel/AppViewModel.swift",
+      "line": 775,
+      "reviewer": "coderabbitai",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "major",
+      "category": null,
+      "finding_excerpt": "_\u26a0\ufe0f Potential issue_ | _\ud83d\udfe0 Major_ | _\u26a1 Quick win_\n\n**Restore engine attachment after loading a preset during active capture.**\n\nLine 520 stops/detaches when running, but Line 526-531 replaces `graph` without reattaching/restarting. If preset load occurs while running, capture state can remain active",
+      "created_at": "2026-05-21T17:14:27Z",
+      "resolved": true,
+      "outdated": false,
+      "verdict": "ACCEPTED_MODIFIED",
+      "verdict_commit": "d6ce226",
+      "verdict_refs": [],
+      "verdict_notes": "AppViewModel.swift:723: preset load doesn't reattach \u2192 installPreset stops on entry and calls attemptReattach() if wasRunning. Per round-2 matrix.",
+      "verdict_source": "manual",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-05-22T21:44:12.043633+00:00",
+          "source": "inferred",
+          "verdict": "ACCEPTED_MODIFIED",
+          "by": "tool"
+        },
+        {
+          "at": "2026-05-22T21:44:39.985256+00:00",
+          "source": "manual",
+          "verdict": "ACCEPTED_MODIFIED",
+          "by": "tool"
+        }
+      ],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6D4Pdj",
+      "path": "Sources/ViewModel/AppViewModel.swift",
+      "line": 844,
+      "reviewer": "coderabbitai",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "major",
+      "category": null,
+      "finding_excerpt": "_\u26a0\ufe0f Potential issue_ | _\ud83d\udfe0 Major_ | _\u26a1 Quick win_\n\n**Move source enumeration off the main actor.**\n\nLine 580 and Line 628 synchronously call `capture.availableSources()` on `@MainActor`, despite Line 255 noting HAL enumeration can stall UI. This can freeze menubar interactions during restore/refresh",
+      "created_at": "2026-05-21T17:14:27Z",
+      "resolved": true,
+      "outdated": false,
+      "verdict": "ACCEPTED_MODIFIED",
+      "verdict_commit": "d6ce226",
+      "verdict_refs": [],
+      "verdict_notes": "AppViewModel.swift:785: source enumeration on main actor \u2192 restoreSourceFromDefaults already uses fetchAvailableSourcesOffMain \u2192 Task.detached. Already-met; no new commit (existing).",
+      "verdict_source": "manual",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-05-22T21:44:12.043635+00:00",
+          "source": "inferred",
+          "verdict": "ACCEPTED_MODIFIED",
+          "by": "tool"
+        },
+        {
+          "at": "2026-05-22T21:44:39.985259+00:00",
+          "source": "manual",
+          "verdict": "ACCEPTED_MODIFIED",
+          "by": "tool"
+        }
+      ],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6D4Pdr",
+      "path": "Tests/AccessibilityTreeTests/AccessibilityTreeTests.swift",
+      "line": null,
+      "reviewer": "coderabbitai",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "critical",
+      "category": null,
+      "finding_excerpt": "_\u26a0\ufe0f Potential issue_ | _\ud83d\udd34 Critical_ | _\u26a1 Quick win_\n\n**Accessibility tree walk happens before SwiftUI accessibility nodes are materialized.**\n\nThe CI failure at Line 64 is consistent with the current setup: `NSHostingView` is never attached to a real `NSWindow` and the run loop is not advanced. In t",
+      "created_at": "2026-05-21T17:14:27Z",
+      "resolved": true,
+      "outdated": true,
+      "verdict": "ACCEPTED_MODIFIED",
+      "verdict_commit": "f591f8a",
+      "verdict_refs": [],
+      "verdict_notes": "AccessibilityTreeTests.swift: AX walk before SwiftUI materializes \u2192 in-process walk removed from XCTest; replaced with committed-artifact validation + source-grep. Walk moved to tap-n-filter-a11y-dump executable. ADR-011.",
+      "verdict_source": "manual",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-05-22T21:44:12.043637+00:00",
+          "source": "inferred",
+          "verdict": "ACCEPTED_MODIFIED",
+          "by": "tool"
+        },
+        {
+          "at": "2026-05-22T21:44:39.985261+00:00",
+          "source": "manual",
+          "verdict": "ACCEPTED_MODIFIED",
+          "by": "tool"
+        }
+      ],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6D4Pdu",
+      "path": "Tests/ViewModelTests/AppViewModelTests.swift",
+      "line": 134,
+      "reviewer": "coderabbitai",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "major",
+      "category": null,
+      "finding_excerpt": "_\u26a0\ufe0f Potential issue_ | _\ud83d\udfe0 Major_ | _\u26a1 Quick win_\n\n**Persistence round-trip test assumes an empty graph but doesn\u2019t enforce it.**\n\nThis is why CI fails at Lines 123\u2013124. The model can start with fallback nodes, so adding one reverb does not guarantee exactly one node.\n\n \n\n<details>\n<summary>Proposed",
+      "created_at": "2026-05-21T17:14:28Z",
+      "resolved": true,
+      "outdated": false,
+      "verdict": "ACCEPTED_MODIFIED",
+      "verdict_commit": "f591f8a",
+      "verdict_refs": [],
+      "verdict_notes": "AppViewModelTests.swift:134: persistence test assumes empty graph \u2192 test explicitly empties via while !model.graph.nodes.isEmpty before asserting. Already-met; no new commit.",
+      "verdict_source": "manual",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-05-22T21:44:12.043639+00:00",
+          "source": "inferred",
+          "verdict": "ACCEPTED_MODIFIED",
+          "by": "tool"
+        },
+        {
+          "at": "2026-05-22T21:44:39.985264+00:00",
+          "source": "manual",
+          "verdict": "ACCEPTED_MODIFIED",
+          "by": "tool"
+        }
+      ],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6D4e3N",
+      "path": "Tests/AccessibilityTreeTests/AccessibilityTreeTests.swift",
+      "line": 62,
+      "reviewer": "coderabbitai",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "minor",
+      "category": null,
+      "finding_excerpt": "_\u26a0\ufe0f Potential issue_ | _\ud83d\udfe1 Minor_ | _\u26a1 Quick win_\n\n**Fix stale rerun command in failure guidance.**\n\nThe assertion text points to `swift run AccessibilityDump`, but the executable target in this PR is `tap-n-filter-a11y-dump`. The current message will send contributors to a non-existent command.",
+      "created_at": "2026-05-21T17:28:48Z",
+      "resolved": true,
+      "outdated": false,
+      "verdict": "ACCEPTED_MODIFIED",
+      "verdict_commit": "f591f8a",
+      "verdict_refs": [],
+      "verdict_notes": "AccessibilityTreeTests.swift:60: stale 'swift run AccessibilityDump' rerun command \u2192 updated to 'swift run tap-n-filter-a11y-dump'. Per round-2 matrix.",
+      "verdict_source": "manual",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-05-22T21:44:12.043640+00:00",
+          "source": "inferred",
+          "verdict": "ACCEPTED_MODIFIED",
+          "by": "tool"
+        },
+        {
+          "at": "2026-05-22T21:44:39.985266+00:00",
+          "source": "manual",
+          "verdict": "ACCEPTED_MODIFIED",
+          "by": "tool"
+        }
+      ],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6D7t6E",
+      "path": "Tests/UISnapshotTests/ControlPanelViewSnapshotTests.swift",
+      "line": null,
+      "reviewer": "coderabbitai",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "minor",
+      "category": "style/test-naming",
+      "finding_excerpt": "_\u26a0\ufe0f Potential issue_ | _\ud83d\udfe1 Minor_ | _\u26a1 Quick win_\n\n**Use descriptive sentence-style XCTest names.**\n\nLine 20, Line 27, and Line 40 still use terse `test_snapshot_*` names; please rename them to descriptive sentence-style names per test conventions.\n\n<details>\n<summary>Suggested rename diff</summary>",
+      "created_at": "2026-05-21T20:56:51Z",
+      "resolved": true,
+      "outdated": true,
+      "verdict": "REJECTED_BAD_FIT",
+      "verdict_commit": null,
+      "verdict_refs": [],
+      "verdict_notes": "Project-wide convention across Tests/* is test_<noun>_<verb> snake-case (verified by grep). Renaming three snapshot tests to sentence-style would diverge from the rest of the suite. Worth a project-wide pass in a separate PR if the team wants to adopt sentence-style; not appropriate as a one-file change.",
+      "verdict_source": "block",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-05-22T21:44:39.985268+00:00",
+          "source": "block",
+          "verdict": "REJECTED_BAD_FIT",
+          "by": "tool"
+        }
+      ],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6D71uI",
+      "path": "Sources/ViewModel/AppViewModel.swift",
+      "line": 421,
+      "reviewer": "coderabbitai",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "major",
+      "category": null,
+      "finding_excerpt": "_\u26a0\ufe0f Potential issue_ | _\ud83d\udfe0 Major_ | _\u26a1 Quick win_\n\n**Use the same attach destination for reattach paths.**\n\n`powerOn()` now uses `engine.mainMixerNode`, but `attemptReattach()` still uses `engine.outputNode` (Line 548). After a running-chain mutation/preset swap, reattach can fall back to the old rou",
+      "created_at": "2026-05-21T21:05:21Z",
+      "resolved": true,
+      "outdated": false,
+      "verdict": "ACCEPTED_MODIFIED",
+      "verdict_commit": "d108da2",
+      "verdict_refs": [],
+      "verdict_notes": "AppViewModel.swift:389: reattach destination drift \u2192 attemptReattach uses engine.mainMixerNode, matching powerOn. CR auto-resolved the range 580e0f1..ea899cc; canonical fix is d108da2 per round-2 matrix.",
+      "verdict_source": "manual",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-05-22T21:44:12.043642+00:00",
+          "source": "inferred",
+          "verdict": "ACCEPTED_MODIFIED",
+          "by": "tool"
+        },
+        {
+          "at": "2026-05-22T21:44:39.985271+00:00",
+          "source": "manual",
+          "verdict": "ACCEPTED_MODIFIED",
+          "by": "tool"
+        }
+      ],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6D9r4M",
+      "path": "Sources/ViewModel/AppViewModel.swift",
+      "line": null,
+      "reviewer": "coderabbitai",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "major",
+      "category": null,
+      "finding_excerpt": "_\u26a0\ufe0f Potential issue_ | _\ud83d\udfe0 Major_ | _\u26a1 Quick win_\n\n**Prevent nil bundle-ID fallback from selecting an unrelated source.**\n\nOn Line 354, the fallback compares optional bundle IDs directly. If the selected source has `nil` bundle ID and its PID is gone, this can match a different `nil`-bundle source.",
+      "created_at": "2026-05-21T23:48:40Z",
+      "resolved": true,
+      "outdated": true,
+      "verdict": "ACCEPTED_MODIFIED",
+      "verdict_commit": "814a751",
+      "verdict_refs": [],
+      "verdict_notes": "Inferred from auto-resolve marker citing commit 814a751. Confirmed during backfill; commit verified in the repo history.",
+      "verdict_source": "manual",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-05-22T21:44:12.043644+00:00",
+          "source": "inferred",
+          "verdict": "ACCEPTED_MODIFIED",
+          "by": "tool"
+        },
+        {
+          "at": "2026-05-22T22:08:08Z",
+          "source": "manual",
+          "verdict": "ACCEPTED_MODIFIED",
+          "by": "orchestrator-backfill"
+        }
+      ],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6D9r4U",
+      "path": "Tests/UISnapshotTests/SnapshotHelper.swift",
+      "line": 97,
+      "reviewer": "coderabbitai",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "major",
+      "category": "test/baseline-strategy",
+      "finding_excerpt": "_\u26a0\ufe0f Potential issue_ | _\ud83d\udfe0 Major_ | _\u26a1 Quick win_\n\n**Missing baselines are still non-blocking in \u201cstrict\u201d mode.**\n\nOn Line 93, missing baselines throw `XCTSkip`, so CI can pass without any pixel assertion for that snapshot. This undermines strict-mode enforcement.\n\n \n\n<details>\n<summary>Suggested fix",
+      "created_at": "2026-05-21T23:48:40Z",
+      "resolved": true,
+      "outdated": false,
+      "verdict": "DEFERRED",
+      "verdict_commit": "796d11d",
+      "verdict_refs": [],
+      "verdict_notes": "Disposition: ADR-015 \u2014 accepted env-bounded deviation mirroring ADR-010. XCTSkip is the strict-mode default; XCTFail would block CI for a known infrastructure gap (no baselines committed, no CI workflow to record them yet). Phase 3 verification rerun-1 accepted the deviation. V0.2 ships a record-snapshots workflow.",
+      "verdict_source": "block",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-05-22T21:44:39.985274+00:00",
+          "source": "block",
+          "verdict": "DEFERRED",
+          "by": "tool"
+        }
+      ],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6D9tfm",
+      "path": "docs/audits/verification/phase-3-accessibility.md",
+      "line": 127,
+      "reviewer": "coderabbitai",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "minor",
+      "category": "style/docs-terminology",
+      "finding_excerpt": "_\u26a0\ufe0f Potential issue_ | _\ud83d\udfe1 Minor_ | _\u26a1 Quick win_\n\n**Use \u201cmenu bar\u201d instead of \u201cmenubar\u201d for consistency with macOS terminology.**\n\nPlease replace \u201cmenubar\u201d with \u201cmenu bar\u201d in both occurrences to improve documentation clarity and consistency.\n\n \nAs per coding guidelines, docs should use clear declara",
+      "created_at": "2026-05-21T23:51:52Z",
+      "resolved": true,
+      "outdated": false,
+      "verdict": "ACCEPTED",
+      "verdict_commit": "d97fd20",
+      "verdict_refs": [],
+      "verdict_notes": "Three occurrences of \"menubar\" replaced with \"menu bar\" in docs/audits/verification/phase-3-accessibility.md per Apple HIG terminology. ControlPanelView doc-comment also updated in a8ea11e.",
+      "verdict_source": "block",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-05-22T21:44:39.985276+00:00",
+          "source": "block",
+          "verdict": "ACCEPTED",
+          "by": "tool"
+        }
+      ],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6D9tfp",
+      "path": "docs/audits/verification/phase-3.md",
+      "line": 137,
+      "reviewer": "coderabbitai",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "minor",
+      "category": "style/markdown-lint",
+      "finding_excerpt": "_\u26a0\ufe0f Potential issue_ | _\ud83d\udfe1 Minor_ | _\u26a1 Quick win_\n\n**Add language identifiers to fenced code blocks (MD040).**\n\nBoth fenced blocks are missing a language tag, which can fail markdown lint in CI.\n\n \n\n<details>\n<summary>Suggested patch</summary>\n\n```diff\n-```\n+```text\n Test Case '-[UISnapshotTests.Cont",
+      "created_at": "2026-05-21T23:51:52Z",
+      "resolved": true,
+      "outdated": false,
+      "verdict": "REJECTED_BAD_FIT",
+      "verdict_commit": null,
+      "verdict_refs": [],
+      "verdict_notes": "Target file docs/audits/verification/phase-3.md is authored by the verification subagent (cold-context). Per docs/governance/verification-protocol.md the orchestrator does not edit verification reports after they're written \u2014 even cosmetic edits would muddy the audit trail. Generic markdown-lint suggestion doesn't account for this local artifact-authorship rule. CI doesn't currently enforce md040.",
+      "verdict_source": "block",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-05-22T21:44:39.985278+00:00",
+          "source": "block",
+          "verdict": "REJECTED_BAD_FIT",
+          "by": "tool"
+        }
+      ],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6D9tf0",
+      "path": "Sources/AccessibilityDump/main.swift",
+      "line": 110,
+      "reviewer": "coderabbitai",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "major",
+      "category": null,
+      "finding_excerpt": "_\u26a0\ufe0f Potential issue_ | _\ud83d\udfe0 Major_ | _\u26a1 Quick win_\n\n**Keep the committed accessibility artifact deterministic.**\n\n`generatedAt` and `operatingSystemVersionString` change on every run, so the regenerated JSON will churn even when the accessibility tree is identical. Because this file is checked in and",
+      "created_at": "2026-05-21T23:51:53Z",
+      "resolved": true,
+      "outdated": false,
+      "verdict": "ACCEPTED_MODIFIED",
+      "verdict_commit": "d97fd20",
+      "verdict_refs": [],
+      "verdict_notes": "Inferred from CodeRabbit auto-resolve pattern citing commit d97fd20. Confirmed during backfill; commit verified in the repo history.",
+      "verdict_source": "manual",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-05-22T21:44:12.043646+00:00",
+          "source": "inferred",
+          "verdict": "ACCEPTED_MODIFIED",
+          "by": "tool"
+        },
+        {
+          "at": "2026-05-22T22:08:08Z",
+          "source": "manual",
+          "verdict": "ACCEPTED_MODIFIED",
+          "by": "orchestrator-backfill"
+        }
+      ],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6D9tf3",
+      "path": "Sources/Capture/CoreAudioInterface.swift",
+      "line": null,
+      "reviewer": "coderabbitai",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "major",
+      "category": null,
+      "finding_excerpt": "_\u26a0\ufe0f Potential issue_ | _\ud83d\udfe0 Major_ | _\u26a1 Quick win_\n\n<details>\n<summary>\ud83e\udde9 Analysis chain</summary>\n\n\ud83c\udfc1 Script executed:\n\n```shell\n#!/bin/bash\nset -euo pipefail\n\n# Locate the file and print relevant sections around the referenced lines\nFILE=\"Sources/Capture/CoreAudioInterface.swift\"\n\nif [ ! -f \"$FILE\" ];",
+      "created_at": "2026-05-21T23:51:53Z",
+      "resolved": true,
+      "outdated": true,
+      "verdict": "ACCEPTED_MODIFIED",
+      "verdict_commit": "d97fd20",
+      "verdict_refs": [],
+      "verdict_notes": "Inferred from CodeRabbit auto-resolve pattern citing commit d97fd20. Confirmed during backfill; commit verified in the repo history.",
+      "verdict_source": "manual",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-05-22T21:44:12.043648+00:00",
+          "source": "inferred",
+          "verdict": "ACCEPTED_MODIFIED",
+          "by": "tool"
+        },
+        {
+          "at": "2026-05-22T22:08:08Z",
+          "source": "manual",
+          "verdict": "ACCEPTED_MODIFIED",
+          "by": "orchestrator-backfill"
+        }
+      ],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6D9tf5",
+      "path": "Sources/PowerOnProbe/main.swift",
+      "line": 147,
+      "reviewer": "coderabbitai",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "minor",
+      "category": "tool/cli-validation",
+      "finding_excerpt": "_\u26a0\ufe0f Potential issue_ | _\ud83d\udfe1 Minor_ | _\u26a1 Quick win_\n\n**Don't silently ignore malformed CLI flags.**\n\nIf `--bundle-id` is passed without a value, or `--wait` has a non-integer value, the probe quietly falls back to a different target/default wait. For a debugging tool, that makes the output hard to trus",
+      "created_at": "2026-05-21T23:51:53Z",
+      "resolved": true,
+      "outdated": false,
+      "verdict": "DEFERRED",
+      "verdict_commit": null,
+      "verdict_refs": [],
+      "verdict_notes": "Valid finding but low priority. tap-n-filter-poweron-probe is a developer-only debug tool, not shipped to users. Strict CLI validation can be added when the probe gets more flags or when an in-tree convention for CLI tools is established. Tracked informally; will revisit if the probe gets reused outside one-off debugging sessions.",
+      "verdict_source": "block",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-05-22T21:44:39.985282+00:00",
+          "source": "block",
+          "verdict": "DEFERRED",
+          "by": "tool"
+        }
+      ],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6D9tf7",
+      "path": "Sources/UI/ControlPanelView.swift",
+      "line": null,
+      "reviewer": "coderabbitai",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "minor",
+      "category": null,
+      "finding_excerpt": "_\u26a0\ufe0f Potential issue_ | _\ud83d\udfe1 Minor_ | _\u26a1 Quick win_\n\n**Doc comment should mention the conditional DebugPanel and 820pt max height.**\n\nThe doc comment states the view is \"Composed of `HeaderView`, `SourcePickerView`, `ChainEditorView`, and `FooterView`\" and \"capped at 600 pt,\" but the implementation con",
+      "created_at": "2026-05-21T23:51:53Z",
+      "resolved": true,
+      "outdated": true,
+      "verdict": "ACCEPTED_MODIFIED",
+      "verdict_commit": "a8ea11e",
+      "verdict_refs": [],
+      "verdict_notes": "Inferred from CodeRabbit auto-resolve pattern citing commit a8ea11e. Confirmed during backfill; commit verified in the repo history.",
+      "verdict_source": "manual",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-05-22T21:44:12.043649+00:00",
+          "source": "inferred",
+          "verdict": "ACCEPTED_MODIFIED",
+          "by": "tool"
+        },
+        {
+          "at": "2026-05-22T22:08:08Z",
+          "source": "manual",
+          "verdict": "ACCEPTED_MODIFIED",
+          "by": "orchestrator-backfill"
+        }
+      ],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6D9tf9",
+      "path": "Sources/UI/HeaderView.swift",
+      "line": 16,
+      "reviewer": "coderabbitai",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "major",
+      "category": "swift/public-api",
+      "finding_excerpt": "_\ud83d\udee0\ufe0f Refactor suggestion_ | _\ud83d\udfe0 Major_ | _\u26a1 Quick win_\n\n**Narrow public exposure and document intended public members.**\n\nLine 11 makes `viewModel` part of the public surface, and Lines 13-16 add public members without member-level doc comments. If external access is not required, keep `viewModel` non",
+      "created_at": "2026-05-21T23:51:53Z",
+      "resolved": true,
+      "outdated": false,
+      "verdict": "REJECTED_BAD_FIT",
+      "verdict_commit": null,
+      "verdict_refs": [],
+      "verdict_notes": "@EnvironmentObject across module boundaries requires the property to be public (the view itself is public so the executable target can compose it). Narrowing to internal would break the consumption pattern. The doc-comment additions CR also suggested are reasonable in principle but the modifier-heavy SwiftUI body style makes per-member docs noisy; the view-level doc-comment covers the design intent.",
+      "verdict_source": "block",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-05-22T21:44:39.985285+00:00",
+          "source": "block",
+          "verdict": "REJECTED_BAD_FIT",
+          "by": "tool"
+        }
+      ],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6D9tfu",
+      "path": "docs/decisions/ADR-013-reorder-via-buttons-not-drag.md",
+      "line": null,
+      "reviewer": "coderabbitai",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "minor",
+      "category": null,
+      "finding_excerpt": "_\u26a0\ufe0f Potential issue_ | _\ud83d\udfe1 Minor_ | _\u26a1 Quick win_\n\n**Replace aphoristic phrasing with neutral declarative wording.**\n\n\u201cTwo regressions to gain one feature.\u201d reads like an aphoristic closer; please restate it as a direct factual tradeoff statement in the same section.  \n \n\nAs per coding guidelines, \u201cM",
+      "created_at": "2026-05-21T23:51:53Z",
+      "resolved": true,
+      "outdated": true,
+      "verdict": "ACCEPTED_MODIFIED",
+      "verdict_commit": "d97fd20",
+      "verdict_refs": [],
+      "verdict_notes": "Inferred from CodeRabbit auto-resolve pattern citing commit d97fd20. Confirmed during backfill; commit verified in the repo history.",
+      "verdict_source": "manual",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-05-22T21:44:12.043651+00:00",
+          "source": "inferred",
+          "verdict": "ACCEPTED_MODIFIED",
+          "by": "tool"
+        },
+        {
+          "at": "2026-05-22T22:08:08Z",
+          "source": "manual",
+          "verdict": "ACCEPTED_MODIFIED",
+          "by": "orchestrator-backfill"
+        }
+      ],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6D9tfv",
+      "path": "docs/decisions/dissent-log.md",
+      "line": null,
+      "reviewer": "coderabbitai",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "minor",
+      "category": null,
+      "finding_excerpt": "_\u26a0\ufe0f Potential issue_ | _\ud83d\udfe1 Minor_ | _\u26a1 Quick win_\n\n**Use affirmative declarative wording in decision statements.**\n\nThese lines use contrastive phrasing (\u201cnot \u2026\u201d, \u201crather than \u2026\u201d). Please rewrite them in direct affirmative form to match docs style rules.\n\n<details>\n<summary>Suggested wording</summary",
+      "created_at": "2026-05-21T23:51:53Z",
+      "resolved": true,
+      "outdated": true,
+      "verdict": "ACCEPTED_MODIFIED",
+      "verdict_commit": "d97fd20",
+      "verdict_refs": [],
+      "verdict_notes": "Inferred from CodeRabbit auto-resolve pattern citing commit d97fd20. Confirmed during backfill; commit verified in the repo history.",
+      "verdict_source": "manual",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-05-22T21:44:12.043653+00:00",
+          "source": "inferred",
+          "verdict": "ACCEPTED_MODIFIED",
+          "by": "tool"
+        },
+        {
+          "at": "2026-05-22T22:08:08Z",
+          "source": "manual",
+          "verdict": "ACCEPTED_MODIFIED",
+          "by": "orchestrator-backfill"
+        }
+      ],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6D9tfw",
+      "path": "docs/governance/review-protocol.md",
+      "line": null,
+      "reviewer": "coderabbitai",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "minor",
+      "category": null,
+      "finding_excerpt": "_\u26a0\ufe0f Potential issue_ | _\ud83d\udfe1 Minor_ | _\u26a1 Quick win_\n\n**Avoid repeated \u201cSometimes \u2026\u201d sentence openers in this list item.**\n\nLine 84 uses an anaphoric pattern (\u201cSometimes \u2026\u201d repeated), which hurts readability and conflicts with the docs style rule. Rephrase to vary sentence starts while keeping the same",
+      "created_at": "2026-05-21T23:51:53Z",
+      "resolved": true,
+      "outdated": true,
+      "verdict": "ACCEPTED_MODIFIED",
+      "verdict_commit": "d97fd20",
+      "verdict_refs": [],
+      "verdict_notes": "Inferred from CodeRabbit auto-resolve pattern citing commit d97fd20. Confirmed during backfill; commit verified in the repo history.",
+      "verdict_source": "manual",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-05-22T21:44:12.043654+00:00",
+          "source": "inferred",
+          "verdict": "ACCEPTED_MODIFIED",
+          "by": "tool"
+        },
+        {
+          "at": "2026-05-22T22:08:08Z",
+          "source": "manual",
+          "verdict": "ACCEPTED_MODIFIED",
+          "by": "orchestrator-backfill"
+        }
+      ],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6D9tgE",
+      "path": "Sources/UI/PresetMenu.swift",
+      "line": 5,
+      "reviewer": "coderabbitai",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "major",
+      "category": "style/import-ordering",
+      "finding_excerpt": "_\ud83d\udee0\ufe0f Refactor suggestion_ | _\ud83d\udfe0 Major_ | _\u26a1 Quick win_\n\n**Reorder imports per coding guidelines.**\n\nImports should be ordered with frameworks before internal modules. Currently frameworks (AppKit, SwiftUI, UniformTypeIdentifiers) are mixed with internal modules (Presets, ViewModel).\n\n\n\n\n<details>\n<sum",
+      "created_at": "2026-05-21T23:51:53Z",
+      "resolved": true,
+      "outdated": false,
+      "verdict": "REJECTED_BAD_FIT",
+      "verdict_commit": "e083b9d",
+      "verdict_refs": [],
+      "verdict_notes": "Generic suggestion from CR's training data that conflicts with the established local convention. Every other Sources/UI/*.swift in this repo uses pure alphabetical ordering (no framework/module grouping). Applying CR's patch made PresetMenu the only file with grouping. Reverted in e083b9d. If we want an import-grouping convention, it should be a project-wide decision applied uniformly, not a one-file change driven by a reviewer suggestion that doesn't check the rest of the codebase.",
+      "verdict_source": "block",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-05-22T21:44:39.985289+00:00",
+          "source": "block",
+          "verdict": "REJECTED_BAD_FIT",
+          "by": "tool"
+        }
+      ],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6D9tgH",
+      "path": "Sources/ViewModel/AppViewModel.swift",
+      "line": 49,
+      "reviewer": "coderabbitai",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "major",
+      "category": "swift/typed-errors",
+      "finding_excerpt": "_\ud83d\udee0\ufe0f Refactor suggestion_ | _\ud83d\udfe0 Major_ | _\ud83c\udfd7\ufe0f Heavy lift_\n\n**Keep `AppError` typed end-to-end.**\n\n`CaptureError` stays structured, but `.graph(String)`, `.parameter(String)`, `.preset(String)`, `.engine(String)`, and `.persistence(String)` collapse the rest of the failure domain into UI-ready text. Tha",
+      "created_at": "2026-05-21T23:51:53Z",
+      "resolved": true,
+      "outdated": false,
+      "verdict": "DEFERRED",
+      "verdict_commit": null,
+      "verdict_refs": [],
+      "verdict_notes": "Tracked as U-011 in docs/decisions/uncertainty-log.md. Promoting .graph/.parameter/.preset/.engine/.persistence to typed payloads mirroring .capture(CaptureError) is the right model for V0.2. V0.1.0 collapse is acceptable because no consumer programmatically discriminates between the variants today; everything funnels into lastError + the debug-log panel.",
+      "verdict_source": "block",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-05-22T21:44:39.985291+00:00",
+          "source": "block",
+          "verdict": "DEFERRED",
+          "by": "tool"
+        }
+      ],
+      "extras": {}
+    }
+  ]
+}

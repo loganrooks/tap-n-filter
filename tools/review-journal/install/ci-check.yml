@@ -1,0 +1,74 @@
+# Opt-in GitHub Actions workflow for review-journal enforcement.
+#
+# Install by copying to .github/workflows/review-journal.yml in your repo.
+# Adjust the `enforce` value if you want strict (block-merge) instead of
+# warning (comment-only). See tools/review-journal/README.md for the full
+# enforcement-mode semantics.
+
+name: review-journal
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    # Don't gate drafts. Drafts are often pre-review; verdict blocks are added
+    # as the conversation lands.
+    if: github.event.pull_request.draft == false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run sync-pr (warning mode)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+          # Capture stderr so we can comment it back on the PR if non-empty.
+          bash tools/review-journal/sync-pr.sh \
+            "${{ github.event.pull_request.number }}" \
+            --repo "${{ github.repository }}" \
+            --enforce warning \
+            2>/tmp/review-journal.stderr
+          status=$?
+          echo "::group::review-journal stderr"
+          cat /tmp/review-journal.stderr || true
+          echo "::endgroup::"
+          exit $status
+
+      - name: Comment on PR if backfill needed
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+          if [ ! -s /tmp/review-journal.stderr ]; then
+            echo "No backfill needed; nothing to comment."
+            exit 0
+          fi
+          # Only comment if there's content (BACKFILL NEEDED / RESOLVE NEEDED).
+          if ! grep -qE 'BACKFILL NEEDED|RESOLVE NEEDED' /tmp/review-journal.stderr; then
+            exit 0
+          fi
+          {
+            printf '### review-journal — items need a verdict block\n\n'
+            printf 'The following resolved threads on this PR have no `review-verdict` block. '
+            printf 'Per the project review protocol, every reply should begin with one. '
+            printf 'See `tools/review-journal/README.md` for the format.\n\n'
+            printf '```\n'
+            cat /tmp/review-journal.stderr
+            printf '\n```\n'
+          } > /tmp/review-journal.comment.md
+          gh pr comment "${{ github.event.pull_request.number }}" \
+            --repo "${{ github.repository }}" \
+            --body-file /tmp/review-journal.comment.md
