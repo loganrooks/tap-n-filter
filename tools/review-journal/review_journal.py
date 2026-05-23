@@ -315,6 +315,28 @@ class Config:
                 return prof
         return {"kind": "human", "severity_patterns": [], "auto_resolve_patterns": []}
 
+    def canonical_login_for(self, reviewer_login: str) -> str:
+        """Resolve a reviewer login to its canonical profile key. If the login
+        already IS the canonical key, return it unchanged. If it matches an
+        alias, return the profile key it aliases to. Otherwise return the
+        original login (no profile registered)."""
+        if reviewer_login in self.reviewer_profiles:
+            return reviewer_login
+        for canonical, prof in self.reviewer_profiles.items():
+            if reviewer_login in (prof.get("aliases") or []):
+                return canonical
+        return reviewer_login
+
+    def is_tracked_reviewer(self, reviewer_login: str) -> bool:
+        """True if the reviewer (or one of its aliases) is in `cfg.reviewers`.
+        Used by enforcement to scope BACKFILL/RESOLVE policy violations to the
+        configured reviewer allowlist."""
+        if reviewer_login in self.reviewers:
+            return True
+        # An alias counts if the canonical login is tracked.
+        canonical = self.canonical_login_for(reviewer_login)
+        return canonical in self.reviewers
+
 
 def load_config(start: Path | None = None) -> Config:
     """Walk up from `start` (or PWD) looking for `.review-journal.json`."""
@@ -354,7 +376,8 @@ query($owner:String!, $repo:String!, $pr:Int!, $after:String) {
           isOutdated
           path
           line
-          comments(first:50) {
+          comments(first:100) {
+            pageInfo { hasNextPage endCursor }
             nodes {
               id
               author { login }
@@ -370,9 +393,80 @@ query($owner:String!, $repo:String!, $pr:Int!, $after:String) {
 }
 """
 
+# Follow-up query: fetch additional comment pages on a single thread.
+COMMENTS_PAGE_QUERY = """
+query($thread_id:ID!, $after:String) {
+  node(id: $thread_id) {
+    ... on PullRequestReviewThread {
+      comments(first:100, after:$after) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          author { login }
+          body
+          createdAt
+          url
+        }
+      }
+    }
+  }
+}
+"""
+
+
+def _paginate_thread_comments(thread: dict[str, Any]) -> None:
+    """If a thread has more than 100 comments, fetch the rest and append.
+
+    Mutates the thread dict in place so downstream parsers see the full list.
+    GitHub's GraphQL caps any single connection page at 100; long-lived review
+    threads (frequent re-reviews, lots of discussion) can exceed that, and the
+    verdict block is often in the most recent reply.
+    """
+    comments_conn = thread.get("comments") or {}
+    page_info = comments_conn.get("pageInfo") or {}
+    if not page_info.get("hasNextPage"):
+        return
+    after = page_info.get("endCursor")
+    nodes = comments_conn.setdefault("nodes", [])
+    while after:
+        proc = subprocess.run(
+            ["gh", "api", "graphql",
+             "-f", f"query={COMMENTS_PAGE_QUERY}",
+             "-F", f"thread_id={thread['id']}",
+             "-F", f"after={after}"],
+            capture_output=True, text=True,
+        )
+        if proc.returncode != 0:
+            sys.stderr.write(
+                f"warning: comment pagination on thread {thread.get('id', '?')} "
+                f"failed (gh exit {proc.returncode}); some comments may be missing.\n"
+            )
+            return
+        try:
+            payload = json.loads(proc.stdout)
+        except json.JSONDecodeError:
+            sys.stderr.write(
+                f"warning: comment pagination on thread {thread.get('id', '?')} "
+                f"returned non-JSON; some comments may be missing.\n"
+            )
+            return
+        page = (payload.get("data") or {}).get("node", {}).get("comments") or {}
+        page_nodes = page.get("nodes") or []
+        nodes.extend(page_nodes)
+        pi = page.get("pageInfo") or {}
+        if not pi.get("hasNextPage"):
+            break
+        after = pi.get("endCursor")
+
 
 def fetch_threads_via_gh(owner: str, repo: str, pr_number: int) -> list[dict[str, Any]]:
-    """Fetch every thread on a PR via `gh api graphql` (paginated)."""
+    """Fetch every thread on a PR via `gh api graphql` (paginated).
+
+    Threads are fetched in pages of 100. Each thread's nested `comments`
+    connection is also paginated (see `_paginate_thread_comments`) so that
+    long discussion threads' later replies — where verdict blocks often
+    live — aren't silently dropped.
+    """
     nodes: list[dict[str, Any]] = []
     after: str | None = None
     while True:
@@ -397,6 +491,11 @@ def fetch_threads_via_gh(owner: str, repo: str, pr_number: int) -> list[dict[str
         if not rt["pageInfo"]["hasNextPage"]:
             break
         after = rt["pageInfo"]["endCursor"]
+    # Top-level threads paginated; now paginate any thread whose comments
+    # connection overflows. Most threads have < 5 comments; pagination here
+    # only fires for long discussion threads.
+    for thread in nodes:
+        _paginate_thread_comments(thread)
     return nodes
 
 
@@ -468,10 +567,14 @@ DEFAULT_INFERENCE_RULES: list[dict[str, Any]] = [
         "notes_template": "Inferred from reply: already addressed in {commit}.",
     },
     # "Deferred per ADR-NNN" / "Deferred per U-NNN" → DEFERRED.
+    # Scoped to reply_only so the reviewer's own finding text mentioning
+    # "deferred per ADR-X" (e.g., "we already deferred this per ADR-005,
+    # but now I think it should be revisited") does not auto-classify the
+    # thread as DEFERRED.
     {
         "name": "deferred-per-adr",
         "pattern": r"\b[Dd]eferred\b[^\n]{0,200}\bper\s+(ADR-\d{3})",
-        "match_against": "all_bodies",
+        "match_against": "reply_only",
         "verdict": "DEFERRED",
         "ref_group": 1,
         "notes_template": "Inferred from reply: deferred per {ref}.",
@@ -479,7 +582,7 @@ DEFAULT_INFERENCE_RULES: list[dict[str, Any]] = [
     {
         "name": "deferred-per-ulog",
         "pattern": r"\b[Dd]eferred\b[^\n]{0,200}\bper\s+(U-\d{3})",
-        "match_against": "all_bodies",
+        "match_against": "reply_only",
         "verdict": "DEFERRED",
         "ref_group": 1,
         "notes_template": "Inferred from reply: deferred per {ref}.",
@@ -488,32 +591,30 @@ DEFAULT_INFERENCE_RULES: list[dict[str, Any]] = [
     {
         "name": "deferred-to-version",
         "pattern": r"\b[Dd]eferred\b[^\n]{0,200}\b(V0\.\d+)\b",
-        "match_against": "all_bodies",
+        "match_against": "reply_only",
         "verdict": "DEFERRED",
         "ref_group": 1,
         "notes_template": "Inferred from reply: deferred to {ref}.",
     },
-    # Bare "deferred" — last-resort DEFERRED with no ref.
+    # Bare "deferred" — last-resort DEFERRED with no ref. Reply-only.
     {
         "name": "deferred-bare",
         "pattern": r"\b[Dd]eferred\b",
-        "match_against": "all_bodies",
+        "match_against": "reply_only",
         "verdict": "DEFERRED",
         "notes_template": "Inferred from reply: deferred (no reference).",
     },
-    # "obsolete" bare word → OBSOLETE.
-    {
-        "name": "obsolete-bare",
-        "pattern": r"\bobsolete\b",
-        "match_against": "all_bodies",
-        "verdict": "OBSOLETE",
-        "notes_template": "Inferred from reply: obsolete.",
-    },
-    # "duplicate" / "same as" / "see thread" → DUPLICATE.
+    # NOTE: a previous "obsolete-bare" rule (emit OBSOLETE on the bare word)
+    # was removed because OBSOLETE requires a commit per the validator, and
+    # the bare-word match has none. The richer `already-addressed-with-commit`
+    # rule above still catches the legitimate OBSOLETE-with-commit case.
+    # "duplicate" / "same as" / "see thread" → DUPLICATE. Reply-only so a
+    # reviewer flagging "duplicate code" in their finding doesn't auto-close
+    # the thread.
     {
         "name": "duplicate-bare",
         "pattern": r"\b(?:duplicate|same as|see thread)\b",
-        "match_against": "all_bodies",
+        "match_against": "reply_only",
         "verdict": "DUPLICATE",
         "notes_template": "Inferred from reply: duplicate.",
     },
@@ -545,18 +646,31 @@ def run_inference_rules(
     thread: dict[str, Any],
     rules: list[dict[str, Any]],
     reviewer_login: str,
+    canonical_login: str | None = None,
     reviewer_aliases: list[str] | None = None,
 ) -> VerdictBlock | None:
-    """Try each rule in order; return on first match. None if no rule fires."""
+    """Try each rule in order; return on first match. None if no rule fires.
+
+    A rule's `applies_to_reviewer` (if set) matches when:
+      - it equals the observed `reviewer_login` (the GitHub author), OR
+      - it equals the `canonical_login` (the profile key the alias resolves to),
+        OR
+      - it appears in the profile's `aliases` list.
+    This three-way check lets a maintainer scope a rule to a canonical bot
+    identity even when threads are authored under one of its aliases.
+    """
     comments = thread["comments"]["nodes"]
     if not comments:
         return None
+    canonical = canonical_login or reviewer_login
     aliases = set(reviewer_aliases or [])
     for rule in rules:
         applies = rule.get("applies_to_reviewer")
-        if applies and applies != reviewer_login and applies not in aliases:
-            # The rule is scoped to a specific reviewer that doesn't match.
-            continue
+        if applies:
+            if applies != reviewer_login and applies != canonical and applies not in aliases:
+                # The rule is scoped to a specific reviewer identity that
+                # doesn't match this thread.
+                continue
         pattern = rule.get("pattern")
         if not pattern:
             continue
@@ -581,8 +695,20 @@ def run_inference_rules(
             continue
         commit_group = rule.get("commit_group")
         ref_group = rule.get("ref_group")
-        commit = m.group(commit_group) if commit_group else None
-        ref = m.group(ref_group) if ref_group else None
+        try:
+            commit = m.group(commit_group) if commit_group else None
+            ref = m.group(ref_group) if ref_group else None
+        except (IndexError, re.error, TypeError) as e:
+            # IndexError if the integer group is out of range or the named
+            # group doesn't exist; re.error in older Pythons for missing
+            # group; TypeError if the config value is not int-coercible.
+            # Any of these means the rule is misconfigured — log and skip
+            # rather than crash the sync.
+            sys.stderr.write(
+                f"warning: skipping inference rule {rule.get('name', '?')} — "
+                f"bad commit_group/ref_group ({e!r}).\n"
+            )
+            continue
         notes = _render_template(
             rule.get("notes_template", ""),
             commit=commit, ref=ref, match=m.group(0),
@@ -633,7 +759,12 @@ def infer_verdict(
     """Backward-compatible wrapper. Composes the rules and runs them."""
     rules = assemble_inference_rules(cfg, profile)
     aliases = (profile or {}).get("aliases") or []
-    return run_inference_rules(thread, rules, reviewer_login, aliases)
+    canonical = cfg.canonical_login_for(reviewer_login) if reviewer_login else None
+    return run_inference_rules(
+        thread, rules, reviewer_login,
+        canonical_login=canonical,
+        reviewer_aliases=aliases,
+    )
 
 
 # -------------- Thread → record --------------
@@ -741,12 +872,25 @@ def apply_inferred_to_record(rec: ThreadRecord, block: VerdictBlock) -> None:
 
 
 def extract_blocks_from_thread(thread: dict[str, Any]) -> tuple[VerdictBlock | None, VerdictBlock | None]:
-    """Return (primary, reconsidered) blocks parsed from any reply on the thread."""
+    """Return (primary, reconsidered) blocks parsed from any reply on the thread.
+
+    A malformed block in one reply must NOT crash the whole sync. We emit a
+    stderr warning naming the thread and skip just that reply; other replies
+    and other threads continue to be processed normally.
+    """
     primary: VerdictBlock | None = None
     reconsidered: VerdictBlock | None = None
     for c in thread["comments"]["nodes"][1:]:
         body = c.get("body") or ""
-        for block in parse_all_blocks(body):
+        try:
+            blocks = parse_all_blocks(body)
+        except BlockValidationError as e:
+            sys.stderr.write(
+                f"warning: malformed review-verdict block on thread "
+                f"{thread.get('id', '?')} (comment {c.get('id', '?')}): {e}\n"
+            )
+            continue
+        for block in blocks:
             if block.kind == "reconsidered":
                 reconsidered = block
             elif primary is None:
@@ -1035,9 +1179,11 @@ def _sync_core(args: argparse.Namespace, infer: bool, write_backfill: bool) -> i
         sys.stderr.write(f"error: --enforce must be off | warning | strict (got {enforce_mode!r})\n")
         return 2
 
-    repo_arg = args.repo
+    # --repo wins if passed; otherwise fall back to GH_REPO env var (matches
+    # `gh`'s own convention). The CLI help advertises this fallback.
+    repo_arg = args.repo or os.environ.get("GH_REPO")
     if not repo_arg:
-        sys.stderr.write("error: --repo OWNER/REPO is required\n")
+        sys.stderr.write("error: --repo OWNER/REPO required (or set GH_REPO env var)\n")
         return 2
     if "/" not in repo_arg:
         sys.stderr.write(f"error: --repo must be OWNER/REPO (got {repo_arg!r})\n")
@@ -1078,12 +1224,29 @@ def _sync_core(args: argparse.Namespace, infer: bool, write_backfill: bool) -> i
                 else:
                     backfill_needed.append(rec)
         if reconsidered is not None:
+            # A reconsidered block supersedes the original verdict. Push the
+            # original into history (so the chain of custody is preserved) and
+            # swap the record's current verdict fields to the reconsidered
+            # values.
+            if rec.verdict:
+                rec.verdict_history.append({
+                    "at": datetime.now(timezone.utc).isoformat(),
+                    "source": rec.verdict_source or "block",
+                    "verdict": rec.verdict,
+                    "by": "tool",
+                    "note": "Superseded by reconsidered block",
+                })
             rec.reconsidered_verdict = {
                 "verdict": reconsidered.verdict,
                 "commit": reconsidered.commit,
                 "notes": reconsidered.notes,
                 "finding_category": reconsidered.finding_category,
             }
+            rec.verdict = reconsidered.verdict
+            rec.verdict_commit = reconsidered.commit
+            rec.verdict_notes = reconsidered.notes
+            if reconsidered.finding_category:
+                rec.category = reconsidered.finding_category
         records.append(rec)
 
     records = sort_threads(records)
@@ -1117,17 +1280,33 @@ def _sync_core(args: argparse.Namespace, infer: bool, write_backfill: bool) -> i
     if args.summary:
         print_summary(records, repo_arg, args.pr_number)
 
-    # Enforcement: emit BACKFILL NEEDED / RESOLVE NEEDED to stderr.
+    # Enforcement: emit BACKFILL NEEDED / RESOLVE NEEDED to stderr — but only
+    # for reviewers in `cfg.reviewers`. Threads by untracked authors (humans,
+    # bots not in the allowlist) don't trigger policy violations even if they
+    # lack a verdict block.
+    #
+    # Additionally: a thread that became `verdict_source: manual` via
+    # merge_with_existing is the maintainer's confirmed final state — it must
+    # not appear in BACKFILL NEEDED even if the current PR's replies have no
+    # parseable block.
     if enforce_mode != "off":
-        for rec in backfill_needed:
+        backfill_filtered = [
+            r for r in backfill_needed
+            if cfg.is_tracked_reviewer(r.reviewer) and r.verdict_source != "manual"
+        ]
+        resolve_filtered = [
+            r for r in resolve_needed
+            if cfg.is_tracked_reviewer(r.reviewer)
+        ]
+        for rec in backfill_filtered:
             sys.stderr.write(
                 f"BACKFILL NEEDED: thread {rec.id} ({rec.path}:{rec.line}) "
                 f"by {rec.reviewer} — resolved without a verdict block.\n")
-        for rec in resolve_needed:
+        for rec in resolve_filtered:
             sys.stderr.write(
                 f"RESOLVE NEEDED: thread {rec.id} ({rec.path}:{rec.line}) "
                 f"by {rec.reviewer} — has a verdict block but is unresolved.\n")
-        if enforce_mode == "strict" and (backfill_needed or resolve_needed):
+        if enforce_mode == "strict" and (backfill_filtered or resolve_filtered):
             return 1
 
     return 0
@@ -1170,7 +1349,7 @@ def main(argv: list[str]) -> int:
 
     def add_sync_args(sp: argparse.ArgumentParser) -> None:
         sp.add_argument("pr_number", type=int, help="PR number")
-        sp.add_argument("--repo", required=False, help="OWNER/REPO (defaults to env GH_REPO if set)")
+        sp.add_argument("--repo", required=False, help="OWNER/REPO (falls back to GH_REPO env var if unset)")
         sp.add_argument("--threads-from", help="Read raw GraphQL threads JSON from a file instead of fetching")
         sp.add_argument("--journal-dir", help="Override the journal output directory")
         sp.add_argument("--enforce", choices=["off", "warning", "strict"], help="Enforcement mode")

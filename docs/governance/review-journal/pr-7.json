@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "pr_number": 7,
   "repo": "loganrooks/tap-n-filter",
-  "last_synced_at": "2026-05-22T22:08:14.411319+00:00",
+  "last_synced_at": "2026-05-23T01:08:31.623228+00:00",
   "threads": [
     {
       "id": "PRRT_kwDOSjmLjM6D4UJ2",
@@ -91,7 +91,7 @@
     {
       "id": "PRRT_kwDOSjmLjM6D4UJm",
       "path": "Sources/ViewModel/AppViewModel.swift",
-      "line": 747,
+      "line": 754,
       "reviewer": "chatgpt-codex-connector",
       "reviewer_kind": "bot:agentic-llm",
       "severity": "P1",
@@ -455,7 +455,7 @@
     {
       "id": "PRRT_kwDOSjmLjM6D76RD",
       "path": "Sources/ViewModel/AppViewModel.swift",
-      "line": 832,
+      "line": 839,
       "reviewer": "chatgpt-codex-connector",
       "reviewer_kind": "bot:agentic-llm",
       "severity": "P2",
@@ -649,34 +649,6 @@
       "extras": {}
     },
     {
-      "id": "PRRT_kwDOSjmLjM6D_tlp",
-      "path": "Sources/ViewModel/AppViewModel.swift",
-      "line": null,
-      "reviewer": "chatgpt-codex-connector",
-      "reviewer_kind": "bot:agentic-llm",
-      "severity": "P2",
-      "category": "viewmodel/redundant-throttling",
-      "finding_excerpt": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Remove duplicate throttling from parameter updates**\n\n`updateParameter` drops any write that occurs within `1/30s` of the previous write, but slider-driven writes are already throttled in `EffectControlsView.Para",
-      "created_at": "2026-05-22T03:58:52Z",
-      "resolved": true,
-      "outdated": true,
-      "verdict": "ACCEPTED",
-      "verdict_commit": "89d42ef",
-      "verdict_refs": [],
-      "verdict_notes": "Slider's Combine throttle at EffectControlsView.ParameterSlider:219 already throttles at 30 Hz; the AppViewModel-side check was redundant and removed. Updated the docstring to make caller-responsibility explicit so a future high-frequency caller adds throttling at the input layer.",
-      "verdict_source": "block",
-      "reconsidered_verdict": null,
-      "verdict_history": [
-        {
-          "at": "2026-05-22T22:07:29.114367+00:00",
-          "source": "block",
-          "verdict": "ACCEPTED",
-          "by": "tool"
-        }
-      ],
-      "extras": {}
-    },
-    {
       "id": "PRRT_kwDOSjmLjM6D4Pc3",
       "path": "Sources/AccessibilityDump/main.swift",
       "line": null,
@@ -781,7 +753,7 @@
     {
       "id": "PRRT_kwDOSjmLjM6D4Pdf",
       "path": "Sources/ViewModel/AppViewModel.swift",
-      "line": 768,
+      "line": 775,
       "reviewer": "coderabbitai",
       "reviewer_kind": "bot:agentic-llm",
       "severity": "major",
@@ -815,7 +787,7 @@
     {
       "id": "PRRT_kwDOSjmLjM6D4Pdj",
       "path": "Sources/ViewModel/AppViewModel.swift",
-      "line": 837,
+      "line": 844,
       "reviewer": "coderabbitai",
       "reviewer_kind": "bot:agentic-llm",
       "severity": "major",
@@ -979,7 +951,7 @@
     {
       "id": "PRRT_kwDOSjmLjM6D71uI",
       "path": "Sources/ViewModel/AppViewModel.swift",
-      "line": 416,
+      "line": 421,
       "reviewer": "coderabbitai",
       "reviewer_kind": "bot:agentic-llm",
       "severity": "major",
