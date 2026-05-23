@@ -28,12 +28,18 @@ Package.resolved
 *.pkg
 *.zip
 
-# Local generated audio test artifacts (not checked into repo)
-test-artifacts/
+# Local generated audio test artifacts (not checked into repo).
+# Ignore everything under test-artifacts/ except files explicitly negated
+# below (gitignore requires the dir's contents — not the dir itself — to be
+# the ignore subject so file-level negations work).
+test-artifacts/*
 *.wav
 *.aiff
 *.caf
 !docs/**/*.wav  # docs may include reference audio
+# Phase 3 commits the accessibility audit artifact as evidence per
+# docs/orchestration/phases/03-ui-control.md §3.8.
+!test-artifacts/phase-3-accessibility-tree.json
 
 # Editor scratch
 .vscode/

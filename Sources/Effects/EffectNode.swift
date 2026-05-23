@@ -48,6 +48,17 @@ public protocol EffectNode: AnyObject, Codable {
     /// or if the value falls outside the parameter's declared range.
     func setParameter(_ identifier: String, value: Float) throws
 
+    /// Read the current value of a parameter by identifier. Returns `nil`
+    /// when the node does not recognise the identifier, or when the node
+    /// has no read-back path for the parameter (e.g. an `AVAudioUnit`
+    /// property that cannot be observed). The UI uses this to seed the
+    /// slider/picker/stepper with the live value on view appearance; a
+    /// `nil` return is acceptable and means the UI falls back to
+    /// `parameter.defaultValue`. Concrete nodes with continuous parameters
+    /// should override; nodes with no parameters (e.g. `ReverbNode` in V1)
+    /// inherit the default.
+    func parameterValue(_ identifier: String) -> Float?
+
     /// Attach all underlying `AVAudioUnit`s and internal mixers to `engine`.
     /// After this call returns successfully, `inputBus` and `outputBus` are
     /// valid and connectable by the graph.
@@ -85,6 +96,12 @@ extension EffectNode {
     /// Default value for `showsWetDryByDefault`. Time-domain effects accept
     /// the default; spectral-shaping effects override to `false`.
     public static var showsWetDryByDefault: Bool { true }
+
+    /// Default `parameterValue` returns `nil` for every identifier. Nodes
+    /// without continuous parameters (e.g. `ReverbNode` whose only knob is
+    /// the categorical preset stored in `EffectState.extras`) keep this
+    /// default. `EQNode` overrides with the concrete band reader.
+    public func parameterValue(_ identifier: String) -> Float? { nil }
 
     /// Codable default for nodes that don't need a bespoke encoding path.
     /// Encoding goes through `snapshot()` so the on-disk shape exactly

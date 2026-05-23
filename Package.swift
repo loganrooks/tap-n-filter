@@ -13,15 +13,19 @@ let package = Package(
     products: [
         .executable(name: "tap-n-filter", targets: ["tap-n-filter"]),
         .executable(name: "tap-n-filter-eartest", targets: ["tap-n-filter-eartest"]),
+        .executable(name: "tap-n-filter-a11y-dump", targets: ["tap-n-filter-a11y-dump"]),
+        .executable(name: "tap-n-filter-poweron-probe", targets: ["tap-n-filter-poweron-probe"]),
         .library(name: "Capture", targets: ["Capture"]),
         .library(name: "Graph", targets: ["Graph"]),
         .library(name: "Effects", targets: ["Effects"]),
-        .library(name: "Presets", targets: ["Presets"])
+        .library(name: "Presets", targets: ["Presets"]),
+        .library(name: "ViewModel", targets: ["ViewModel"]),
+        .library(name: "UI", targets: ["UI"])
     ],
     targets: [
         .executableTarget(
             name: "tap-n-filter",
-            dependencies: ["Capture", "Graph", "Effects", "Presets"],
+            dependencies: ["Capture", "Graph", "Effects", "Presets", "ViewModel", "UI"],
             path: "Sources/tap-n-filter",
             resources: [
                 .copy("Resources")
@@ -31,6 +35,16 @@ let package = Package(
             name: "tap-n-filter-eartest",
             dependencies: ["Graph", "Effects", "Presets"],
             path: "Sources/EarTestHarness"
+        ),
+        .executableTarget(
+            name: "tap-n-filter-a11y-dump",
+            dependencies: ["Capture", "Graph", "Effects", "Presets", "ViewModel", "UI"],
+            path: "Sources/AccessibilityDump"
+        ),
+        .executableTarget(
+            name: "tap-n-filter-poweron-probe",
+            dependencies: ["Capture", "Graph", "Effects", "Presets", "ViewModel"],
+            path: "Sources/PowerOnProbe"
         ),
         .target(
             name: "Capture",
@@ -53,6 +67,16 @@ let package = Package(
                 .copy("Resources/Presets")
             ]
         ),
+        .target(
+            name: "ViewModel",
+            dependencies: ["Capture", "Graph", "Effects", "Presets"],
+            path: "Sources/ViewModel"
+        ),
+        .target(
+            name: "UI",
+            dependencies: ["ViewModel", "Capture", "Graph", "Effects", "Presets"],
+            path: "Sources/UI"
+        ),
         .testTarget(
             name: "CaptureTests",
             dependencies: ["Capture"],
@@ -72,6 +96,28 @@ let package = Package(
             name: "PresetsTests",
             dependencies: ["Presets", "Graph", "Effects"],
             path: "Tests/PresetsTests"
+        ),
+        .testTarget(
+            name: "ViewModelTests",
+            dependencies: ["ViewModel", "Capture", "Graph", "Effects", "Presets"],
+            path: "Tests/ViewModelTests"
+        ),
+        .testTarget(
+            name: "UISnapshotTests",
+            dependencies: ["UI", "ViewModel", "Capture", "Graph", "Effects", "Presets"],
+            path: "Tests/UISnapshotTests",
+            resources: [
+                .copy("__Snapshots__")
+            ]
+        ),
+        .testTarget(
+            // The XCTest validates the committed JSON artifact and source-
+            // level `.accessibilityLabel(_:)` discipline. The in-process
+            // AppKit walk lives in the AccessibilityDump executable (ADR-
+            // 011), so this target has no UI/ViewModel dependencies.
+            name: "AccessibilityTreeTests",
+            dependencies: [],
+            path: "Tests/AccessibilityTreeTests"
         )
     ]
 )

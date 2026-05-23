@@ -74,6 +74,45 @@ Entries are added at the bottom. They are not edited after commit (except for ty
 
 ---
 
+## 2026-05-21 — Picker selection keyed by pid_t
+
+**Decision**: `SourcePickerView` uses `Binding<pid_t?>` for the SwiftUI `Picker`'s selection. The closure maps the selected pid back to the matching `CaptureSource` on set.
+
+**Phase**: 3
+
+**Considered**:
+- `Binding<CaptureSource?>` — natural surface but `CaptureSource` is not `Hashable`. The Picker generic constrains the selection type to `Hashable`. Making `CaptureSource` `Hashable` is also viable but would change the public API of the Capture module and is out of Phase 3's scope.
+- `Binding<String?>` keyed by bundleIdentifier — bundle IDs are sometimes nil for niche apps, which would weaken the matching guarantee.
+- `Binding<pid_t?>` (chosen) — PIDs are `Hashable` natively, unique per running process, and already used as `CaptureSource.id`. The picker maps the selected pid back to the full `CaptureSource` value on set, which is the only place the full value is needed.
+
+---
+
+## 2026-05-21 — In-process accessibility dump via NSHostingView + KVC
+
+**Decision**: The Phase 3 accessibility-tree dump artifact is produced by an executable target (`tap-n-filter-a11y-dump`) that walks `NSAccessibility` KVC attributes on an in-process `NSHostingView`, rather than via `AXUIElement` or `XCUITest`.
+
+**Phase**: 3
+
+**Considered**:
+- `XCUITest` — not available under SwiftPM (see ADR-011).
+- `AXUIElement` (the API VoiceOver uses) — requires Process Trust permission the CLI does not have; returns an empty tree without it.
+- KVC `accessibilityAttributeValue:` walk on NSHostingView (chosen) — works without any permission grant; surfaces SwiftUI's structural shadow tree completely; SwiftUI's `.accessibilityLabel(_:)` modifier sometimes lands in attributes the KVC reader doesn't surface, so label presence is a best-effort assertion in this surface (the manual VoiceOver pass and CI XCTest cover that gap). See ADR-011 for the full disposition.
+
+---
+
+## 2026-05-21 — Wet/dry-on-EQ slider lives in expanded controls only
+
+**Decision**: `EffectRow`'s header omits the wet/dry slider for `EQNode` and renders it for `ReverbNode`, driven by `EffectNode.showsWetDryByDefault`. EQ users access wet/dry via the expanded controls panel only.
+
+**Phase**: 3
+
+**Considered**:
+- Always show the wet/dry slider in the row header — rejected per ADR-007 (wet/dry on EQ defeats the filter, surprises users).
+- Hide wet/dry from EQ entirely — rejected; the protocol-level requirement stays uniform, and creative use cases (partial-filter blend) should remain reachable via the expanded panel.
+- Hide-by-default in the row header, surface in the expanded panel (chosen) — matches ADR-007's resolution literally.
+
+---
+
 ## Future entries
 
 The orchestrator appends new entries here during build. Examples of decisions that would warrant an entry:

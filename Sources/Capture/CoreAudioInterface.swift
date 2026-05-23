@@ -173,6 +173,15 @@ public struct RealCoreAudioInterface: CoreAudioInterface {
         description.name = "tap-n-filter.tap.\(audioProcessID)"
         description.isPrivate = true
         description.isExclusive = false
+        // Mute the source process so its audio is intercepted, not just
+        // observed. Without this, the source app's audio continues to
+        // play through the system mixer alongside our processed copy and
+        // the user hears the untouched original — the architecture
+        // diagram in `docs/orchestration/phases/01-capture-spike.md`
+        // explicitly labels the source-to-tap arrow "audio output
+        // (intercepted)". See ADR-014 for the muting decision and its
+        // implications for users.
+        description.muteBehavior = .muted
 
         var tapID: AudioObjectID = kAudioObjectUnknown
         let status = AudioHardwareCreateProcessTap(description, &tapID)
@@ -329,8 +338,9 @@ public struct RealCoreAudioInterface: CoreAudioInterface {
         guard let inputUnit = engine.inputNode.audioUnit else {
             throw CaptureError.engineConfigurationFailed("Engine input node has no audio unit")
         }
+        // 1. Point the AUHAL at the aggregate device.
         var mutableDeviceID = deviceID
-        let status = AudioUnitSetProperty(
+        var status = AudioUnitSetProperty(
             inputUnit,
             kAudioOutputUnitProperty_CurrentDevice,
             kAudioUnitScope_Global,
@@ -340,6 +350,122 @@ public struct RealCoreAudioInterface: CoreAudioInterface {
         )
         guard status == noErr else {
             throw CaptureError.engineConfigurationFailed("Failed to set input device: \(status)")
+        }
+        // 2. Read the hardware stream format from the AUHAL's input scope
+        //    (element 1 = the side connected to the device) and propagate
+        //    its sample rate + channel count to the output scope (element
+        //    1 = what AVAudioEngine reads as inputNode.outputFormat), but
+        //    re-shape it into AVAudioEngine's standard non-interleaved
+        //    Float32 layout. The AUHAL converts internally from the
+        //    hardware's interleaved frames to the engine's deinterleaved
+        //    layout.
+        //
+        //    Two reasons we cannot just copy the ASBD verbatim:
+        //
+        //    a) Without any propagation, the client format stays at
+        //       AVAudioEngine's default (1 ch / 16 kHz) and every
+        //       engine.connect against inputNode.outputFormat throws
+        //       "Input HW format and tap format not matching".
+        //
+        //    b) Verbatim propagation of the hardware ASBD installs an
+        //       interleaved layout on the client side, which
+        //       AVAudioMixerNode and AVAudioUnitEQ reject with
+        //       kAudioUnitErr_FormatNotSupported (-10868). The engine
+        //       throws an NSException from
+        //       AUInterfaceBaseV3::SetFormat that bubbles up as a
+        //       SIGTRAP and crashes the process.
+        //
+        //    The bug existed in Phase 1's CaptureController.start path
+        //    but wasn't caught because the Phase 1 live-render check
+        //    was deferred (see state.json
+        //    `phase-1-passthrough-test-needs-interactive`).
+        var hardwareFormat = AudioStreamBasicDescription()
+        var formatSize = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        status = AudioUnitGetProperty(
+            inputUnit,
+            kAudioUnitProperty_StreamFormat,
+            kAudioUnitScope_Input,
+            1,
+            &hardwareFormat,
+            &formatSize
+        )
+        guard status == noErr else {
+            throw CaptureError.engineConfigurationFailed(
+                "Failed to read input hardware stream format: \(status)"
+            )
+        }
+        guard let standardFormat = AVAudioFormat(
+            standardFormatWithSampleRate: hardwareFormat.mSampleRate,
+            channels: hardwareFormat.mChannelsPerFrame
+        ) else {
+            throw CaptureError.engineConfigurationFailed(
+                "Could not build AVAudioEngine client format from hardware "
+                + "ASBD (sampleRate=\(hardwareFormat.mSampleRate), "
+                + "channels=\(hardwareFormat.mChannelsPerFrame))"
+            )
+        }
+        var clientFormat = standardFormat.streamDescription.pointee
+        status = AudioUnitSetProperty(
+            inputUnit,
+            kAudioUnitProperty_StreamFormat,
+            kAudioUnitScope_Output,
+            1,
+            &clientFormat,
+            UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        )
+        guard status == noErr else {
+            throw CaptureError.engineConfigurationFailed(
+                "Failed to set engine client stream format (deinterleaved Float32, "
+                + "rate=\(clientFormat.mSampleRate), ch=\(clientFormat.mChannelsPerFrame)): "
+                + "\(status)"
+            )
+        }
+        // 3. Read back the format the AUHAL actually accepted. AVAudioEngine
+        //    or the AUHAL may silently coerce or reject the requested
+        //    format, in which case the engine sees a different format than
+        //    we intended on inputNode.outputFormat. Failing here gives a
+        //    concrete error pointer rather than letting a downstream
+        //    engine.connect throw with a less actionable message.
+        var installedFormat = AudioStreamBasicDescription()
+        formatSize = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        status = AudioUnitGetProperty(
+            inputUnit,
+            kAudioUnitProperty_StreamFormat,
+            kAudioUnitScope_Output,
+            1,
+            &installedFormat,
+            &formatSize
+        )
+        guard status == noErr else {
+            throw CaptureError.engineConfigurationFailed(
+                "Failed to read back installed client stream format: \(status)"
+            )
+        }
+        // Compare the full ASBD, not just sample rate + channel count. The
+        // AUHAL is known to silently coerce a requested non-interleaved Float32
+        // into an interleaved layout (or a different bit depth) while still
+        // returning noErr on the SetProperty call — then engine.start surfaces
+        // a kAudioUnitErr_FormatNotSupported (-10868) downstream when the
+        // graph's first AVAudioMixer tries to connect. Catching the mismatch
+        // here makes the failure mode obvious instead of inscrutable.
+        guard installedFormat.mSampleRate == clientFormat.mSampleRate,
+              installedFormat.mChannelsPerFrame == clientFormat.mChannelsPerFrame,
+              installedFormat.mFormatID == clientFormat.mFormatID,
+              installedFormat.mFormatFlags == clientFormat.mFormatFlags,
+              installedFormat.mBytesPerPacket == clientFormat.mBytesPerPacket,
+              installedFormat.mFramesPerPacket == clientFormat.mFramesPerPacket,
+              installedFormat.mBytesPerFrame == clientFormat.mBytesPerFrame,
+              installedFormat.mBitsPerChannel == clientFormat.mBitsPerChannel
+        else {
+            throw CaptureError.engineConfigurationFailed(
+                "Client stream format readback mismatch: requested "
+                + "\(clientFormat.mSampleRate) Hz × \(clientFormat.mChannelsPerFrame) ch "
+                + "(formatID=\(clientFormat.mFormatID), flags=\(clientFormat.mFormatFlags), "
+                + "bytesPerFrame=\(clientFormat.mBytesPerFrame), bitsPerChannel=\(clientFormat.mBitsPerChannel)), "
+                + "installed \(installedFormat.mSampleRate) Hz × \(installedFormat.mChannelsPerFrame) ch "
+                + "(formatID=\(installedFormat.mFormatID), flags=\(installedFormat.mFormatFlags), "
+                + "bytesPerFrame=\(installedFormat.mBytesPerFrame), bitsPerChannel=\(installedFormat.mBitsPerChannel))"
+            )
         }
     }
 

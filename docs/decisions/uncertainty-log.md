@@ -137,6 +137,26 @@ Entries are numbered U-001, U-002, etc. Numbers persist. Resolved entries stay i
 
 ---
 
+## U-009: Snapshot test baselines auto-bootstrap on missing files
+
+**Status**: Closed by ADR-015 (`docs/decisions/ADR-015-snapshot-baseline-environment-deviation.md`).
+**Triggered by**: Codex review on PR #7 (`Tests/UISnapshotTests/SnapshotHelper.swift`).
+**Question**: `SnapshotHelper.assertSnapshot` originally wrote a fresh baseline PNG on the first run when no baseline was present, then asserted byte-equality on subsequent runs. In CI on a clean checkout with no baseline images committed, every run wrote a baseline and passed — the snapshot tests therefore never caught a visual regression on first push. Generating cross-runner-stable baselines locally is blocked: only Command Line Tools are installed on the build host, so `swift test` cannot run the snapshot target locally, and CI runners differ enough in font rendering / color profile that baselines captured on one runner can fail byte-equality on another (U-007 covers the broader drift question).
+
+**Resolution**: PR #7 round 2 (commit `14b240b`) made strict mode the default — missing baseline → `XCTSkip` with a regen instruction message, opt back into write-on-missing via `TNF_SNAPSHOT_REGEN=1`. The Phase 3 verification rerun (per `docs/audits/verification/phase-3-rerun-1.md`) flagged that `XCTSkip` is still not enforcement and required the deviation to be promoted from this U-log entry to an ADR. ADR-015 records the accepted env-bounded deviation; this entry is closed in favour of that ADR. V0.2's resolution path (dedicated `record-snapshots` CI workflow + automated baseline PR) is documented in ADR-015's "Consequences" section.
+
+---
+
+## U-010: Source resolution falls back to bundle ID, not PID
+
+**Status**: Resolved — commit `14b240b` on PR #7.
+**Triggered by**: Codex review on PR #7 (`Sources/ViewModel/AppViewModel.swift` `powerOn`).
+**Question**: `AppViewModel.powerOn` originally re-resolved the user's selected source from the live HAL list by `bundleIdentifier`. If two processes with the same bundle ID were running (multiple instances of the same app), the resolver could pick a different PID than the one the picker selection identified, capturing the wrong instance.
+
+**Resolution**: `powerOn` now uses `candidates.first(where: { $0.pid == source.pid }) ?? candidates.first(where: { $0.bundleIdentifier == source.bundleIdentifier })` — PID first, bundle ID only as a fallback for the relaunch-between-pick-and-start case. The original V0.2 deferral was unnecessary; the change was contained to two lines.
+
+---
+
 ## Future entries
 
 The orchestrator appends new entries during build whenever an open question surfaces that's substantial enough to record. Examples:
@@ -146,3 +166,17 @@ The orchestrator appends new entries during build whenever an open question surf
 - A V0.2 design choice that affects V1 architecture and needs to be flagged for revisiting.
 
 Entries that are resolved during build are updated in place (status changed, link to resolving ADR or commit added) but never deleted.
+
+---
+
+## U-011: AppError collapses domain failures into UI-ready strings
+
+**Status**: Open — deferred to V0.2.
+**Triggered by**: CodeRabbit review on PR #7 (`Sources/ViewModel/AppViewModel.swift` `AppError`).
+**Question**: `AppError` keeps `.capture(CaptureError)` structured but collapses `.graph`, `.parameter`, `.preset`, `.engine`, and `.persistence` into `String` payloads. That loses typed context the lower layers know (which preset, which parameter ID, which engine subsystem) and hard-codes presentation into the view-model's public API — any future consumer that wanted to react programmatically to "preset deserialization vs. preset migration failed" has to string-match.
+
+**Current best guess**: For V0.1.0 the collapse is acceptable. Every error of these kinds funnels into the same `lastError` slot and the same UI surface (the debug-log panel + the header status pill); no consumer programmatically discriminates between the variants today. The lower-layer errors (`GraphError`, `PresetError`, `AVAudioEngine`'s `NSError` payloads) all reach the AppError construction site, so the typed payloads exist — they just don't propagate through.
+
+**Resolution path**: V0.2 promotes each variant to a typed payload mirroring `.capture(CaptureError)`'s pattern: `case graph(GraphError)`, `case preset(PresetError)`, `case parameter(ParameterError)`, `case engine(EngineError)`, `case persistence(PersistenceError)`. UI surfaces continue rendering through `userMessage` (which would dispatch over the typed payload), but any V0.2 UI that wants to discriminate (a "Retry preset migration" button, a "Pick a different source" hint) can pattern-match the typed values.
+
+**Revisit trigger**: V0.2 work that touches `AppViewModel`'s error surface — preset migration UI, or any user-facing affordance that branches on the kind of failure.
