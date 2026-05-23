@@ -172,9 +172,20 @@ When the tool is absent (other repos, early in a project's life), the discipline
 
 This skill is self-contained. To use it in another repo, copy the `pr-review-triage/` directory into that repo's `.claude/skills/`. No other files required. The verdict vocabulary in `references/verdicts.md` is the same across repos; only the host-project-specific things (which review protocols, which ADR conventions) shift, and those live in the host project's own docs.
 
+## Waiting for review activity
+
+Triggering `@codex review` (or pushing a fix that prompts CR re-review) and then idling until the response lands is a poor use of orchestrator time. The right wait pattern depends on whether you need one notification or a stream:
+
+- **One signal** (Codex's first review on the current commit; CI completion) → `Bash` with `run_in_background: true` and an `until` loop that exits when the condition is met.
+- **Per-occurrence stream** (every new comment on the PR while you work on something else) → `Monitor` with `persistent: true` and a poll-based event source.
+- **Bounded stream** (each CI check as it lands; stop when all checks terminate) → `Monitor` with a loop that exits when the bounded condition is true.
+
+See `references/monitoring.md` for the patterns, the coverage / pipe-buffering / rate-limit gotchas, and the table mapping each PR-triage situation to the right tool. The doc covers GitHub-specific recipes (poll for new comments by reviewer login, watch `unresolvedReviewThreadCount`, stream CI check completions) and the anti-patterns that flatten the monitor's value (unbounded commands for single notifications; filters that only match the happy path).
+
 ## Reference files
 
 - `references/verdicts.md` — Full verdict vocabulary with worked examples and disposition rules.
+- `references/monitoring.md` — How to wait on reviewer + CI events without polling or idling.
 
 ## A note on the host project's review protocol
 
