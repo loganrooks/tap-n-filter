@@ -26,6 +26,7 @@ final class FakeCoreAudioInterface: CoreAudioInterface {
     private(set) var availableAudioProcessesCallCount = 0
     private(set) var configureEngineInputCallDeviceIDs: [AudioDeviceID] = []
     private(set) var resetEngineInputCallCount = 0
+    private(set) var pinEngineOutputCallCount = 0
 
     // MARK: Stubbable behaviour
 
@@ -70,6 +71,9 @@ final class FakeCoreAudioInterface: CoreAudioInterface {
 
     /// Hook for `resetEngineInput`. Defaults to success.
     var resetEngineInputResult: (AVAudioEngine) throws -> Void = { _ in }
+
+    /// Hook for `pinEngineOutputToDefault`. Defaults to success.
+    var pinEngineOutputResult: (AVAudioEngine) throws -> Void = { _ in }
 
     // MARK: CoreAudioInterface
 
@@ -127,5 +131,10 @@ final class FakeCoreAudioInterface: CoreAudioInterface {
     func resetEngineInput(_ engine: AVAudioEngine) throws {
         resetEngineInputCallCount += 1
         try resetEngineInputResult(engine)
+    }
+
+    func pinEngineOutputToDefault(_ engine: AVAudioEngine) throws {
+        pinEngineOutputCallCount += 1
+        try pinEngineOutputResult(engine)
     }
 }

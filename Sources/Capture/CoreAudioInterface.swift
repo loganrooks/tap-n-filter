@@ -67,6 +67,19 @@ public protocol CoreAudioInterface {
     /// device. Called during teardown so the engine doesn't continue holding
     /// a reference to a soon-to-be-destroyed aggregate device.
     func resetEngineInput(_ engine: AVAudioEngine) throws
+
+    /// Pin `engine.outputNode`'s AUHAL to the current system default output
+    /// device. Required because AVAudioEngine, when its input AUHAL has been
+    /// pointed at an aggregate device (the one wrapping our process tap),
+    /// otherwise also routes its output AUHAL through that aggregate's
+    /// output stream — which, for Bluetooth headphones, forces them to
+    /// HFP voice mode (16 kHz mono bidirectional) and produces telephone-
+    /// quality output that masks the chain's processing. Pinning output
+    /// to the default output device keeps the input/output devices
+    /// independent: input stays on the aggregate (tap), output stays on
+    /// the user's selected device (typically BT in A2DP music mode at
+    /// 44.1 / 48 kHz stereo).
+    func pinEngineOutputToDefault(_ engine: AVAudioEngine) throws
 }
 
 // MARK: - Real implementation
@@ -334,6 +347,37 @@ public struct RealCoreAudioInterface: CoreAudioInterface {
         try setInputUnitDevice(on: engine, to: defaultDevice)
     }
 
+    public func pinEngineOutputToDefault(_ engine: AVAudioEngine) throws {
+        let defaultDevice = try defaultOutputDevice()
+        try setOutputUnitDevice(on: engine, to: defaultDevice)
+    }
+
+    private func setOutputUnitDevice(on engine: AVAudioEngine, to deviceID: AudioDeviceID) throws {
+        guard let outputUnit = engine.outputNode.audioUnit else {
+            throw CaptureError.engineConfigurationFailed("Engine output node has no audio unit")
+        }
+        var mutableDeviceID = deviceID
+        let status = AudioUnitSetProperty(
+            outputUnit,
+            kAudioOutputUnitProperty_CurrentDevice,
+            kAudioUnitScope_Global,
+            0,
+            &mutableDeviceID,
+            UInt32(MemoryLayout<AudioDeviceID>.size)
+        )
+        guard status == noErr else {
+            throw CaptureError.engineConfigurationFailed("Failed to set output device: \(status)")
+        }
+        // No format propagation needed on the output side. AVAudioEngine's
+        // mainMixerNode handles sample-rate / channel conversion between
+        // the chain's working format and the output device's hardware
+        // format automatically. We only had to do the propagation dance
+        // on the input side because the inputNode.outputFormat is the
+        // format the engine.connect() calls read against; outputNode's
+        // input scope (element 0) is fed by the engine itself, not by
+        // user-supplied connect() calls.
+    }
+
     private func setInputUnitDevice(on engine: AVAudioEngine, to deviceID: AudioDeviceID) throws {
         guard let inputUnit = engine.inputNode.audioUnit else {
             throw CaptureError.engineConfigurationFailed("Engine input node has no audio unit")
@@ -470,8 +514,16 @@ public struct RealCoreAudioInterface: CoreAudioInterface {
     }
 
     private func defaultInputDevice() throws -> AudioDeviceID {
+        try defaultHardwareDevice(selector: kAudioHardwarePropertyDefaultInputDevice, kind: "input")
+    }
+
+    private func defaultOutputDevice() throws -> AudioDeviceID {
+        try defaultHardwareDevice(selector: kAudioHardwarePropertyDefaultOutputDevice, kind: "output")
+    }
+
+    private func defaultHardwareDevice(selector: AudioObjectPropertySelector, kind: String) throws -> AudioDeviceID {
         var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mSelector: selector,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
@@ -487,7 +539,7 @@ public struct RealCoreAudioInterface: CoreAudioInterface {
         )
         guard status == noErr, deviceID != kAudioObjectUnknown else {
             throw CaptureError.engineConfigurationFailed(
-                "Default input device lookup failed: \(status)"
+                "Default \(kind) device lookup failed: \(status)"
             )
         }
         return deviceID

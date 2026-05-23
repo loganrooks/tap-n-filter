@@ -199,6 +199,16 @@ public final class CaptureController: CaptureControllerProtocol, @unchecked Send
             // this, `engine.inputNode` reads from our tap.
             try coreAudio.configureEngineInput(engine, toReadFrom: aggregateID)
 
+            // Pin the engine's output node to the system default output
+            // device — independently of the input. Without this, AVAudioEngine
+            // routes its output through the same aggregate device the input
+            // was just pointed at, which on Bluetooth headphones forces the
+            // OS into HFP voice mode (16 kHz mono bidirectional) and produces
+            // telephone-quality output that masks the effect chain entirely.
+            // Pinning explicitly keeps the user's BT device in A2DP music
+            // mode for output while the tap aggregate serves as input only.
+            try coreAudio.pinEngineOutputToDefault(engine)
+
             // Success — install the active capture and transition. We mark
             // both ownership transfers before publishing so the defer blocks
             // know not to tear down on the way out.
