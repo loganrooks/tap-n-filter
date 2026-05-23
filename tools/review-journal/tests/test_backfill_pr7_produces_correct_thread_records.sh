@@ -46,12 +46,18 @@ d['threads'][0]['verdict_notes'] = (d['threads'][0].get('verdict_notes') or '') 
 json.dump(d, open(p, 'w'), indent=2)
 "
 
-# Re-run extract; the manual entry should be preserved.
+# Re-run extract; the manual entry should be preserved. Capture and assert
+# the exit code so a silent failure on the second run can't mask a
+# regression that later assertions might still pass against prior file state.
+set +e
 "$EXTRACT_PR" 7 \
   --repo loganrooks/tap-n-filter \
   --threads-from "$TESTS_DIR/fixtures/pr7-threads.raw.json" \
   --journal-dir "$journal_dir" \
   --accept-inferred >/dev/null 2>&1
+second_extract_ec=$?
+set -e
+assert_exit_code 0 "$second_extract_ec" "second extract preserving manual entry"
 
 sources=$(python3 -c "
 import json, sys

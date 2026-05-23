@@ -80,7 +80,7 @@ Eight verdicts; full definitions and worked examples in `references/verdicts.md`
 | `OBSOLETE` | Already fixed by an earlier commit; the finding no longer reproduces. |
 | `DUPLICATE` | Same issue tracked on another thread; point at that thread. |
 
-`ACCEPTED`, `ACCEPTED_MODIFIED`, `OBSOLETE` require a `commit` field. `REJECTED_*` and `DEFERRED` require a `notes` field explaining why.
+`ACCEPTED`, `ACCEPTED_MODIFIED`, `OBSOLETE` require a `commit` field. `ACCEPTED_MODIFIED`, `DEFERRED`, `REJECTED_*`, and `DUPLICATE` require a `notes` field explaining the disposition (for `DUPLICATE`, point at the primary thread).
 
 ## Posting a verdict block
 

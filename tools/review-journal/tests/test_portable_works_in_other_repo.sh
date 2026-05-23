@@ -27,9 +27,11 @@ cp "$TESTS_DIR/fixtures/small-pr.json" "$other_repo/threads.json"
 
 # Run from the other_repo. The tool should resolve the config relative to PWD
 # and write the journal to docs/journal/pr-N.json per the config.
+sync_exit=0
 ( cd "$other_repo" && bash tools/review-journal/sync-pr.sh 42 \
     --repo other/repo \
-    --threads-from threads.json >/dev/null 2>&1 ) || true
+    --threads-from threads.json >/dev/null 2>&1 ) || sync_exit=$?
+assert_exit_code "0" "$sync_exit" "portable sync should succeed in the foreign repo"
 
 journal_path="$other_repo/docs/journal/pr-42.json"
 assert_file_exists "$journal_path" "journal lands at configured path"

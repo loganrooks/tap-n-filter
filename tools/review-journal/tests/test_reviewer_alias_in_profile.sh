@@ -63,8 +63,10 @@ cat > "$fake_repo/threads.json" <<'EOF'
 }
 EOF
 
+sync_exit=0
 ( cd "$fake_repo" && bash "$SYNC_PR" 1 \
-    --repo o/r --threads-from threads.json >/dev/null 2>&1 ) || true
+    --repo o/r --threads-from threads.json >/dev/null 2>&1 ) || sync_exit=$?
+assert_exit_code "0" "$sync_exit" "alias-resolution sync should succeed"
 
 journal_path="$fake_repo/journal/pr-1.json"
 assert_file_exists "$journal_path" "journal exists"

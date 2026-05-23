@@ -49,11 +49,16 @@ VALID_VERDICTS = {
 VERDICTS_REQUIRE_COMMIT = {"ACCEPTED", "ACCEPTED_MODIFIED", "OBSOLETE"}
 
 # Verdicts that require a `notes:` field in the block.
+# DUPLICATE is included because the notes field is where the reference to
+# the primary thread lives ("same as thread <id>"). Without notes, a
+# DUPLICATE verdict carries no link to what it's duplicating, which defeats
+# its purpose and produces incomplete journal records.
 VERDICTS_REQUIRE_NOTES = {
     "DEFERRED",
     "REJECTED_FALSE_POSITIVE",
     "REJECTED_BAD_FIT",
     "REJECTED_REGRESSION",
+    "DUPLICATE",
 }
 
 VERDICT_BLOCK_FENCE = "review-verdict"
@@ -1018,6 +1023,24 @@ def merge_with_existing(existing_path: Path, fresh: list[ThreadRecord]) -> list[
 merge_manual_overrides = merge_with_existing
 
 
+def _sanitize_excerpt(text: str, max_len: int = 200) -> str:
+    """Defang reviewer-supplied text for inclusion in the backfill markdown.
+
+    Findings frequently contain raw `<details>`, fenced code, and CR badges
+    that would break the surrounding markdown when interpolated verbatim
+    into a bullet list. Strategy:
+      - Collapse any whitespace run (including newlines) to a single space.
+      - Replace backticks with a single quote so they don't open code spans.
+      - Backslash-escape `<` so HTML-ish tags don't render.
+      - Truncate to `max_len` characters with a literal ellipsis.
+    """
+    flat = " ".join((text or "").split())
+    flat = flat.replace("`", "'").replace("<", "\\<")
+    if len(flat) > max_len:
+        flat = flat[:max_len].rstrip() + "…"
+    return flat
+
+
 def write_backfill_md(out_path: Path, pr_number: int, repo: str, inferred: list[tuple[ThreadRecord, VerdictBlock]]) -> None:
     lines: list[str] = []
     lines.append(f"# PR #{pr_number} review-journal backfill — {repo}")
@@ -1047,9 +1070,13 @@ def write_backfill_md(out_path: Path, pr_number: int, repo: str, inferred: list[
             path_part = f"`{rec.path}`" if rec.path else "(no path)"
             line_part = f":{rec.line}" if rec.line else ""
             lines.append(f"- [ ] **{block.verdict}**{commit_part} — {path_part}{line_part} (thread `{rec.id}`)")
-            lines.append(f"    - finding: {rec.finding_excerpt[:200]}")
+            # Reviewer findings often contain raw markdown (`<details>`, fenced
+            # code, badges) that would leak into the backfill doc and break its
+            # rendering. Collapse to one line + sanitize the inline characters
+            # that confuse markdown parsers.
+            lines.append(f"    - finding: {_sanitize_excerpt(rec.finding_excerpt)}")
             if block.notes:
-                lines.append(f"    - inference: {block.notes}")
+                lines.append(f"    - inference: {_sanitize_excerpt(block.notes)}")
             lines.append("")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(lines) + "\n")
@@ -1100,10 +1127,17 @@ def validate_journal(payload: dict[str, Any]) -> list[str]:
     for key in ("pr_number", "repo", "last_synced_at", "threads"):
         if key not in payload:
             errors.append(f"missing required top-level field: {key}")
-    threads = payload.get("threads") or []
-    if not isinstance(threads, list):
-        errors.append("threads field is not a list")
+    # Check `threads` is present AND a list. Don't coerce falsy non-list values
+    # ({}, "", 0) to [] — they should be explicit type errors, not silent passes.
+    threads_raw = payload.get("threads")
+    if threads_raw is None:
+        # Missing entirely is caught by the top-level required-key check above;
+        # nothing more to validate here.
         return errors
+    if not isinstance(threads_raw, list):
+        errors.append(f"threads field is not a list (got {type(threads_raw).__name__})")
+        return errors
+    threads = threads_raw
     for idx, t in enumerate(threads):
         prefix = f"thread[{idx}] (id={t.get('id', '?')})"
         if not isinstance(t, dict):

@@ -247,7 +247,7 @@ Rule fields:
 
 | Field                  | Type     | Purpose |
 |------------------------|----------|---------|
-| `name`                 | string   | Human label; appears in inferred notes for diagnosis. |
+| `name`                 | string   | Human label for the rule itself; identifies it in logs and config diffs. The text that appears in a thread's `verdict_notes` after inference is controlled by `notes_template`, not by `name`. |
 | `pattern`              | string   | Python regex. Use inline `(?i)` for case-insensitivity (default-ON for the shipped rules but explicit in your custom rules). |
 | `match_against`        | string   | `all_bodies` (default), `original_only`, or `reply_only`. |
 | `verdict`              | string   | Any of the 8 verdict values. |
@@ -488,7 +488,7 @@ Several edge cases the tool handles without crashing:
 - **Missing comment author** (deleted user, ghost account, app uninstalled mid-review) — thread is recorded with `reviewer: "unknown"`, no profile lookup is attempted.
 - **Empty or null comment body** — thread is recorded; the finding excerpt is the empty string.
 - **Thread with zero comments** — recorded with all body-derived fields null.
-- **Quoted or whitespace-padded block values** (`verdict: "ACCEPTED"`, `commit:   abc1234   `) — unquoted and trimmed.
+- **Quoted or whitespace-padded block values** (`verdict: "ACCEPTED"`, `commit: abc1234`) — unquoted and trimmed.
 - **Multi-paragraph notes in a block** — continuation lines after `notes:` are captured (including blank lines preserving paragraph structure).
 - **Malformed regex in a custom rule** — the rule is skipped with a stderr warning; the rest of the inference continues.
 - **Invalid `verdict` value in a custom rule** — same: skip with warning.

@@ -58,16 +58,26 @@ EOF
 
 # Run from inside fake_repo so the config is discovered.
 journal_dir_rel="journal"
+# Capture exit code explicitly instead of swallowing with `|| true`, which
+# would mask real regressions in sync/extract.
+set +e
 ( cd "$fake_repo" && bash "$SYNC_PR" 1 \
     --repo other/repo \
     --threads-from threads.json \
-    --enforce off >/dev/null 2>&1 ) || true
+    --enforce off >/dev/null 2>&1 )
+sync_ec=$?
+set -e
+assert_exit_code 0 "$sync_ec" "sync exit code"
 
 # Then run extract with inference enabled (auto-resolve pattern matches even
 # without a reply, since the original comment contains the marker).
+set +e
 ( cd "$fake_repo" && bash "$EXTRACT_PR" 1 \
     --repo other/repo \
-    --threads-from threads.json >/dev/null 2>&1 ) || true
+    --threads-from threads.json >/dev/null 2>&1 )
+extract_ec=$?
+set -e
+assert_exit_code 0 "$extract_ec" "extract exit code"
 
 journal_path="$fake_repo/$journal_dir_rel/pr-1.json"
 assert_file_exists "$journal_path" "journal file"

@@ -2,7 +2,7 @@
 # Runs every test_*.sh in this directory. Exit non-zero on any failure.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$HERE"
+cd "$HERE" || { echo "FATAL: failed to cd to $HERE" >&2; exit 2; }
 
 pass=0
 fail=0
