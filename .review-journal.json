@@ -1,22 +1,7 @@
 {
   "enforcement_mode": "warning",
-  "reviewers": ["coderabbitai", "chatgpt-codex-connector", "github-actions[bot]"],
+  "reviewers": ["coderabbitai", "chatgpt-codex-connector"],
   "journal_dir": "docs/governance/review-journal",
-  "reviewer_profiles": {
-    "github-actions[bot]": {
-      "kind": "bot:agentic-llm",
-      "display_name": "Codex (via openai/codex-action)",
-      "aliases": ["codex-action[bot]"],
-      "severity_patterns": [
-        {"pattern": "\\*\\*P0\\*\\*", "severity": "P0"},
-        {"pattern": "\\*\\*P1\\*\\*", "severity": "P1"},
-        {"pattern": "\\*\\*P2\\*\\*", "severity": "P2"},
-        {"pattern": "\\*\\*P3\\*\\*", "severity": "P3"}
-      ],
-      "auto_resolve_patterns": [],
-      "notes": "openai/codex-action posts reviews under the default github-actions[bot] identity. The review body's header line identifies the source as codex-action (vs the github-actions[bot] coming from any other workflow). The severity vocabulary matches the chatgpt-codex-connector profile so the journal's severity field is consistent across both Codex paths."
-    }
-  },
   "categories": [
     "style/import-ordering",
     "style/naming",
