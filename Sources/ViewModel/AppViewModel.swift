@@ -111,14 +111,42 @@ public final class AppViewModel: ObservableObject {
     @Published public private(set) var availableSources: [CaptureSource] = []
 
     /// Mirror of `capture.state`, delivered on the main thread.
-    @Published public private(set) var captureState: CaptureState = .idle
+    @Published public private(set) var captureState: CaptureState = .idle {
+        didSet {
+            // Log every transition with `from -> to`. The publisher subscription
+            // also sets lastError when state becomes .failed, but the
+            // `captureState` value itself reaching .failed needs its own log
+            // because the publisher might fire from internal CaptureController
+            // paths (notification handlers, watchdogs) that don't otherwise log.
+            if oldValue != captureState {
+                logger.info("captureState: \(String(describing: oldValue)) -> \(String(describing: self.captureState))")
+            }
+        }
+    }
 
     /// The UUID of the effect whose expanded controls panel is visible.
     /// Only one effect is expanded at a time, per `docs/specs/ui.md`.
     @Published public var expandedEffectID: UUID?
 
     /// The most recent surfaced error. Cleared on `clearError()`.
-    @Published public private(set) var lastError: AppError?
+    @Published public private(set) var lastError: AppError? {
+        didSet {
+            // Log every set / unset. Many code paths set lastError without
+            // any other log line; the "Failed" pill in the UI is driven by
+            // lastError != nil, so knowing exactly when and why it was set
+            // is essential for diagnosing user-visible "Failed" states.
+            switch (oldValue, lastError) {
+            case (nil, let new?):
+                logger.warning("lastError set: \(new.userMessage)")
+            case (let old?, nil):
+                logger.info("lastError cleared (was: \(old.userMessage))")
+            case (let old?, let new?):
+                logger.warning("lastError replaced: \(old.userMessage) -> \(new.userMessage)")
+            case (nil, nil):
+                break
+            }
+        }
+    }
 
     /// Effect type identifiers the injected registry can construct, in the
     /// order the registry returns them. The Add Effect menu reads this so
@@ -159,6 +187,7 @@ public final class AppViewModel: ObservableObject {
     private var stateCancellable: AnyCancellable?
     private var sourceRefreshTimer: Timer?
     private var persistenceWorkItem: DispatchWorkItem?
+    private var configChangeObserver: NSObjectProtocol?
     /// In-flight source refresh. Tracked so a new timer tick doesn't queue
     /// a second concurrent enumeration; HAL queries that overlap don't help
     /// the UI but do compete for the same lock inside the controller.
@@ -229,6 +258,32 @@ public final class AppViewModel: ObservableObject {
                 }
             }
 
+        // Observe AVAudioEngine configuration changes. The engine posts this
+        // notification whenever the audio route changes (BT switching modes,
+        // device added/removed, sample-rate negotiated). The engine has
+        // already stopped itself by the time the notification fires; if we
+        // don't restart, the user hears silence with captureState stuck on
+        // .running. Logging here is also essential: silent route changes
+        // were the suspected mechanism behind unexplained "Failed" states.
+        configChangeObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            let inFmt = self.engine.inputNode.outputFormat(forBus: 0)
+            let outFmt = self.engine.outputNode.outputFormat(forBus: 0)
+            self.logger.warning("AVAudioEngineConfigurationChange fired: engine.isRunning=\(self.engine.isRunning), inputNode=\(inFmt.sampleRate) Hz x \(inFmt.channelCount) ch, outputNode=\(outFmt.sampleRate) Hz x \(outFmt.channelCount) ch")
+            // If the engine stopped itself in response to the change, the
+            // chain attachment is still in place; attemptReattach will
+            // restart the engine. If the engine is still running, no-op.
+            if self.engineIsRunning && !self.engine.isRunning {
+                self.logger.warning("engine stopped itself on configuration change; calling attemptReattach")
+                self.engineIsRunning = false
+                self.attemptReattach()
+            }
+        }
+
         restoreSourceFromDefaults()
         refreshAvailableSources()
         startSourceRefreshTimer()
@@ -252,6 +307,9 @@ public final class AppViewModel: ObservableObject {
         persistenceWorkItem?.cancel()
         refreshSourcesTask?.cancel()
         sourceChangeShutdownTask?.cancel()
+        if let observer = configChangeObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
     }
 
     // MARK: Menubar icon
