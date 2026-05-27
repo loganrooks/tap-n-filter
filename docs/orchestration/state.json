@@ -26,13 +26,18 @@
     },
     "1": {
       "name": "Capture Spike",
-      "status": "passed",
+      "status": "in_progress",
       "spec": "phases/01-capture-spike.md",
+      "rework_spec": "phases/01-capture-spike-rework-1.md",
       "started_at": "2026-05-21",
       "completed_at": "2026-05-21",
+      "reentered_at": "2026-05-27",
+      "reentry_reason": "macOS 26.3 unified IO AU breaks the original AVAudioEngine.inputNode + tap aggregate architecture. Live-app bugs (Phase 4 blocked_on) all trace to this single root cause. Investigation in docs/investigations/2026-05-audio-pipeline.md (EXP-001 through EXP-026, FC-003 frame shift) validated the architectural refactor in EXP-026. Rework executes the plan documented in ADR-018 + phases/01-capture-spike-rework-1.md.",
       "verification_report": "../audits/verification/phase-1-rerun-1.md",
+      "pending_verification_report": "../audits/verification/phase-1-rework-1.md",
       "pr_url": "https://github.com/loganrooks/tap-n-filter/pull/2",
-      "followup_pr_url": "https://github.com/loganrooks/tap-n-filter/pull/3"
+      "followup_pr_url": "https://github.com/loganrooks/tap-n-filter/pull/3",
+      "rework_pr_url": null
     },
     "2": {
       "name": "DSP Chain",
@@ -64,7 +69,7 @@
       "release_artifact": null,
       "user_acceptance": null,
       "pr_url": null,
-      "blocked_on": "Phase 3 user-reported live-app bugs (PowerToggle indicator never flips on; effect parameter changes don't affect audio; missing exit/quit affordance; intermittent audio cutout). Phase 3's verification PASS was code-review + snapshot-test based; live-app testing was the autonomous-deviation gap that masked these. Phase 4 cannot start until the live app actually works end-to-end.",
+      "blocked_on": "Phase 1 rework (phases/01-capture-spike-rework-1.md) executing the direct-IOProc architecture per ADR-018. The live-app bugs (PowerToggle never on; effect changes inaudible; intermittent cutout) all trace to a single root cause: macOS 26.3's unified IO AU breaks the v1 AVAudioEngine.inputNode + tap aggregate pattern. Investigation in docs/investigations/2026-05-audio-pipeline.md (EXP-026, FC-003) validated the refactor's pattern empirically. Phase 4 unblocks when Phase 1's rework verification PASSes.",
       "adr_drafted": "ADR-017 (Developer ID deferral) drafted during the premature Phase 4 kickoff. Kept on disk because the decision is still valid for whenever Phase 4 does start."
     }
   },

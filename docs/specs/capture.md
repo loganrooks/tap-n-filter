@@ -1,5 +1,20 @@
 # Capture
 
+> **Status: superseded for V0.1 by [`capture-v2.md`](capture-v2.md).**
+>
+> This document specifies the V1 capture architecture that Phase 1 originally
+> implemented: bind a tap-wrapping aggregate device to
+> `AVAudioEngine.inputNode` via `kAudioOutputUnitProperty_CurrentDevice`. On
+> macOS 26.3 that pattern is structurally broken (the engine uses a unified
+> IO AU; setting `CurrentDevice` for input also sets it for output, and the
+> tap aggregate has no output streams). See
+> `docs/investigations/2026-05-audio-pipeline.md` for the diagnosis and
+> [ADR-018](../decisions/ADR-018-direct-ioproc-capture-architecture.md) for
+> the architectural shift to direct IOProc + `AVAudioSourceNode`.
+>
+> This document is retained as historical context for Phase 1's
+> implementation. New work should follow `capture-v2.md`.
+
 This document specifies the capture layer: how tap-n-filter intercepts audio from a chosen application and delivers it to the audio engine for processing.
 
 ## Approach

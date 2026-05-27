@@ -46,8 +46,19 @@ for bundle in .build/debug/*.bundle; do
     fi
 done
 
-echo "==> Ad-hoc signing…"
-codesign --force --deep --sign - "$APP"
+# Try signing with a stable identity if one is available. Ad-hoc
+# signing (`-`) gives the binary a different signature on every build,
+# which TCC re-prompts on, and may also gate HAL-level callbacks like
+# AudioDeviceCreateIOProcIDWithBlock. A stable identity is a strict
+# improvement for development.
+SIGNING_IDENTITY="VIGIL Dev"
+if security find-identity -v -p codesigning | grep -q "$SIGNING_IDENTITY"; then
+    echo "==> Signing with identity '$SIGNING_IDENTITY'…"
+    codesign --force --deep --sign "$SIGNING_IDENTITY" "$APP"
+else
+    echo "==> Ad-hoc signing (identity '$SIGNING_IDENTITY' not found)…"
+    codesign --force --deep --sign - "$APP"
+fi
 
 echo "==> Done: $APP"
 echo "Launch with: open \"$APP\""
