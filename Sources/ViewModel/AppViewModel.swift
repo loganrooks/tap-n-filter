@@ -200,12 +200,17 @@ public final class AppViewModel: ObservableObject {
             object: engine,
             queue: .main
         ) { [weak self] _ in
-            guard let self = self else { return }
-            let outFmt = self.engine.outputNode.outputFormat(forBus: 0)
-            self.logger.info(
-                "AVAudioEngineConfigurationChange fired: engine.isRunning=\(self.engine.isRunning), "
-                + "outputNode=\(outFmt.sampleRate) Hz x \(outFmt.channelCount) ch"
-            )
+            // The observer block is @Sendable; bounce back to the main
+            // actor before touching MainActor-isolated state.
+            // queue=.main only fixes the thread, not the actor.
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
+                let outFmt = self.engine.outputNode.outputFormat(forBus: 0)
+                self.logger.info(
+                    "AVAudioEngineConfigurationChange fired: engine.isRunning=\(self.engine.isRunning), "
+                    + "outputNode=\(outFmt.sampleRate) Hz x \(outFmt.channelCount) ch"
+                )
+            }
         }
 
         restoreSourceFromDefaults()

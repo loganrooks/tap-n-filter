@@ -250,10 +250,20 @@ final class AppViewModelTests: XCTestCase {
         // engine.start can take ~hundreds of ms on first run.)
         XCTAssertLessThan(elapsed, 1.5)
         XCTAssertEqual(capture.startCalls.count, 1)
+        // captureState is delivered via Combine on DispatchQueue.main;
+        // the publisher delivery is queued after powerOn returns, so
+        // wait for either the .running propagation or for lastError to
+        // be set (rollback path on engine.start failure in a test
+        // environment without audio hardware).
+        await waitFor(model: model) { m in
+            if case .running = m.captureState { return true }
+            if m.lastError != nil { return true }
+            return false
+        }
         // Either engine.start succeeded (state = .running) or it failed
-        // and the rollback completed (state = .idle, lastError set).
-        // Both are valid synchronous outcomes — the assertion that
-        // matters is "no wait loop" verified by `elapsed` above.
+        // and the rollback completed (lastError set). Both are valid
+        // synchronous outcomes — the assertion that matters is "no
+        // wait loop" verified by `elapsed` above.
         if model.lastError == nil {
             XCTAssertEqual(model.captureState, .running(source: source))
         }
@@ -270,7 +280,18 @@ final class AppViewModelTests: XCTestCase {
         model.currentSource = source
 
         await model.powerOn()
+        // Let the .running propagation arrive before powerOff so the
+        // captureState guard in powerOn's second invocation works.
+        await waitFor(model: model) { m in
+            if case .running = m.captureState { return true }
+            if m.lastError != nil { return true }
+            return false
+        }
         await model.powerOff()
+        await waitFor(model: model) { m in m.captureState == .idle }
+        // Clear any rollback error so the second powerOn's
+        // idle-or-failed guard passes.
+        model.clearError()
         await model.powerOn()
 
         XCTAssertEqual(capture.startCalls.count, 2)
@@ -309,6 +330,11 @@ final class AppViewModelTests: XCTestCase {
         model.currentSource = source
 
         await model.powerOn()
+        await waitFor(model: model) { m in
+            if case .running = m.captureState { return true }
+            if m.lastError != nil { return true }
+            return false
+        }
         // Skip the test if powerOn couldn't complete to running in this
         // host's audio environment — T4.1 already covered the no-wait-
         // loop invariant; T4.4's contract is specifically about live
