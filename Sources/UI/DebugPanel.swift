@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import ViewModel
 
@@ -39,6 +40,30 @@ public struct DebugPanel: View {
             Text("\(viewModel.debugLog.entries.count) entries")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+            // Reveal log file in default text editor. The in-panel list
+            // is a cramped subset; the file at ~/Library/Logs/tap-n-filter/
+            // app.log has the full history with full ISO timestamps.
+            Button {
+                openLogFile()
+            } label: {
+                Image(systemName: "doc.text.magnifyingglass")
+                    .frame(width: 12, height: 12)
+            }
+            .buttonStyle(.plain)
+            .help("Open log file in default editor")
+            .accessibilityLabel("Open log file in default editor")
+            // One-click copy of the entire log file to the clipboard.
+            // Saves the "select all, scroll, scroll, scroll" dance in a
+            // cramped MenuBarExtra window.
+            Button {
+                copyLogToClipboard()
+            } label: {
+                Image(systemName: "doc.on.doc")
+                    .frame(width: 12, height: 12)
+            }
+            .buttonStyle(.plain)
+            .help("Copy entire log file to clipboard")
+            .accessibilityLabel("Copy log file to clipboard")
             Button {
                 viewModel.debugLog.clear()
             } label: {
@@ -46,7 +71,8 @@ public struct DebugPanel: View {
                     .frame(width: 12, height: 12)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Clear debug log")
+            .help("Clear in-app debug log (file log is untouched)")
+            .accessibilityLabel("Clear in-app debug log")
         }
     }
 
@@ -109,5 +135,30 @@ public struct DebugPanel: View {
         let f = DateFormatter()
         f.dateFormat = "HH:mm:ss"
         return f
+    }
+
+    // MARK: - Log file actions
+
+    /// Open the persistent log file in the default app for `.log` files
+    /// (typically TextEdit; users with VS Code / BBEdit see it open there).
+    /// The MenuBarExtra panel is too narrow to read the file inline; this
+    /// gives a full-window, searchable view in one click.
+    private func openLogFile() {
+        guard let url = FileLogSink.shared.logFileURL else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    /// Copy the entire log file to the clipboard. Saves the
+    /// "select all, scroll forever, paste" dance — useful for sharing
+    /// diagnostics with anyone (or pasting into a chat with the
+    /// orchestrator).
+    private func copyLogToClipboard() {
+        guard let url = FileLogSink.shared.logFileURL,
+              let contents = try? String(contentsOf: url, encoding: .utf8) else {
+            return
+        }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(contents, forType: .string)
     }
 }
