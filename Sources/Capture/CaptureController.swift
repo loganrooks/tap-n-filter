@@ -5,76 +5,64 @@ import CoreAudio
 import Darwin
 import Foundation
 
-/// Concrete `CaptureControllerProtocol`. Owns the tap, the aggregate device,
-/// and the lifecycle around them.
+/// Concrete `CaptureControllerProtocol`. Owns the `TapIOProcReader` and the
+/// `AVAudioSourceNode` attached to the caller's engine.
 ///
-/// The controller is intentionally a `final class` so it can be observed by
-/// reference from the view model, and so identity is preserved when the
-/// controller is stored in `@StateObject`/`@EnvironmentObject` wrappers in
-/// Phase 3.
+/// The controller's start path is the direct-IOProc + AVAudioSourceNode
+/// architecture from ADR-018 / capture-v2.md:
 ///
-/// State is published through a Combine `CurrentValueSubject` so that:
+/// 1. Resolve the live `audioProcessID` from the source's PID (the cached
+///    ID can be stale by the time the user presses Power).
+/// 2. Build a `TapIOProcReader`; it creates the tap and reads the tap's
+///    stream format.
+/// 3. Build an `AVAudioSourceNode` that pops frames from the reader's ring
+///    on each render callback; underrun is reported as silence.
+/// 4. Attach the source node to the caller's engine. The engine's
+///    `inputNode` is NEVER touched; `outputNode` is left on the system
+///    default. This avoids the macOS 26.3 unified-IO-AU failure mode.
+/// 5. Start the reader. After this point audio is pumping into the ring;
+///    the engine graph consumes from the source node once its caller
+///    starts the engine.
 ///
-/// - SwiftUI views always see the latest value at subscription time.
-/// - Tests can use `sink` plus `XCTestExpectation` to assert on transition
-///   sequences without polling.
-///
-/// The Core Audio HAL calls are delegated to a `CoreAudioInterface`. The
-/// production instance uses `RealCoreAudioInterface`; tests inject
-/// `FakeCoreAudioInterface`.
+/// The controller does NOT call `engine.connect` — the view model owns
+/// the graph wiring. The controller only attaches the source node and
+/// starts the reader.
 public final class CaptureController: CaptureControllerProtocol, @unchecked Sendable {
-    // The controller carries its own NSLock-based thread safety, so
-    // @unchecked Sendable is the truthful annotation. The audit covers two
-    // concerns:
-    //
-    //   - `subject.value` reads are atomic (CurrentValueSubject is documented
-    //     to be safe from any thread).
-    //   - All `active` reads/writes are guarded by `lock`.
 
     // MARK: State
 
     private let subject: CurrentValueSubject<CaptureState, Never>
 
-    /// The current capture state. Reads are non-blocking.
     public var state: CaptureState { subject.value }
 
-    /// Combine publisher emitting on every state transition, including the
-    /// current value at subscription time. The publisher is `eraseToAnyPublisher`'d
-    /// so callers can't depend on the concrete subject type.
     public var statePublisher: AnyPublisher<CaptureState, Never> {
         subject.eraseToAnyPublisher()
+    }
+
+    public var captureSourceNode: AVAudioSourceNode? {
+        lock.lock()
+        defer { lock.unlock() }
+        return active?.sourceNode
     }
 
     // MARK: Collaborators
 
     private let coreAudio: CoreAudioInterface
-    /// Recursive so a synchronous Combine subscriber that calls back into
-    /// `state` (or even `start`/`stop` — unwise but not catastrophic) cannot
-    /// deadlock by re-acquiring the lock on the same thread. The cost is the
-    /// usual NSRecursiveLock overhead; the alternative (release lock before
-    /// publishing) opens a race window where another thread can validate
-    /// state against a value we've already decided to mutate. Recursive
-    /// acquisition is the simpler robust choice.
     private let lock = NSRecursiveLock()
 
-    /// Currently active resources, set during `running` and cleared during
-    /// `stopping`. Held under `lock` because the controller may be touched
-    /// from both the main thread (UI) and a background task that called
-    /// `start`/`stop`.
+    /// Active capture resources. Set during `running` and cleared during
+    /// `stopping`. The reader owns the tap + aggregate + IOProc; the
+    /// source node owns the engine-side render block.
     private struct ActiveCapture {
         let source: CaptureSource
-        let tapID: AudioObjectID
-        let aggregateDeviceID: AudioDeviceID
+        let reader: TapIOProcReader
+        let sourceNode: AVAudioSourceNode
         weak var engine: AVAudioEngine?
     }
     private var active: ActiveCapture?
 
     // MARK: Init
 
-    /// Constructs a controller.
-    ///
-    /// - Parameter coreAudio: HAL adapter. Defaults to `RealCoreAudioInterface()`
-    ///   in production; tests pass a `FakeCoreAudioInterface`.
     public init(coreAudio: CoreAudioInterface = RealCoreAudioInterface()) {
         self.coreAudio = coreAudio
         self.subject = CurrentValueSubject(.idle)
@@ -82,13 +70,6 @@ public final class CaptureController: CaptureControllerProtocol, @unchecked Send
 
     // MARK: Source enumeration
 
-    /// Returns the list of capturable sources currently running.
-    ///
-    /// The implementation asks the HAL for all audio-active processes, then
-    /// enriches each with `NSRunningApplication` metadata. Entries that
-    /// cannot be matched to a running application with a bundle identifier
-    /// are dropped — they're typically system helpers we don't want to expose
-    /// in the UI anyway.
     public func availableSources() throws -> [CaptureSource] {
         let audioProcesses = try coreAudio.availableAudioProcesses()
         let runningApps = NSWorkspace.shared.runningApplications
@@ -120,38 +101,28 @@ public final class CaptureController: CaptureControllerProtocol, @unchecked Send
 
     /// Begin capture from `source` into `engine`.
     ///
-    /// Transitions: `idle | failed` → `starting` → `running(source)`. On any
-    /// failure, transitions to `failed(error)`, unwinds any partially-created
-    /// resources, and re-throws. The engine is not started here — that
-    /// remains the caller's responsibility, after wiring downstream nodes.
+    /// Transitions: `idle | failed` → `starting` → `running(source)`. On
+    /// any failure, transitions to `failed(error)`, unwinds any
+    /// partially-created resources, and re-throws.
     ///
-    /// Concurrent-call behaviour:
-    ///
-    /// - During `.running` with the **same** source and engine: idempotent
-    ///   no-op return.
-    /// - During `.running` with a different source or engine: throws
-    ///   `.alreadyRunning(currentSource:)`.
-    /// - During `.starting` or `.stopping`: throws `.transitionInProgress`.
+    /// The source node is attached to the engine; `engine.connect`
+    /// against the source node is the caller's responsibility (typically
+    /// `AppViewModel.powerOn` wires it into the effect chain). The
+    /// caller starts the engine after wiring.
     public func start(source: CaptureSource, into engine: AVAudioEngine) throws {
-        // Phase 1: atomic validation + transition mark. Holding the lock
-        // across `subject.send(.starting)` is intentional — it ensures no
-        // other thread can see `.idle` and race past the guard. Internal
-        // sinks (test recorders) do not re-enter; external sinks should not
-        // either, but if they do, switching to NSRecursiveLock is the
-        // controlled escape hatch.
+        if #unavailable(macOS 14.4) {
+            throw CaptureError.engineConfigurationFailed("macOS 14.4 required")
+        }
         lock.lock()
         let current = subject.value
         switch current {
         case .running(let activeSource):
-            // Compare engine identity (and tolerate a weak-reference that
-            // has been deallocated by treating it as a permission to bind
-            // to the new engine).
             let sameSource = activeSource == source
             let activeEngine = active?.engine
             let sameEngine = activeEngine === engine
             lock.unlock()
             if sameSource && sameEngine {
-                return // idempotent
+                return
             }
             throw CaptureError.alreadyRunning(currentSource: activeSource)
         case .starting, .stopping:
@@ -164,56 +135,51 @@ public final class CaptureController: CaptureControllerProtocol, @unchecked Send
         lock.unlock()
 
         do {
-            // Verify the HAL still recognises this source. The audioProcessID
-            // we cached at enumeration time may already be stale.
             let resolvedAudioProcessID = try coreAudio.audioProcessID(forPID: source.pid)
 
-            // Create the tap. From this point until success we keep cleanup
-            // closures so partial failures don't leak Core Audio objects.
-            let tapID = try coreAudio.createTap(for: resolvedAudioProcessID)
+            // The reader owns the tap; it is the new home for tap creation,
+            // tap-format probing, and the aggregate/IOProc machinery.
+            let reader = try TapIOProcReader(
+                audioProcessID: resolvedAudioProcessID,
+                coreAudio: coreAudio
+            )
             var didFinishSuccessfully = false
             defer {
                 if !didFinishSuccessfully {
-                    try? coreAudio.destroyTap(tapID)
+                    reader.stop()
                 }
             }
 
-            // Tap UID → aggregate device. The UID must come from the tap
-            // object, not from the AudioObjectID directly (which is a UInt32
-            // and has no `.uid` property).
-            let uid = try coreAudio.tapUID(for: tapID)
-            let aggregateID = try coreAudio.createAggregateDevice(
-                containing: tapID,
-                uid: uid,
-                sourcePID: source.pid,
-                displayName: source.displayName
-            )
-            var didReleaseAggregateOwnership = false
+            let sourceNode = AVAudioSourceNode(format: reader.format) {
+                [weak ring = reader.ring] isSilence, _, frameCount, audioBufferList in
+                return Self.renderFromRing(
+                    ring: ring,
+                    isSilence: isSilence,
+                    frameCount: frameCount,
+                    audioBufferList: audioBufferList
+                )
+            }
+            engine.attach(sourceNode)
+            var didAttachSourceNode = true
             defer {
-                if !didFinishSuccessfully && !didReleaseAggregateOwnership {
-                    try? coreAudio.destroyAggregateDevice(aggregateID)
+                if !didFinishSuccessfully, didAttachSourceNode {
+                    engine.detach(sourceNode)
+                    didAttachSourceNode = false
                 }
             }
 
-            // Wire the engine's input node to the aggregate device. After
-            // this, `engine.inputNode` reads from our tap.
-            try coreAudio.configureEngineInput(engine, toReadFrom: aggregateID)
-
-            // Success — install the active capture and transition. We mark
-            // both ownership transfers before publishing so the defer blocks
-            // know not to tear down on the way out.
-            didReleaseAggregateOwnership = true
-            didFinishSuccessfully = true
+            try reader.start()
 
             lock.lock()
             active = ActiveCapture(
                 source: source,
-                tapID: tapID,
-                aggregateDeviceID: aggregateID,
+                reader: reader,
+                sourceNode: sourceNode,
                 engine: engine
             )
             subject.send(.running(source: source))
             lock.unlock()
+            didFinishSuccessfully = true
         } catch let error as CaptureError {
             lock.lock()
             active = nil
@@ -236,19 +202,11 @@ public final class CaptureController: CaptureControllerProtocol, @unchecked Send
 
     /// Stop the current capture and release HAL resources.
     ///
-    /// From `idle` this is a no-op. From `failed`, it clears the failure and
-    /// returns to `idle` without throwing (the caller has already been told
-    /// about the error). From `running`, it tears down in the reverse order
-    /// of `start`. Cleanup errors are swallowed after the first because the
-    /// goal is "leave no orphaned resources" rather than "report every
-    /// status code".
-    ///
-    /// Concurrent-call behaviour:
-    ///
-    /// - During `.starting` or `.stopping`: throws `.transitionInProgress`
-    ///   rather than racing the in-flight transition. `active` is preserved
-    ///   throughout teardown so a concurrent observer never sees the
-    ///   "active is nil but state is running/stopping" inconsistency.
+    /// From `idle` this is a no-op. From `failed`, it clears the failure
+    /// and returns to `idle` without throwing. From `running`, it tears
+    /// down in the reverse order of `start`: stop the reader (which
+    /// destroys the IOProc, aggregate, and tap), then detach the source
+    /// node from the engine.
     public func stop() throws {
         lock.lock()
         let current = subject.value
@@ -262,19 +220,14 @@ public final class CaptureController: CaptureControllerProtocol, @unchecked Send
             subject.send(.idle)
             lock.unlock()
             if let resources {
-                _ = performTearDown(resources)
+                tearDown(resources)
             }
             return
         case .starting, .stopping:
             lock.unlock()
             throw CaptureError.transitionInProgress
         case .running:
-            // Keep `active` set during teardown so concurrent observers see
-            // a consistent (state, resources) pair. We copy the reference
-            // for the actual HAL calls, which happen outside the lock.
             guard let resources = active else {
-                // .running with no active is an internal invariant violation;
-                // defensive recovery instead of crashing.
                 active = nil
                 subject.send(.idle)
                 lock.unlock()
@@ -283,87 +236,89 @@ public final class CaptureController: CaptureControllerProtocol, @unchecked Send
             subject.send(.stopping)
             lock.unlock()
 
-            do {
-                try tearDown(resources)
-                lock.lock()
-                active = nil
-                subject.send(.idle)
-                lock.unlock()
-            } catch let error as CaptureError {
-                // Even on teardown error, return to idle so a fresh start can
-                // be attempted. Resources may already be partially released
-                // by `performTearDown`; reset `active` to avoid double-free.
-                lock.lock()
-                active = nil
-                subject.send(.idle)
-                lock.unlock()
-                throw error
-            } catch {
-                lock.lock()
-                active = nil
-                subject.send(.idle)
-                lock.unlock()
-                throw CaptureError.engineConfigurationFailed(
-                    "Unexpected error during stop: \(error)"
-                )
-            }
+            tearDown(resources)
+
+            lock.lock()
+            active = nil
+            subject.send(.idle)
+            lock.unlock()
         }
     }
 
     // MARK: Deinit cleanup
 
-    /// Best-effort teardown when the controller is released while still
-    /// holding HAL resources — typically because the owning view model was
-    /// torn down without calling `stop()`. Without this, the tap and
-    /// aggregate device would persist until process exit (and the aggregate
-    /// device might survive even that).
-    ///
-    /// We do not take `lock` here: by definition no other strong references
-    /// to `self` exist when `deinit` runs, so the only possible contender is
-    /// a sink holding a `weak self` — those would observe `self` as nil
-    /// before deinit completes, and would not call back into the controller.
     deinit {
         if let resources = active {
-            _ = performTearDown(resources)
+            tearDown(resources)
         }
     }
 
-    // MARK: Teardown helpers
+    // MARK: Teardown helper
 
-    /// Tear down active resources in the reverse of the start order:
-    /// engine input → aggregate device → tap. Returns the first error
-    /// encountered (if any). The caller decides whether to swallow or
-    /// re-throw.
-    private func performTearDown(_ resources: ActiveCapture) -> Error? {
-        var firstError: Error?
-
+    private func tearDown(_ resources: ActiveCapture) {
+        resources.reader.stop()
         if let engine = resources.engine {
-            do {
-                try coreAudio.resetEngineInput(engine)
-            } catch {
-                firstError = firstError ?? error
-            }
+            engine.detach(resources.sourceNode)
         }
-        do {
-            try coreAudio.destroyAggregateDevice(resources.aggregateDeviceID)
-        } catch {
-            firstError = firstError ?? error
-        }
-        do {
-            try coreAudio.destroyTap(resources.tapID)
-        } catch {
-            firstError = firstError ?? error
-        }
-
-        return firstError
     }
 
-    /// Throwing convenience over `performTearDown`. Used by the normal stop
-    /// path; the `failed` reset path uses `performTearDown` directly and
-    /// discards the error.
-    private func tearDown(_ resources: ActiveCapture) throws {
-        if let error = performTearDown(resources) {
-            throw error
+    // MARK: Render callback
+
+    /// Pop frames from the ring buffer into the audio buffer list the
+    /// source node was handed. On underrun, zero-fill the remainder of
+    /// the destination buffers and report `isSilence`. Static so the
+    /// render callback can be a non-capturing C-compatible block.
+    ///
+    /// `isSilence` is set on every call (not just the silent path) so a
+    /// stale `true` from a prior underrun doesn't survive into a later
+    /// non-empty read — `AVAudioSourceNode`'s contract is that the
+    /// callback declares per-call whether the buffer it wrote is silent.
+    ///
+    /// Uses `withUnsafeTemporaryAllocation` for the destination-pointer
+    /// scratch so the real-time render path doesn't allocate.
+    private static func renderFromRing(
+        ring: AudioRingBuffer?,
+        isSilence: UnsafeMutablePointer<ObjCBool>,
+        frameCount: AVAudioFrameCount,
+        audioBufferList: UnsafeMutablePointer<AudioBufferList>
+    ) -> OSStatus {
+        let outList = UnsafeMutableAudioBufferListPointer(audioBufferList)
+        let frames = Int(frameCount)
+        let bufferCount = outList.count
+
+        return withUnsafeTemporaryAllocation(
+            of: UnsafeMutablePointer<Float>.self,
+            capacity: max(1, bufferCount)
+        ) { scratch -> OSStatus in
+            var valid = 0
+            for ch in 0..<bufferCount {
+                guard let raw = outList[ch].mData else { continue }
+                scratch[valid] = raw.assumingMemoryBound(to: Float.self)
+                valid += 1
+            }
+
+            guard let ring, valid > 0, let base = scratch.baseAddress else {
+                // No ring or no destinations: emit silence.
+                for i in 0..<valid {
+                    memset(scratch[i], 0, frames * MemoryLayout<Float>.size)
+                }
+                isSilence.pointee = ObjCBool(true)
+                return noErr
+            }
+
+            let framesRead = ring.read(
+                intoChannelPointers: base,
+                channelCount: valid,
+                frames: frames
+            )
+            if framesRead < frames {
+                let tailLength = (frames - framesRead) * MemoryLayout<Float>.size
+                for i in 0..<valid {
+                    memset(scratch[i].advanced(by: framesRead), 0, tailLength)
+                }
+            }
+            isSilence.pointee = ObjCBool(framesRead == 0)
+            return noErr
         }
     }
 }

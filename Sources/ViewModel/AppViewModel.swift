@@ -2,6 +2,7 @@ import AVFoundation
 import AppKit
 import Capture
 import Combine
+import CoreAudio
 import Effects
 import Foundation
 import Graph
@@ -11,24 +12,17 @@ import SwiftUI
 
 /// Domain-level errors surfaced to the UI by `AppViewModel`.
 ///
-/// The view model wraps capture, graph, and persistence failures into a single
-/// type so the SwiftUI layer can render error state without switching over
-/// disparate error namespaces.
+/// The view model wraps capture, graph, and persistence failures into a
+/// single type so the SwiftUI layer can render error state without
+/// switching over disparate error namespaces.
 public enum AppError: Error, Equatable {
-    /// Wraps a `CaptureError` raised by the capture controller.
     case capture(CaptureError)
-    /// A graph mutation (add/remove/move) failed.
     case graph(String)
-    /// A parameter write failed (unknown identifier, out-of-range, etc).
     case parameter(String)
-    /// Preset save/load failed.
     case preset(String)
-    /// Engine start/configuration failed at the AVAudioEngine layer.
     case engine(String)
-    /// Persistence read/write failure (UserDefaults serialization, etc).
     case persistence(String)
 
-    /// User-facing message rendered by the UI.
     public var userMessage: String {
         switch self {
         case .capture(let underlying):
@@ -71,9 +65,6 @@ public enum AppError: Error, Equatable {
 }
 
 /// Keys used to persist UI session state to `UserDefaults`.
-///
-/// Kept as a nested enum (rather than free constants) so the keys live next to
-/// the code that uses them and don't collide with other modules.
 public enum AppViewModelDefaultsKey {
     public static let graph: String = "lastSession.graph"
     public static let sourceBundleID: String = "lastSession.sourceBundleID"
@@ -83,63 +74,69 @@ public enum AppViewModelDefaultsKey {
 /// The single owner of UI state for the menubar window.
 ///
 /// `AppViewModel` mediates between the SwiftUI views and the audio stack
-/// (`Graph`, `CaptureController`, `AVAudioEngine`). It is `@MainActor` so all
-/// `@Published` mutations are guaranteed to happen on the main thread, which
-/// is the contract SwiftUI bindings expect.
+/// (`Graph`, `CaptureController`, `AVAudioEngine`). It is `@MainActor` so
+/// all `@Published` mutations are guaranteed to happen on the main
+/// thread, which is the contract SwiftUI bindings expect.
 ///
-/// Collaborators (`capture`, `engine`, `registry`, `defaults`, `clock`,
-/// `logger`) are injected so the type is unit-testable. The no-arg
-/// `convenience init` wires the production defaults.
+/// Under the v2 (direct-IOProc + AVAudioSourceNode) architecture
+/// (ADR-018), the power lifecycle is:
 ///
-/// See `docs/specs/ui.md` §State management for the full surface contract.
+/// 1. `capture.start(source:into:)` — the controller creates the tap,
+///    builds an `AVAudioSourceNode`, and attaches it to the engine. The
+///    engine's `inputNode` and `outputNode` are NOT touched.
+/// 2. `graph.attach(to:source:destination:)` — the view model wires the
+///    effect chain from `capture.captureSourceNode` to
+///    `engine.mainMixerNode`.
+/// 3. `engine.prepare()` + `engine.start()`.
+///
+/// Power-off reverses: stop the engine, detach the graph, stop the
+/// controller. `outputNode` stays on the system default device
+/// throughout, which is the property that ADR-018 turned into a
+/// load-bearing invariant.
 @MainActor
 public final class AppViewModel: ObservableObject {
 
     // MARK: Published state
 
-    /// The audio effect chain. Mutations go through `addEffect` / `removeEffect`
-    /// / `moveEffect` so persistence and engine teardown are handled centrally.
     @Published public private(set) var graph: Graph
 
-    /// The currently selected capture source. `nil` when no source is picked.
-    /// Setting this through `setSource(_:)` triggers a stop-then-stay-off
-    /// transition per `docs/specs/ui.md` §SourcePickerView.
     @Published public var currentSource: CaptureSource?
 
-    /// The list of currently capturable sources. Refreshed every 5 seconds
-    /// via `sourceRefreshTimer`.
     @Published public private(set) var availableSources: [CaptureSource] = []
 
-    /// Mirror of `capture.state`, delivered on the main thread.
-    @Published public private(set) var captureState: CaptureState = .idle
+    @Published public private(set) var captureState: CaptureState = .idle {
+        didSet {
+            if oldValue != captureState {
+                logger.info("captureState: \(String(describing: oldValue)) -> \(String(describing: self.captureState))")
+            }
+        }
+    }
 
-    /// The UUID of the effect whose expanded controls panel is visible.
-    /// Only one effect is expanded at a time, per `docs/specs/ui.md`.
     @Published public var expandedEffectID: UUID?
 
-    /// The most recent surfaced error. Cleared on `clearError()`.
-    @Published public private(set) var lastError: AppError?
+    @Published public private(set) var lastError: AppError? {
+        didSet {
+            switch (oldValue, lastError) {
+            case (nil, let new?):
+                logger.warning("lastError set: \(new.userMessage)")
+            case (let old?, nil):
+                logger.info("lastError cleared (was: \(old.userMessage))")
+            case (let old?, let new?):
+                logger.warning("lastError replaced: \(old.userMessage) -> \(new.userMessage)")
+            case (nil, nil):
+                break
+            }
+        }
+    }
 
-    /// Effect type identifiers the injected registry can construct, in the
-    /// order the registry returns them. The Add Effect menu reads this so
-    /// it presents exactly the types the view model can instantiate —
-    /// otherwise a non-shared registry (tests, plugin-enabled wiring) would
-    /// show types the view model can't actually add and miss types it can.
     public var availableEffectTypes: [String] {
         registry.registeredTypeIdentifiers
     }
 
-    /// In-memory ring of recent log lines. The debug panel observes this
-    /// and renders the entries; every `logger.*` call here also appends to
-    /// the store so the panel reflects exactly what the unified log sees.
     public let debugLog: DebugLogStore
 
-    /// Whether the control panel renders the debug log panel below the
-    /// footer. Persisted under `debug.enabled` so the user's choice
-    /// survives relaunch.
     @Published public private(set) var showDebugPanel: Bool
 
-    /// Toggle the debug-panel visibility and persist the new value.
     public func toggleDebugPanel() {
         showDebugPanel.toggle()
         defaults.set(showDebugPanel, forKey: AppViewModelDefaultsKey.debugPanel)
@@ -151,52 +148,21 @@ public final class AppViewModel: ObservableObject {
     private let engine: AVAudioEngine
     private let registry: EffectNodeRegistry
     private let defaults: UserDefaults
-    /// Instance logger. Writes go to the OS unified log AND the in-app
-    /// `debugLog` so the debug panel can show the same lines that
-    /// `log show --predicate 'subsystem == "tnf.app"'` would.
     private let logger: TnfLogger
 
     private var stateCancellable: AnyCancellable?
     private var sourceRefreshTimer: Timer?
     private var persistenceWorkItem: DispatchWorkItem?
-    /// In-flight source refresh. Tracked so a new timer tick doesn't queue
-    /// a second concurrent enumeration; HAL queries that overlap don't help
-    /// the UI but do compete for the same lock inside the controller.
+    private var configChangeObserver: NSObjectProtocol?
     private var refreshSourcesTask: Task<Void, Never>?
-    /// In-flight shutdown triggered by `setSource` while running. Tracked so
-    /// rapid source re-selection coalesces into a single teardown rather than
-    /// queueing N concurrent `powerOff()` tasks, each of which would call
-    /// `capture.stop()` and race against the controller's state machine.
     private var sourceChangeShutdownTask: Task<Void, Never>?
 
-    /// Debounce interval for `UserDefaults` writes; 200 ms keeps slider drags
-    /// from hammering the disk.
     private static let persistenceDebounceInterval: TimeInterval = 0.200
 
-    /// Maximum time `powerOn` waits for `engine.outputNode.outputFormat`
-    /// to become valid (non-zero sample rate AND channel count) before
-    /// `engine.start()`. The output device can transiently report
-    /// `0 Hz × 0 ch` during route changes triggered by tap creation /
-    /// muting — Bluetooth audio devices are the typical offender. 1.5 s
-    /// is generous; observed delays are typically under 200 ms once the
-    /// route settles.
-    private static let outputHardwareFormatWaitTimeout: TimeInterval = 1.5
-    private static let outputHardwareFormatPollNanoseconds: UInt64 = 50_000_000
-
-    /// Whether the engine is currently running (and therefore the graph is
-    /// attached). Tracked so we know whether to tear down on `powerOff`.
     private var engineIsRunning: Bool = false
 
     // MARK: Init
 
-    /// Designated initializer. Injects every collaborator so tests can swap
-    /// concrete capture/engine/registry instances.
-    ///
-    /// On construction the view model:
-    /// 1. Restores the last graph from `defaults` (falling back to
-    ///    `distant-engines` on missing/corrupt data).
-    /// 2. Subscribes to the capture state publisher.
-    /// 3. Kicks off the source refresh timer.
     public init(
         capture: CaptureControllerProtocol,
         engine: AVAudioEngine,
@@ -211,15 +177,9 @@ public final class AppViewModel: ObservableObject {
         self.debugLog = debugLog
         self.showDebugPanel = defaults.bool(forKey: AppViewModelDefaultsKey.debugPanel)
         self.logger = TnfLogger(source: "AppViewModel", store: debugLog)
-        // The static restoreGraph uses its own os.Logger; the lines it
-        // emits are app-startup only and don't need to surface in the
-        // debug panel (which is unmounted until the user opens it).
         let bootstrapLogger = Logger(subsystem: "tnf.app", category: "AppViewModel.bootstrap")
         self.graph = AppViewModel.restoreGraph(from: defaults, registry: registry, logger: bootstrapLogger)
 
-        // Capture state subscription is set up after init so the closure can
-        // safely refer to self. The CurrentValueSubject delivers the current
-        // value at subscription time, so captureState is populated immediately.
         stateCancellable = capture.statePublisher
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in
@@ -229,13 +189,59 @@ public final class AppViewModel: ObservableObject {
                 }
             }
 
+        // Observe AVAudioEngine configuration changes for diagnostics
+        // only. Under the v2 architecture the IOProc-driven capture is
+        // decoupled from the engine's render pull, so the H4 detach +
+        // reattach branch the original implementation needed is no
+        // longer load-bearing — the source node keeps draining the ring
+        // buffer through engine reconfigurations. See ADR-018.
+        configChangeObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: .main
+        ) { [weak self] _ in
+            // The observer block is @Sendable; bounce back to the main
+            // actor before touching MainActor-isolated state. `queue:
+            // .main` only pins the dispatch thread; it doesn't satisfy
+            // the actor-isolation checker.
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
+                let outFmt = self.engine.outputNode.outputFormat(forBus: 0)
+                self.logger.info(
+                    "AVAudioEngineConfigurationChange fired: engine.isRunning=\(self.engine.isRunning), "
+                    + "outputNode=\(outFmt.sampleRate) Hz x \(outFmt.channelCount) ch"
+                )
+                // If we believed the engine was running but it stopped
+                // itself on the configuration change (output device
+                // changed, hardware sample rate negotiated, route
+                // switch), the IOProc keeps writing into the ring
+                // buffer but no one is draining it — the user hears
+                // silence with captureState still .running. Attempt to
+                // restart the engine on the same graph; if that fails,
+                // surface a typed error and let the user power-cycle.
+                if self.engineIsRunning && !self.engine.isRunning {
+                    do {
+                        try self.engine.start()
+                        self.logger.info("Engine restarted after configuration change")
+                    } catch {
+                        self.engineIsRunning = false
+                        self.logger.error(
+                            "Engine restart after configuration change failed: \(error.localizedDescription)"
+                        )
+                        self.lastError = .engine(
+                            "Audio device configuration changed and the engine could not be restarted: "
+                            + "\(error.localizedDescription)"
+                        )
+                    }
+                }
+            }
+        }
+
         restoreSourceFromDefaults()
         refreshAvailableSources()
         startSourceRefreshTimer()
     }
 
-    /// Convenience initializer using the production capture controller and a
-    /// fresh `AVAudioEngine`. Used by `tap-n-filter`'s `@main` entry point.
     public convenience init() {
         self.init(
             capture: CaptureController(coreAudio: RealCoreAudioInterface()),
@@ -244,21 +250,17 @@ public final class AppViewModel: ObservableObject {
     }
 
     deinit {
-        // Capture local references because deinit cannot touch @MainActor
-        // state. The timer is invalidated and the work item cancelled on the
-        // best-effort principle: it's fine if a queued refresh fires after
-        // deinit because the closure holds `weak self`.
         sourceRefreshTimer?.invalidate()
         persistenceWorkItem?.cancel()
         refreshSourcesTask?.cancel()
         sourceChangeShutdownTask?.cancel()
+        if let observer = configChangeObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
     }
 
     // MARK: Menubar icon
 
-    /// System symbol name shown in the menubar, derived from `captureState`.
-    /// Computed (not stored) so SwiftUI re-renders the icon whenever
-    /// `captureState` changes via `@Published`.
     public var menuBarIconName: String {
         switch captureState {
         case .running:
@@ -272,21 +274,10 @@ public final class AppViewModel: ObservableObject {
 
     // MARK: Source selection
 
-    /// Set the active capture source.
-    ///
-    /// When the capture is currently `.running`, this powers the chain off
-    /// first per `docs/specs/ui.md` §SourcePickerView — V1 leaves the user
-    /// to press Power again rather than auto-restart, to avoid surprise. The
-    /// `currentSource` is then updated and persisted.
     public func setSource(_ source: CaptureSource?) {
         let previousSource = currentSource
         switch captureState {
         case .running:
-            // Coalesce. If a shutdown task from a prior source change is
-            // already in flight (or about to fire), don't queue a second one
-            // — capture.stop() is idempotent in design but a second concurrent
-            // call still races the controller's state transitions and can
-            // surface a spurious .transitionInProgress error.
             if sourceChangeShutdownTask == nil {
                 sourceChangeShutdownTask = Task { [weak self] in
                     await self?.powerOff()
@@ -296,9 +287,6 @@ public final class AppViewModel: ObservableObject {
                 }
             }
         case .starting, .stopping:
-            // A transition is in flight; setting the source while we wait is
-            // safe — controller.start will be called with the new source on
-            // the next powerOn().
             break
         case .idle, .failed:
             break
@@ -313,36 +301,29 @@ public final class AppViewModel: ObservableObject {
 
     /// Begin capture and engine for the current source.
     ///
-    /// The lifecycle matches the production pattern established by
-    /// `Phase1DebugViewModel`:
-    /// 1. Enumerate sources off-main via `Task.detached` (the HAL list can
-    ///    stall the UI).
-    /// 2. Confirm the chosen source is still available.
-    /// 3. Attach the graph to the engine BEFORE starting the engine — the
-    ///    graph wiring touches `engine.inputNode`'s format, which is only
-    ///    valid after `controller.start` configures the aggregate device.
-    /// 4. Call `controller.start` and `engine.start` on the main actor.
-    /// 5. Tear down on any failure.
+    /// V2 flow:
+    /// 1. Resolve the source from the live HAL list (audioProcessID can
+    ///    rotate between selection and start).
+    /// 2. `capture.start(source:into:)` — the controller creates the
+    ///    tap, builds the `AVAudioSourceNode`, attaches it to the
+    ///    engine, and starts the IOProc. Audio is now pumping into the
+    ///    ring buffer.
+    /// 3. `graph.attach(to:source:destination:)` — wire the effect chain
+    ///    from the source node into `engine.mainMixerNode`.
+    /// 4. `engine.prepare()` + `engine.start()`.
     public func powerOn() async {
         guard let source = currentSource else {
             lastError = .engine("No source selected.")
             return
         }
         guard captureState == .idle || isFailedState(captureState) else {
-            // Already running or transitioning — no-op.
             return
         }
         lastError = nil
 
-        // Re-resolve the source from the live HAL list so the audioProcessID
-        // we use is fresh. Match by PID first — that's what the picker keys on
-        // and what uniquely identifies the running process. Fall back to
-        // bundleIdentifier only if the PID is gone AND the saved source had a
-        // non-empty bundle ID (e.g. the source app was killed and relaunched
-        // between selection and start). Without the non-empty guard, a saved
-        // source with nil bundleIdentifier (CoreAudio processes without an
-        // owning app bundle) would match the first unrelated candidate that
-        // also has nil — capturing the wrong process silently.
+        // Re-resolve the source from the live HAL list. Match by PID
+        // first; bundle ID is a fallback for the relaunch-between-pick-
+        // and-start case.
         let resolvedSource: CaptureSource
         do {
             let candidates = try await Task.detached(priority: .userInitiated) { [capture] in
@@ -369,9 +350,6 @@ public final class AppViewModel: ObservableObject {
             return
         }
 
-        // controller.start configures the engine's input node; the graph
-        // attach must happen AFTER the input format is known, so we run them
-        // in the order start → attach → engine.start.
         do {
             try capture.start(source: resolvedSource, into: engine)
         } catch let error as CaptureError {
@@ -382,36 +360,16 @@ public final class AppViewModel: ObservableObject {
             return
         }
 
-        // Pre-empt AVAudioEngine's lazy auto-wire of
-        // `inputNode → mainMixerNode.bus 0`. The engine creates that wire
-        // the first time anything touches mainMixerNode and the user has
-        // no way to disable it; without removing it we end up with a
-        // parallel passthrough alongside our chain. The chain's processed
-        // signal would land on a higher bus of mainMixerNode and get
-        // summed with the untouched input — the user hears the original
-        // audio with a faint processed copy mixed in, not the filtered
-        // chain output the V1 design promises. Reference: the failing
-        // listen test on 2026-05-21 against Safari + `distant-engines`.
-        //
-        // Touch mainMixerNode to force its lazy creation, then disconnect
-        // any outputs from inputNode the auto-wire installed. graph.attach
-        // re-establishes the explicit wiring as inputNode's only output.
-        _ = engine.mainMixerNode
-        engine.disconnectNodeOutput(engine.inputNode)
+        guard let sourceNode = capture.captureSourceNode else {
+            stopCaptureLoggingRollbackError(primaryStage: "captureSourceNode lookup")
+            lastError = .engine("Capture started but no source node was published.")
+            return
+        }
 
         do {
-            // Route into the engine's main mixer, not directly into the
-            // output node. The mainMixerNode is what AVAudioEngine connects
-            // to outputNode automatically; bypassing it (as we did until
-            // 2026-05-21) means the chain's audio never reaches the audio
-            // device — the user hears only the source app's untouched
-            // signal because the process tap is non-blocking. The Phase 1
-            // architecture diagram explicitly puts mainMixerNode in the
-            // path, and `tap-n-filter-eartest` follows the same convention
-            // for offline rendering.
             try graph.attach(
                 to: engine,
-                source: engine.inputNode,
+                source: sourceNode,
                 destination: engine.mainMixerNode
             )
         } catch {
@@ -421,43 +379,22 @@ public final class AppViewModel: ObservableObject {
             return
         }
 
-        // Wait for the output device's hardware format to become valid
-        // before `engine.start()`. Bluetooth headphones and other devices
-        // that go through a route change when the process tap engages
-        // can briefly report `0 Hz × 0 ch`, which makes
-        // `IsFormatSampleRateAndChannelCountValid(outputHWFormat)` fail
-        // and engine.start throw `-10875` (FailedInitialization). The
-        // wait is bounded; if the format never recovers we surface a
-        // typed error rather than hang.
-        do {
-            try await waitForValidOutputHardwareFormat()
-        } catch let waitError {
-            graph.detach()
-            stopCaptureLoggingRollbackError(primaryStage: "output format wait")
-            let outFormat = engine.outputNode.outputFormat(forBus: 0)
-            logger.error("Output hardware format never became valid within \(Self.outputHardwareFormatWaitTimeout)s: \(outFormat.sampleRate) Hz × \(outFormat.channelCount) ch")
-            lastError = .engine("Output device not ready: \(waitError.localizedDescription)")
-            return
-        }
         engine.prepare()
 
         do {
             try engine.start()
             engineIsRunning = true
-            logger.info("powerOn complete: engine started, capture running on \(resolvedSource.displayName)")
+            let chainSummary = graph.nodes.isEmpty
+                ? "EMPTY (audio passes through unprocessed; add effects to hear filtering)"
+                : graph.nodes.map { type(of: $0).typeIdentifier }.joined(separator: " -> ")
+            logger.info("powerOn complete: engine started, capture running on \(resolvedSource.displayName), chain: \(chainSummary)")
         } catch {
             graph.detach()
             stopCaptureLoggingRollbackError(primaryStage: "engine start")
-            // Engine start failures are often AVAudioEngineConfigurationException
-            // from a downstream node's format mismatch, or a hardware-format
-            // condition on the output device (Bluetooth handshake, sample-rate
-            // contention). Dump as much as we can read so the debug panel
-            // shows the actual cause, not just "engine start failed".
             let nsError = error as NSError
-            let inFormat = engine.inputNode.inputFormat(forBus: 0)
             let outFormat = engine.outputNode.outputFormat(forBus: 0)
             logger.error("Engine start failed: domain=\(nsError.domain) code=\(nsError.code) desc=\(error.localizedDescription)")
-            logger.error("inputNode.inputFormat=\(inFormat.sampleRate) Hz × \(inFormat.channelCount) ch, outputNode.outputFormat=\(outFormat.sampleRate) Hz × \(outFormat.channelCount) ch")
+            logger.error("outputNode.outputFormat=\(outFormat.sampleRate) Hz × \(outFormat.channelCount) ch")
             if !nsError.userInfo.isEmpty {
                 logger.error("userInfo: \(nsError.userInfo)")
             }
@@ -469,9 +406,6 @@ public final class AppViewModel: ObservableObject {
         schedulePersistence()
     }
 
-    /// Stop capture and engine, returning to `.idle`. Safe to call from any
-    /// state; transitions in progress are awaited implicitly via the
-    /// capture controller's lifecycle.
     public func powerOff() async {
         if engineIsRunning {
             engine.stop()
@@ -487,77 +421,67 @@ public final class AppViewModel: ObservableObject {
         }
     }
 
-    /// Clear the latest surfaced error. Used by the Retry button on the
-    /// PowerToggle, which returns the UI to `.idle` after a failure.
     public func clearError() {
         lastError = nil
     }
 
     // MARK: Graph mutations
 
-    /// Append a fresh effect of the given type to the chain.
-    ///
-    /// If the engine is running, the graph is detached first, mutated, and
-    /// re-attached — per ADR-006 mutations require the graph to be detached.
-    /// The engine itself stays running across the transition; the audio will
-    /// briefly hiccup as the chain is re-wired.
     public func addEffect(of typeIdentifier: String) {
+        logger.info("addEffect: \(typeIdentifier) (chain size before: \(self.graph.nodes.count))")
         mutateGraph { graph in
             let node = try registry.makeNode(typeIdentifier: typeIdentifier)
             try graph.add(node)
         }
+        logger.info("addEffect: complete (chain size after: \(self.graph.nodes.count))")
     }
 
-    /// Remove the effect at `index` from the chain.
     public func removeEffect(at index: Int) {
+        logger.info("removeEffect: at index \(index) (chain size before: \(self.graph.nodes.count))")
         mutateGraph { graph in
             try graph.remove(at: index)
         }
+        logger.info("removeEffect: complete (chain size after: \(self.graph.nodes.count))")
     }
 
-    /// Move the effect at `from` to `to`, using SwiftUI `List.onMove`'s
-    /// post-removal indexing convention.
     public func moveEffect(from: Int, to: Int) {
+        logger.info("moveEffect: from \(from) to \(to)")
         mutateGraph { graph in
             try graph.move(from: from, to: to)
         }
     }
 
-    /// Update a single parameter on a node.
-    ///
-    /// This method does not throttle. Continuous UI controls (sliders, knobs)
-    /// throttle their writes upstream via Combine before calling here; see
-    /// `EffectControlsView.ParameterSlider` for the 30 Hz `throttle(...)` that
-    /// keeps the AVAudioUnit parameter setter from being hammered. Discrete
-    /// controls (Stepper, Picker) and one-shot loads (preset restore) don't
-    /// need throttling. A future high-frequency caller must own its own
-    /// throttling at the input layer.
     public func updateParameter(nodeID: UUID, paramID: String, value: Float) {
+        let shortID = String(nodeID.uuidString.prefix(8))
         guard let node = graph.nodes.first(where: { $0.id == nodeID }) else {
+            logger.warning("updateParameter: unknown node \(shortID) (param \(paramID)=\(value))")
             lastError = .parameter("Unknown node \(nodeID).")
             return
         }
         do {
             try node.setParameter(paramID, value: value)
+            logger.info("updateParameter: \(type(of: node).typeIdentifier)/\(shortID) \(paramID)=\(value)")
             schedulePersistence()
         } catch {
+            logger.error("updateParameter: \(type(of: node).typeIdentifier)/\(shortID) \(paramID)=\(value) failed: \(error.localizedDescription)")
             lastError = .parameter(error.localizedDescription)
         }
     }
 
-    /// Set the wet/dry mix for a node. Lives outside `updateParameter` because
-    /// `wetDryMix` is a protocol-level property rather than a catalog entry.
     public func updateWetDryMix(nodeID: UUID, value: Float) {
+        let shortID = String(nodeID.uuidString.prefix(8))
         guard let node = graph.nodes.first(where: { $0.id == nodeID }) else {
+            logger.warning("updateWetDryMix: unknown node \(shortID) (value \(value))")
             lastError = .parameter("Unknown node \(nodeID).")
             return
         }
-        node.wetDryMix = min(max(value, 0.0), 1.0)
+        let clamped = min(max(value, 0.0), 1.0)
+        node.wetDryMix = clamped
+        logger.info("updateWetDryMix: \(type(of: node).typeIdentifier)/\(shortID) wetDryMix=\(clamped)")
         objectWillChange.send()
         schedulePersistence()
     }
 
-    /// Toggle the bypass for a node.
     public func setBypass(nodeID: UUID, bypass: Bool) {
         guard let node = graph.nodes.first(where: { $0.id == nodeID }) else {
             lastError = .parameter("Unknown node \(nodeID).")
@@ -570,7 +494,6 @@ public final class AppViewModel: ObservableObject {
 
     // MARK: Presets
 
-    /// Save the current graph snapshot to `url` as a `.tnf` preset.
     public func savePreset(to url: URL) {
         let snapshot = graph.snapshot(name: url.deletingPathExtension().lastPathComponent)
         do {
@@ -580,7 +503,6 @@ public final class AppViewModel: ObservableObject {
         }
     }
 
-    /// Load a preset from `url`, replacing the current graph.
     public func loadPreset(from url: URL) {
         do {
             let preset = try PresetStore.load(from: url)
@@ -590,7 +512,6 @@ public final class AppViewModel: ObservableObject {
         }
     }
 
-    /// Load one of the factory presets bundled with the app.
     public func loadFactoryPreset(named name: String) {
         do {
             let preset = try FactoryPresets.load(named: name)
@@ -602,105 +523,57 @@ public final class AppViewModel: ObservableObject {
 
     // MARK: Internals
 
-    /// Apply a mutation closure to a fresh graph instance. Detaches the live
-    /// graph if attached, runs the mutation, and re-attaches if the engine
-    /// was running. This keeps the ADR-006 invariant (graph mutations require
-    /// detached graph) without exposing the dance to callers.
+    /// Apply a mutation closure to the graph. If the engine is running,
+    /// detach the graph for the mutation and re-attach via the same path
+    /// `powerOn` uses (source node → mainMixerNode).
     private func mutateGraph(_ mutation: (Graph) throws -> Void) {
         let wasRunning = engineIsRunning
+        logger.info("mutateGraph: wasRunning=\(wasRunning)")
         if engineIsRunning {
             engine.stop()
             graph.detach()
             engineIsRunning = false
+            logger.info("mutateGraph: detached for live mutation")
         }
         do {
             try mutation(graph)
         } catch {
+            logger.error("mutateGraph: mutation failed: \(error.localizedDescription)")
             lastError = .graph(error.localizedDescription)
-            // Re-attach if we were running; the chain is unchanged.
             if wasRunning {
-                attemptReattach()
+                reattachAfterMutation()
             }
             return
         }
-        // Tell SwiftUI to re-render; Graph itself is a reference type so its
-        // mutations don't trigger @Published.
         objectWillChange.send()
         schedulePersistence()
 
         if wasRunning {
-            attemptReattach()
+            logger.info("mutateGraph: reattaching after live mutation")
+            reattachAfterMutation()
         }
     }
 
-    /// Poll `engine.outputNode.outputFormat(forBus: 0)` until it reports
-    /// a non-zero sample rate AND channel count, or `timeout` elapses.
-    /// The audio route can be in a transient state right after tap
-    /// creation / muting (especially on Bluetooth output devices); the
-    /// poll lets the route settle without blocking the caller forever.
-    private func waitForValidOutputHardwareFormat(
-        timeout: TimeInterval = AppViewModel.outputHardwareFormatWaitTimeout,
-        pollNanoseconds: UInt64 = AppViewModel.outputHardwareFormatPollNanoseconds
-    ) async throws {
-        let deadline = Date().addingTimeInterval(timeout)
-        var iterations = 0
-        while true {
-            let format = engine.outputNode.outputFormat(forBus: 0)
-            if format.sampleRate > 0, format.channelCount > 0 {
-                if iterations > 0 {
-                    logger.info("Output hardware format became valid after \(iterations) poll(s): \(format.sampleRate) Hz × \(format.channelCount) ch")
-                }
-                return
-            }
-            if Date() >= deadline {
-                throw CaptureError.engineConfigurationFailed(
-                    "Output hardware format never became valid (timeout \(timeout)s): "
-                    + "\(format.sampleRate) Hz × \(format.channelCount) ch"
-                )
-            }
-            iterations += 1
-            try await Task.sleep(nanoseconds: pollNanoseconds)
-        }
-    }
-
-    /// Stop the capture controller as part of a rollback, logging any
-    /// secondary error rather than discarding it. The primary failure
-    /// (graph attach / engine start) is the actionable signal the user
-    /// sees; the stop error is supplemental but worth preserving for
-    /// diagnostics — leaked taps and partial HAL state look very different
-    /// from clean teardown in the log stream.
-    private func stopCaptureLoggingRollbackError(primaryStage: String) {
-        do {
-            try capture.stop()
-        } catch {
-            logger.error(
-                "Rollback after \(primaryStage) failure: capture.stop also failed: \(error.localizedDescription)"
+    /// Re-attach the graph after a live mutation and restart the engine.
+    /// V2 path: the graph head is the captureSourceNode, not
+    /// `engine.inputNode`.
+    private func reattachAfterMutation() {
+        guard let sourceNode = capture.captureSourceNode else {
+            handleReattachFailure(
+                NSError(
+                    domain: "tnf.viewmodel",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "captureSourceNode unavailable"]
+                ),
+                stage: "graph attach",
+                graphAttached: false
             )
+            return
         }
-    }
-
-    /// Best-effort re-attach of the graph and engine after a mutation. Errors
-    /// here are surfaced through `lastError` and the capture controller is
-    /// stopped, so a failed re-attach leaves the UI in a coherent idle state
-    /// rather than "running" with no audio path.
-    ///
-    /// The attach and engine-start steps run in separate `do/catch` blocks
-    /// because the cleanup is asymmetric: if `attach` fails the graph is
-    /// already detached, but if `engine.start` fails the graph IS attached
-    /// and we have to call `graph.detach()` ourselves before transitioning
-    /// out of running — otherwise the next attach call hits `requireDetached`
-    /// and throws.
-    private func attemptReattach() {
-        // Same auto-wire-removal dance as powerOn: AVAudioEngine re-creates
-        // the inputNode → mainMixerNode passthrough whenever a connection
-        // to mainMixerNode is established. Without removing it, the
-        // reattached chain would compete with a parallel passthrough.
-        _ = engine.mainMixerNode
-        engine.disconnectNodeOutput(engine.inputNode)
         do {
             try graph.attach(
                 to: engine,
-                source: engine.inputNode,
+                source: sourceNode,
                 destination: engine.mainMixerNode
             )
         } catch {
@@ -711,15 +584,10 @@ public final class AppViewModel: ObservableObject {
             try engine.start()
             engineIsRunning = true
         } catch {
-            // attach succeeded above; we MUST detach before falling out so
-            // the graph is back to a state where the next reattach can run.
             handleReattachFailure(error, stage: "engine start", graphAttached: true)
         }
     }
 
-    /// Common cleanup for `attemptReattach` failure paths. Detaches the graph
-    /// if the caller indicates it succeeded in attaching, stops capture, and
-    /// surfaces the original failure to the user via `lastError`.
     private func handleReattachFailure(_ error: Error, stage: String, graphAttached: Bool) {
         if graphAttached {
             graph.detach()
@@ -733,11 +601,19 @@ public final class AppViewModel: ObservableObject {
         lastError = .engine("Re-attach failed after graph mutation: \(error.localizedDescription)")
     }
 
-    /// Replace the current graph with one loaded from a preset. The engine is
-    /// stopped (if running), the new graph is installed, and the engine is
-    /// re-attached so capture continues against the new chain. If
-    /// `Graph.restore` throws, we re-attach the original (still-held) graph
-    /// so a failed preset load does not silently kill live audio.
+    /// Stop the capture controller as part of a rollback, logging any
+    /// secondary error rather than discarding it.
+    private func stopCaptureLoggingRollbackError(primaryStage: String) {
+        do {
+            try capture.stop()
+        } catch {
+            logger.error(
+                "Rollback after \(primaryStage) failure: capture.stop also failed: \(error.localizedDescription)"
+            )
+        }
+    }
+
+    /// Replace the current graph with one loaded from a preset.
     private func installPreset(_ preset: GraphPreset) throws {
         let wasRunning = engineIsRunning
         if engineIsRunning {
@@ -749,11 +625,8 @@ public final class AppViewModel: ObservableObject {
         do {
             newGraph = try Graph.restore(from: preset, using: registry)
         } catch {
-            // Restore the prior chain so audio resumes; the user sees the
-            // load error via the caller's catch, but the engine isn't left
-            // half-torn-down.
             if wasRunning {
-                attemptReattach()
+                reattachAfterMutation()
             }
             throw error
         }
@@ -763,14 +636,12 @@ public final class AppViewModel: ObservableObject {
         }
         schedulePersistence()
         if wasRunning {
-            attemptReattach()
+            reattachAfterMutation()
         }
     }
 
     // MARK: Persistence
 
-    /// Restore the persisted graph from `defaults`, or fall back to the
-    /// `distant-engines` factory preset on missing/corrupt data.
     private static func restoreGraph(
         from defaults: UserDefaults,
         registry: EffectNodeRegistry,
@@ -790,9 +661,6 @@ public final class AppViewModel: ObservableObject {
         return restoreDistantEngines(registry: registry, logger: logger)
     }
 
-    /// Last-resort fallback: load the bundled `distant-engines` preset. If
-    /// even that fails (bundle missing, JSON malformed) returns an empty
-    /// graph so the UI still renders.
     private static func restoreDistantEngines(
         registry: EffectNodeRegistry,
         logger: Logger
@@ -806,16 +674,6 @@ public final class AppViewModel: ObservableObject {
         }
     }
 
-    /// Restore `currentSource` from the persisted bundle ID, matching it
-    /// against the live source list. If the saved bundle ID is no longer
-    /// running, `currentSource` stays nil.
-    ///
-    /// HAL enumeration can stall the UI (see `powerOn` for the analogous
-    /// off-main pattern), so we run it on a detached task and write back
-    /// on the main actor. The write is guarded: if the user (or a test)
-    /// has already set `currentSource` while the async enumeration was in
-    /// flight, leave their choice alone — restore is best-effort, not
-    /// authoritative.
     private func restoreSourceFromDefaults() {
         guard let bundleID = defaults.string(forKey: AppViewModelDefaultsKey.sourceBundleID),
               !bundleID.isEmpty
@@ -837,17 +695,12 @@ public final class AppViewModel: ObservableObject {
         }
     }
 
-    /// Run `capture.availableSources()` on a detached task so the HAL
-    /// enumeration (which can block) does not stall the UI. Returns to the
-    /// caller's actor with the result.
     private func fetchAvailableSourcesOffMain() async throws -> [CaptureSource] {
         try await Task.detached(priority: .userInitiated) { [capture] in
             try capture.availableSources()
         }.value
     }
 
-    /// Schedule a debounced write of the current state to `UserDefaults`.
-    /// Coalesces rapid mutations (slider drags) into a single write.
     private func schedulePersistence() {
         persistenceWorkItem?.cancel()
         let item = DispatchWorkItem { [weak self] in
@@ -860,8 +713,6 @@ public final class AppViewModel: ObservableObject {
         )
     }
 
-    /// Serialize and write the current state. Run on the main actor (via the
-    /// scheduled work item) because we touch `@Published` properties.
     private func writePersistence() {
         let snapshot = graph.snapshot(name: "lastSession")
         do {
@@ -879,13 +730,6 @@ public final class AppViewModel: ObservableObject {
 
     // MARK: Source refresh
 
-    /// Refresh `availableSources` from the capture controller.
-    ///
-    /// Public so the view can request an immediate refresh on appear; the
-    /// timer also calls this every 5 seconds. HAL enumeration runs on a
-    /// detached task so the periodic refresh does not freeze the menubar
-    /// UI under load. If a refresh is already in flight, the new tick is
-    /// dropped — overlapping enumerations buy nothing and waste CPU.
     public func refreshAvailableSources() {
         guard refreshSourcesTask == nil || refreshSourcesTask?.isCancelled == true else {
             return
@@ -903,8 +747,6 @@ public final class AppViewModel: ObservableObject {
 
     private func startSourceRefreshTimer() {
         sourceRefreshTimer?.invalidate()
-        // Timer is not `Sendable` on Swift 5.10, but @MainActor confines us to
-        // the main thread so the closure is safe.
         sourceRefreshTimer = Timer.scheduledTimer(
             withTimeInterval: 5.0,
             repeats: true

@@ -329,6 +329,7 @@ final class StubCaptureController: CaptureControllerProtocol, @unchecked Sendabl
     private let subject = CurrentValueSubject<CaptureState, Never>(.idle)
     var state: CaptureState { subject.value }
     var statePublisher: AnyPublisher<CaptureState, Never> { subject.eraseToAnyPublisher() }
+    var captureSourceNode: AVAudioSourceNode? { nil }
     func availableSources() throws -> [CaptureSource] { [] }
     func start(source: CaptureSource, into engine: AVAudioEngine) throws {}
     func stop() throws {}

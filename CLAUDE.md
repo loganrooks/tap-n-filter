@@ -16,8 +16,15 @@ If you are starting work in this repo for the first time, read the following in 
 2. `docs/orchestration/state.json`
 3. The phase doc at `docs/orchestration/phases/<current_phase>.md`
 4. `docs/governance/quality-gates.md`
+5. Any open lab notebooks in `docs/investigations/` relevant to the current phase or area you're touching.
 
 Then proceed to whatever the current phase requires.
+
+## Active investigations
+
+Long-running technical investigations that span multiple sessions are tracked as lab notebooks in `docs/investigations/`. Each notebook contains a chronological experiment log, an explicit hypothesis ledger (active / inactive / ruled out), an environment snapshot, and cited references. The protocol — including the post-falsificationist commitments (source-grounded vs behavior-inferred tags, pre-registration of predictions, mandatory frame checks after 3+ same-null experiments) — is in `docs/investigations/README.md`.
+
+If you're about to touch code in an area covered by an open investigation, read the notebook first. The point is to avoid repeating experiments or re-believing hypotheses that have already been ruled out.
 
 ## Phases and gates
 

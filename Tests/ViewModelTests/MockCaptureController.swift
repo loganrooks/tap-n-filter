@@ -44,6 +44,12 @@ final class MockCaptureController: CaptureControllerProtocol, @unchecked Sendabl
         subject.eraseToAnyPublisher()
     }
 
+    /// Source node handed to the view model when capture is running. The
+    /// mock creates one with a no-op render block on `start` and attaches
+    /// it to the engine — same shape as the real controller — so the
+    /// view model can wire the graph against a real `AVAudioNode`.
+    private(set) var captureSourceNode: AVAudioSourceNode?
+
     func availableSources() throws -> [CaptureSource] {
         availableSourcesCallCount += 1
         if let error = availableSourcesError { throw error }
@@ -56,6 +62,19 @@ final class MockCaptureController: CaptureControllerProtocol, @unchecked Sendabl
             subject.send(.failed(error))
             throw error
         }
+        // Mirror the real controller: create a source node and attach it
+        // to the engine so the view model's graph.attach has a real
+        // AVAudioNode to wire from. The render block is a no-op silence
+        // generator; tests don't exercise audio rendering.
+        let format = engine.outputNode.outputFormat(forBus: 0)
+        let sourceNode = AVAudioSourceNode(format: format) {
+            isSilence, _, _, _ in
+            isSilence.pointee = ObjCBool(true)
+            return noErr
+        }
+        engine.attach(sourceNode)
+        captureSourceNode = sourceNode
+
         if autoTransitionOnStart {
             subject.send(.starting)
             subject.send(.running(source: source))
@@ -69,6 +88,7 @@ final class MockCaptureController: CaptureControllerProtocol, @unchecked Sendabl
         if let error = stopError {
             throw error
         }
+        captureSourceNode = nil
         subject.send(.idle)
     }
 
