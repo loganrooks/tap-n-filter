@@ -201,8 +201,9 @@ public final class AppViewModel: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             // The observer block is @Sendable; bounce back to the main
-            // actor before touching MainActor-isolated state.
-            // queue=.main only fixes the thread, not the actor.
+            // actor before touching MainActor-isolated state. `queue:
+            // .main` only pins the dispatch thread; it doesn't satisfy
+            // the actor-isolation checker.
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
                 let outFmt = self.engine.outputNode.outputFormat(forBus: 0)
@@ -210,6 +211,29 @@ public final class AppViewModel: ObservableObject {
                     "AVAudioEngineConfigurationChange fired: engine.isRunning=\(self.engine.isRunning), "
                     + "outputNode=\(outFmt.sampleRate) Hz x \(outFmt.channelCount) ch"
                 )
+                // If we believed the engine was running but it stopped
+                // itself on the configuration change (output device
+                // changed, hardware sample rate negotiated, route
+                // switch), the IOProc keeps writing into the ring
+                // buffer but no one is draining it — the user hears
+                // silence with captureState still .running. Attempt to
+                // restart the engine on the same graph; if that fails,
+                // surface a typed error and let the user power-cycle.
+                if self.engineIsRunning && !self.engine.isRunning {
+                    do {
+                        try self.engine.start()
+                        self.logger.info("Engine restarted after configuration change")
+                    } catch {
+                        self.engineIsRunning = false
+                        self.logger.error(
+                            "Engine restart after configuration change failed: \(error.localizedDescription)"
+                        )
+                        self.lastError = .engine(
+                            "Audio device configuration changed and the engine could not be restarted: "
+                            + "\(error.localizedDescription)"
+                        )
+                    }
+                }
             }
         }
 

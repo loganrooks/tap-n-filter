@@ -64,8 +64,28 @@ public final class AudioRingBuffer: @unchecked Sendable {
     /// `sources.count` may be less than `channelCount`; only the
     /// overlapping channels are written. Extra channels in `sources`
     /// beyond `channelCount` are ignored.
+    ///
+    /// Array overload kept for ergonomic test fixtures; the real-time
+    /// IOProc path uses the pointer-based overload to avoid allocating.
     @discardableResult
     public func write(from sources: [UnsafePointer<Float>], frames: Int) -> Int {
+        sources.withUnsafeBufferPointer { buf in
+            guard let base = buf.baseAddress else { return 0 }
+            return write(fromChannelPointers: base, channelCount: buf.count, frames: frames)
+        }
+    }
+
+    /// Pointer-based producer overload. The IOProc thread uses this
+    /// variant with `withUnsafeTemporaryAllocation` for the source-
+    /// pointer scratch so the hot path doesn't construct a Swift `Array`
+    /// (which would allocate and run ARC on every callback). Real-time
+    /// safe.
+    @discardableResult
+    public func write(
+        fromChannelPointers sources: UnsafePointer<UnsafePointer<Float>>,
+        channelCount sourceChannelCount: Int,
+        frames: Int
+    ) -> Int {
         guard frames > 0 else { return 0 }
         return lock.withLockUnchecked { state -> Int in
             let available = capacity - state.fill
@@ -74,7 +94,7 @@ public final class AudioRingBuffer: @unchecked Sendable {
 
             let firstChunk = min(toWrite, capacity - state.head)
             let secondChunk = toWrite - firstChunk
-            let writableChannels = min(channelCount, sources.count)
+            let writableChannels = min(channelCount, sourceChannelCount)
             for ch in 0..<writableChannels {
                 let src = sources[ch]
                 let dest = channels[ch].baseAddress!
@@ -97,8 +117,27 @@ public final class AudioRingBuffer: @unchecked Sendable {
     /// `dests.count` may be less than `channelCount`; only the
     /// overlapping channels are read into. Extra channels in `dests`
     /// beyond `channelCount` are left untouched.
+    ///
+    /// Array overload kept for ergonomic test fixtures; the real-time
+    /// SourceNode render path uses the pointer-based overload.
     @discardableResult
     public func read(into dests: [UnsafeMutablePointer<Float>], frames: Int) -> Int {
+        dests.withUnsafeBufferPointer { buf in
+            guard let base = buf.baseAddress else { return 0 }
+            return read(intoChannelPointers: base, channelCount: buf.count, frames: frames)
+        }
+    }
+
+    /// Pointer-based consumer overload. The AVAudioSourceNode render
+    /// callback uses this variant with `withUnsafeTemporaryAllocation`
+    /// for the destination-pointer scratch so the hot path doesn't
+    /// allocate. Real-time safe.
+    @discardableResult
+    public func read(
+        intoChannelPointers dests: UnsafePointer<UnsafeMutablePointer<Float>>,
+        channelCount destChannelCount: Int,
+        frames: Int
+    ) -> Int {
         guard frames > 0 else { return 0 }
         return lock.withLockUnchecked { state -> Int in
             let toRead = min(frames, state.fill)
@@ -106,7 +145,7 @@ public final class AudioRingBuffer: @unchecked Sendable {
 
             let firstChunk = min(toRead, capacity - state.tail)
             let secondChunk = toRead - firstChunk
-            let readableChannels = min(channelCount, dests.count)
+            let readableChannels = min(channelCount, destChannelCount)
             for ch in 0..<readableChannels {
                 let dst = dests[ch]
                 let src = channels[ch].baseAddress!

@@ -90,7 +90,11 @@ final class RealTapIntegrationTests: XCTestCase {
                     UnsafeMutablePointer<Float>.allocate(capacity: chunkFrames)
                 }
                 defer { chunkBufs.forEach { $0.deallocate() } }
-                let n = reader.ring.read(into: chunkBufs, frames: chunkFrames)
+                // Cap the request to the remaining capacity in `captured`
+                // so the final partial chunk doesn't index past the
+                // preallocated per-channel arrays.
+                let want = min(chunkFrames, totalFrames - collected)
+                let n = reader.ring.read(into: chunkBufs, frames: want)
                 if n == 0 {
                     Thread.sleep(forTimeInterval: 0.01)
                     return

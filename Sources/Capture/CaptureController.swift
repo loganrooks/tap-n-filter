@@ -268,6 +268,14 @@ public final class CaptureController: CaptureControllerProtocol, @unchecked Send
     /// source node was handed. On underrun, zero-fill the remainder of
     /// the destination buffers and report `isSilence`. Static so the
     /// render callback can be a non-capturing C-compatible block.
+    ///
+    /// `isSilence` is set on every call (not just the silent path) so a
+    /// stale `true` from a prior underrun doesn't survive into a later
+    /// non-empty read — `AVAudioSourceNode`'s contract is that the
+    /// callback declares per-call whether the buffer it wrote is silent.
+    ///
+    /// Uses `withUnsafeTemporaryAllocation` for the destination-pointer
+    /// scratch so the real-time render path doesn't allocate.
     private static func renderFromRing(
         ring: AudioRingBuffer?,
         isSilence: UnsafeMutablePointer<ObjCBool>,
@@ -276,32 +284,41 @@ public final class CaptureController: CaptureControllerProtocol, @unchecked Send
     ) -> OSStatus {
         let outList = UnsafeMutableAudioBufferListPointer(audioBufferList)
         let frames = Int(frameCount)
+        let bufferCount = outList.count
 
-        var dests: [UnsafeMutablePointer<Float>] = []
-        dests.reserveCapacity(outList.count)
-        for buffer in outList {
-            guard let raw = buffer.mData else { continue }
-            dests.append(raw.assumingMemoryBound(to: Float.self))
-        }
-
-        guard let ring else {
-            for d in dests {
-                memset(d, 0, frames * MemoryLayout<Float>.size)
+        return withUnsafeTemporaryAllocation(
+            of: UnsafeMutablePointer<Float>.self,
+            capacity: max(1, bufferCount)
+        ) { scratch -> OSStatus in
+            var valid = 0
+            for ch in 0..<bufferCount {
+                guard let raw = outList[ch].mData else { continue }
+                scratch[valid] = raw.assumingMemoryBound(to: Float.self)
+                valid += 1
             }
-            isSilence.pointee = ObjCBool(true)
+
+            guard let ring, valid > 0, let base = scratch.baseAddress else {
+                // No ring or no destinations: emit silence.
+                for i in 0..<valid {
+                    memset(scratch[i], 0, frames * MemoryLayout<Float>.size)
+                }
+                isSilence.pointee = ObjCBool(true)
+                return noErr
+            }
+
+            let framesRead = ring.read(
+                intoChannelPointers: base,
+                channelCount: valid,
+                frames: frames
+            )
+            if framesRead < frames {
+                let tailLength = (frames - framesRead) * MemoryLayout<Float>.size
+                for i in 0..<valid {
+                    memset(scratch[i].advanced(by: framesRead), 0, tailLength)
+                }
+            }
+            isSilence.pointee = ObjCBool(framesRead == 0)
             return noErr
         }
-
-        let framesRead = ring.read(into: dests, frames: frames)
-        if framesRead < frames {
-            let tailLength = (frames - framesRead) * MemoryLayout<Float>.size
-            for d in dests {
-                memset(d.advanced(by: framesRead), 0, tailLength)
-            }
-        }
-        if framesRead == 0 {
-            isSilence.pointee = ObjCBool(true)
-        }
-        return noErr
     }
 }

@@ -218,8 +218,11 @@ public final class TapIOProcReader: @unchecked Sendable {
 
     /// Push samples from a tap's `AudioBufferList` into the ring buffer.
     /// Called from `tapIOProcReaderIOProc` on a Core Audio thread; must
-    /// not allocate, block, or call into Swift runtime machinery beyond
-    /// the cheap operations the ring buffer already performs.
+    /// not allocate, block, or call into Swift runtime machinery. Uses
+    /// `withUnsafeTemporaryAllocation` to lay the per-channel source
+    /// pointers out in stack-resident contiguous storage, then hands a
+    /// raw pointer to `AudioRingBuffer.write(fromChannelPointers:...)`
+    /// — no Swift Array, no ARC traffic on the real-time path.
     fileprivate func pushIOProcSamples(
         _ inputData: UnsafePointer<AudioBufferList>
     ) {
@@ -235,31 +238,22 @@ public final class TapIOProcReader: @unchecked Sendable {
         let activeChannels = min(inputList.count, channelCount)
         guard activeChannels > 0 else { return }
 
-        // Use a stack-allocated scratch for the source pointers so the
-        // IOProc path doesn't heap-allocate per fire. Up to 8 channels is
-        // far above any tap we'd reasonably encounter.
         withUnsafeTemporaryAllocation(
-            of: UnsafePointer<Float>?.self,
+            of: UnsafePointer<Float>.self,
             capacity: activeChannels
         ) { scratch in
+            var valid = 0
             for ch in 0..<activeChannels {
-                guard let raw = inputList[ch].mData else {
-                    scratch[ch] = nil
-                    return
-                }
-                scratch[ch] = UnsafePointer(raw.assumingMemoryBound(to: Float.self))
+                guard let raw = inputList[ch].mData else { break }
+                scratch[valid] = UnsafePointer(raw.assumingMemoryBound(to: Float.self))
+                valid += 1
             }
-            // Build a temporary `[UnsafePointer<Float>]` view of the
-            // scratch buffer for the ring buffer API. The array carries
-            // a copy of the pointers; the storage backing them belongs
-            // to the inputList.
-            var sources: [UnsafePointer<Float>] = []
-            sources.reserveCapacity(activeChannels)
-            for ch in 0..<activeChannels {
-                guard let ptr = scratch[ch] else { return }
-                sources.append(ptr)
-            }
-            _ = ring.write(from: sources, frames: frames)
+            guard valid > 0, let base = scratch.baseAddress else { return }
+            _ = ring.write(
+                fromChannelPointers: base,
+                channelCount: valid,
+                frames: frames
+            )
         }
     }
 }
