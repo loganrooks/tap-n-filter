@@ -7,73 +7,103 @@ import Darwin
 /// configurable return values and overridable error injection.
 ///
 /// Each method has:
-/// - A `*Calls` counter for ordering-and-arity assertions.
-/// - A `*Result` closure (defaulting to a sensible canned value) so tests can
+/// - A call record (counter, parameter array, or both) for ordering /
+///   arity assertions.
+/// - A `*Result` closure (with a sensible canned default) so tests can
 ///   inject failures or specific IDs.
 ///
-/// Sendable conformance is not claimed; tests run synchronously on a single
-/// thread and the state mutation is intentional.
+/// Sendable conformance is not claimed; tests run synchronously on a
+/// single thread and the state mutation is intentional.
 final class FakeCoreAudioInterface: CoreAudioInterface {
 
     // MARK: Call records
 
     private(set) var audioProcessIDCallPIDs: [pid_t] = []
     private(set) var tapUIDCallTapIDs: [AudioObjectID] = []
+    private(set) var tapStreamFormatCallTapIDs: [AudioObjectID] = []
     private(set) var createTapCallProcessIDs: [AudioObjectID] = []
-    private(set) var createAggregateDeviceCallTapIDs: [AudioObjectID] = []
+    private(set) var createAggregateDeviceCallDescriptions: [CFDictionary] = []
+    private(set) var setAggregateTapListCalls: [(aggregateID: AudioDeviceID, tapUIDs: CFArray)] = []
     private(set) var destroyAggregateDeviceCallIDs: [AudioDeviceID] = []
     private(set) var destroyTapCallIDs: [AudioObjectID] = []
+    private(set) var createIOProcIDCalls: [(deviceID: AudioDeviceID, clientData: UnsafeMutableRawPointer?)] = []
+    private(set) var destroyIOProcIDCalls: [(deviceID: AudioDeviceID, ioProcID: AudioDeviceIOProcID)] = []
+    private(set) var startDeviceCalls: [(deviceID: AudioDeviceID, ioProcID: AudioDeviceIOProcID)] = []
+    private(set) var stopDeviceCalls: [(deviceID: AudioDeviceID, ioProcID: AudioDeviceIOProcID)] = []
     private(set) var availableAudioProcessesCallCount = 0
-    private(set) var configureEngineInputCallDeviceIDs: [AudioDeviceID] = []
-    private(set) var resetEngineInputCallCount = 0
-    private(set) var pinEngineOutputCallCount = 0
 
     // MARK: Stubbable behaviour
 
-    /// Map from `pid_t` to the AudioObjectID returned by `audioProcessID(forPID:)`.
-    /// Unmapped PIDs throw `CaptureError.sourceNotFound`.
+    /// Map from `pid_t` to the AudioObjectID returned by
+    /// `audioProcessID(forPID:)`. Unmapped PIDs throw
+    /// `CaptureError.sourceNotFound`.
     var audioProcessIDsByPID: [pid_t: AudioObjectID] = [:]
 
-    /// Override-the-default closure for tap UID lookup. Returns a string by
-    /// default ("fake.tap.<id>") so tests don't need to set it manually.
     var tapUIDResult: (AudioObjectID) throws -> CFString = { id in
         "fake.tap.\(id)" as CFString
     }
 
-    /// Override-the-default closure for tap creation. Returns
-    /// `processObjectID + 1000` so produced IDs are easy to recognise in
-    /// debugging output.
-    var createTapResult: (AudioObjectID) throws -> AudioObjectID = { processObjectID in
-        processObjectID + 1000
+    /// Default tap stream format: 48 kHz × 2 ch Float32 non-interleaved.
+    /// Tests that need a different format override this.
+    var tapStreamFormatResult: (AudioObjectID) throws -> AudioStreamBasicDescription = { _ in
+        var asbd = AudioStreamBasicDescription()
+        asbd.mSampleRate = 48_000
+        asbd.mFormatID = kAudioFormatLinearPCM
+        asbd.mFormatFlags = kAudioFormatFlagIsFloat
+            | kAudioFormatFlagIsPacked
+            | kAudioFormatFlagIsNonInterleaved
+        asbd.mBytesPerPacket = 4
+        asbd.mFramesPerPacket = 1
+        asbd.mBytesPerFrame = 4
+        asbd.mChannelsPerFrame = 2
+        asbd.mBitsPerChannel = 32
+        return asbd
     }
 
-    /// Override-the-default closure for aggregate device creation. Returns
-    /// `tapID + 1000` for the same legibility reason as `createTapResult`.
-    var createAggregateDeviceResult: (
-        _ tapID: AudioObjectID,
-        _ uid: CFString,
-        _ sourcePID: pid_t,
-        _ displayName: String
-    ) throws -> AudioDeviceID = { tapID, _, _, _ in tapID + 1000 }
+    var createTapResult: (AudioObjectID) throws -> AudioObjectID = { processObjectID in
+        processObjectID + 1_000
+    }
 
-    /// Hook for destroy-aggregate-device. Defaults to success.
+    /// Aggregate ID returned on success. Tests may override to inject
+    /// failures or specific IDs.
+    var createAggregateDeviceResult: (CFDictionary) throws -> AudioDeviceID = { _ in
+        // A stable arbitrary AudioDeviceID; tests that need a particular
+        // value can override.
+        2_000
+    }
+
+    var setAggregateTapListResult: (AudioDeviceID, CFArray) throws -> Void = { _, _ in }
+
     var destroyAggregateDeviceResult: (AudioDeviceID) throws -> Void = { _ in }
 
-    /// Hook for destroy-tap. Defaults to success.
     var destroyTapResult: (AudioObjectID) throws -> Void = { _ in }
 
-    /// Result for `availableAudioProcesses`. Defaults to an empty list.
+    /// Next IOProc ID to hand back. Bumped on each call so tests can
+    /// distinguish multiple registrations.
+    var nextIOProcID: AudioDeviceIOProcID? = {
+        // AudioDeviceIOProcID is a function-pointer-like opaque type;
+        // tests don't dereference it. We synthesise an arbitrary
+        // non-nil pointer for ergonomics.
+        let raw = UnsafeMutableRawPointer(bitPattern: 0xCAFE_BABE)!
+        return unsafeBitCast(raw, to: AudioDeviceIOProcID.self)
+    }()
+
+    var createIOProcIDResult: (AudioDeviceID, AudioDeviceIOProc, UnsafeMutableRawPointer?) throws -> AudioDeviceIOProcID = {
+        [self] _, _, _ in
+        guard let id = self.nextIOProcID else {
+            throw CaptureError.engineConfigurationFailed("fake: nextIOProcID is nil")
+        }
+        return id
+    }
+
+    var destroyIOProcIDResult: (AudioDeviceID, AudioDeviceIOProcID) throws -> Void = { _, _ in }
+
+    var startDeviceResult: (AudioDeviceID, AudioDeviceIOProcID) throws -> Void = { _, _ in }
+
+    var stopDeviceResult: (AudioDeviceID, AudioDeviceIOProcID) throws -> Void = { _, _ in }
+
     var availableAudioProcessesResult: () throws -> [(pid: pid_t, audioProcessID: AudioObjectID)]
         = { [] }
-
-    /// Hook for `configureEngineInput`. Defaults to success.
-    var configureEngineInputResult: (AVAudioEngine, AudioDeviceID) throws -> Void = { _, _ in }
-
-    /// Hook for `resetEngineInput`. Defaults to success.
-    var resetEngineInputResult: (AVAudioEngine) throws -> Void = { _ in }
-
-    /// Hook for `pinEngineOutputToDefault`. Defaults to success.
-    var pinEngineOutputResult: (AVAudioEngine) throws -> Void = { _ in }
 
     // MARK: CoreAudioInterface
 
@@ -90,19 +120,24 @@ final class FakeCoreAudioInterface: CoreAudioInterface {
         return try tapUIDResult(tapID)
     }
 
+    func tapStreamFormat(for tapID: AudioObjectID) throws -> AudioStreamBasicDescription {
+        tapStreamFormatCallTapIDs.append(tapID)
+        return try tapStreamFormatResult(tapID)
+    }
+
     func createTap(for audioProcessID: AudioObjectID) throws -> AudioObjectID {
         createTapCallProcessIDs.append(audioProcessID)
         return try createTapResult(audioProcessID)
     }
 
-    func createAggregateDevice(
-        containing tapID: AudioObjectID,
-        uid: CFString,
-        sourcePID: pid_t,
-        displayName: String
-    ) throws -> AudioDeviceID {
-        createAggregateDeviceCallTapIDs.append(tapID)
-        return try createAggregateDeviceResult(tapID, uid, sourcePID, displayName)
+    func createAggregateDevice(description: CFDictionary) throws -> AudioDeviceID {
+        createAggregateDeviceCallDescriptions.append(description)
+        return try createAggregateDeviceResult(description)
+    }
+
+    func setAggregateTapList(_ aggregateID: AudioDeviceID, tapUIDs: CFArray) throws {
+        setAggregateTapListCalls.append((aggregateID, tapUIDs))
+        try setAggregateTapListResult(aggregateID, tapUIDs)
     }
 
     func destroyAggregateDevice(_ deviceID: AudioDeviceID) throws {
@@ -115,26 +150,32 @@ final class FakeCoreAudioInterface: CoreAudioInterface {
         try destroyTapResult(tapID)
     }
 
+    func createIOProcID(
+        deviceID: AudioDeviceID,
+        ioProc: AudioDeviceIOProc,
+        clientData: UnsafeMutableRawPointer?
+    ) throws -> AudioDeviceIOProcID {
+        createIOProcIDCalls.append((deviceID, clientData))
+        return try createIOProcIDResult(deviceID, ioProc, clientData)
+    }
+
+    func destroyIOProcID(deviceID: AudioDeviceID, ioProcID: AudioDeviceIOProcID) throws {
+        destroyIOProcIDCalls.append((deviceID, ioProcID))
+        try destroyIOProcIDResult(deviceID, ioProcID)
+    }
+
+    func startDevice(deviceID: AudioDeviceID, ioProcID: AudioDeviceIOProcID) throws {
+        startDeviceCalls.append((deviceID, ioProcID))
+        try startDeviceResult(deviceID, ioProcID)
+    }
+
+    func stopDevice(deviceID: AudioDeviceID, ioProcID: AudioDeviceIOProcID) throws {
+        stopDeviceCalls.append((deviceID, ioProcID))
+        try stopDeviceResult(deviceID, ioProcID)
+    }
+
     func availableAudioProcesses() throws -> [(pid: pid_t, audioProcessID: AudioObjectID)] {
         availableAudioProcessesCallCount += 1
         return try availableAudioProcessesResult()
-    }
-
-    func configureEngineInput(
-        _ engine: AVAudioEngine,
-        toReadFrom deviceID: AudioDeviceID
-    ) throws {
-        configureEngineInputCallDeviceIDs.append(deviceID)
-        try configureEngineInputResult(engine, deviceID)
-    }
-
-    func resetEngineInput(_ engine: AVAudioEngine) throws {
-        resetEngineInputCallCount += 1
-        try resetEngineInputResult(engine)
-    }
-
-    func pinEngineOutputToDefault(_ engine: AVAudioEngine) throws {
-        pinEngineOutputCallCount += 1
-        try pinEngineOutputResult(engine)
     }
 }

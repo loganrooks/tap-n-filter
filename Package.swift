@@ -83,6 +83,15 @@ let package = Package(
             path: "Tests/CaptureTests"
         ),
         .testTarget(
+            // Gated behind RUN_INTEGRATION_TESTS=1 at runtime (see
+            // RealTapIntegrationTests.swift). Builds in every run so the
+            // code path is exercised by the compiler; the tests
+            // themselves XCTSkip when the env var is unset.
+            name: "CaptureIntegrationTests",
+            dependencies: ["Capture"],
+            path: "Tests/CaptureIntegrationTests"
+        ),
+        .testTarget(
             name: "GraphTests",
             dependencies: ["Graph", "Effects"],
             path: "Tests/GraphTests"
