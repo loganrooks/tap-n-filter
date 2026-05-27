@@ -169,8 +169,8 @@ final class TapIOProcReaderTests: XCTestCase {
             ch0.deallocate()
             ch1.deallocate()
         }
-        ch0.initialize(repeating: 0.25)
-        ch1.initialize(repeating: -0.25)
+        ch0.initialize(repeating: 0.25, count: frames)
+        ch1.initialize(repeating: -0.25, count: frames)
 
         // AudioBufferList layout: header with mNumberBuffers=2, then 2
         // AudioBuffer entries (non-interleaved = one buffer per channel).

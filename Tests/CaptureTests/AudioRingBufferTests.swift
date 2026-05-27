@@ -26,7 +26,7 @@ final class AudioRingBufferTests: XCTestCase {
     private func emptyChannels(_ count: Int, frames: Int) -> [UnsafeMutablePointer<Float>] {
         (0..<count).map { _ in
             let buf = UnsafeMutablePointer<Float>.allocate(capacity: frames)
-            buf.initialize(repeating: -1)
+            buf.initialize(repeating: -1, count: frames)
             return buf
         }
     }
@@ -223,8 +223,8 @@ final class AudioRingBufferTests: XCTestCase {
             dch0.deallocate()
             dch1.deallocate()
         }
-        dch0.initialize(repeating: -1)
-        dch1.initialize(repeating: -1)
+        dch0.initialize(repeating: -1, count: frames)
+        dch1.initialize(repeating: -1, count: frames)
 
         XCTAssertEqual(ring.read(into: [dch0, dch1], frames: frames), frames)
         for i in 0..<frames {

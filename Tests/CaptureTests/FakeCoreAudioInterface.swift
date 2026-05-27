@@ -88,9 +88,12 @@ final class FakeCoreAudioInterface: CoreAudioInterface {
         return unsafeBitCast(raw, to: AudioDeviceIOProcID.self)
     }()
 
-    var createIOProcIDResult: (AudioDeviceID, AudioDeviceIOProc, UnsafeMutableRawPointer?) throws -> AudioDeviceIOProcID = {
-        [self] _, _, _ in
-        guard let id = self.nextIOProcID else {
+    /// Default closure for `createIOProcID`. Resolved lazily so it can
+    /// read `nextIOProcID` off `self` — a property-default closure can't
+    /// capture `self`, which is why the closure is constructed in init.
+    /// Tests may overwrite this with their own closure.
+    lazy var createIOProcIDResult: (AudioDeviceID, AudioDeviceIOProc, UnsafeMutableRawPointer?) throws -> AudioDeviceIOProcID = { [weak self] _, _, _ in
+        guard let id = self?.nextIOProcID else {
             throw CaptureError.engineConfigurationFailed("fake: nextIOProcID is nil")
         }
         return id
