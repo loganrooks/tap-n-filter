@@ -101,6 +101,7 @@ private final class SnapshotMockCapture: CaptureControllerProtocol, @unchecked S
     private let subject: CurrentValueSubject<CaptureState, Never>
     var state: CaptureState { subject.value }
     var statePublisher: AnyPublisher<CaptureState, Never> { subject.eraseToAnyPublisher() }
+    var captureSourceNode: AVAudioSourceNode? { nil }
 
     init(initialState: CaptureState) {
         self.subject = CurrentValueSubject(initialState)
