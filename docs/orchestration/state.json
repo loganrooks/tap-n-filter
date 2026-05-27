@@ -37,7 +37,7 @@
       "pending_verification_report": "../audits/verification/phase-1-rework-1.md",
       "pr_url": "https://github.com/loganrooks/tap-n-filter/pull/2",
       "followup_pr_url": "https://github.com/loganrooks/tap-n-filter/pull/3",
-      "rework_pr_url": null
+      "rework_pr_url": "https://github.com/loganrooks/tap-n-filter/pull/9"
     },
     "2": {
       "name": "DSP Chain",
