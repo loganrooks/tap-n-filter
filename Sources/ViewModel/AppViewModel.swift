@@ -344,8 +344,9 @@ public final class AppViewModel: ObservableObject {
                 guard let self = self else { return }
                 let outFmt = self.engine.outputNode.outputFormat(forBus: 0)
                 self.logger.info(
-                    "AVAudioEngineConfigurationChange fired: engine.isRunning=\(self.engine.isRunning), "
-                    + "outputNode=\(outFmt.sampleRate) Hz x \(outFmt.channelCount) ch"
+                    "[EXP-031.configChange] fired engine.isRunning=\(self.engine.isRunning) "
+                    + "engineIsRunning_flag=\(self.engineIsRunning) "
+                    + "outputNode=\(outFmt.sampleRate)Hz×\(outFmt.channelCount)ch"
                 )
                 // If we believed the engine was running but it stopped
                 // itself on the configuration change (output device
@@ -356,13 +357,18 @@ public final class AppViewModel: ObservableObject {
                 // restart the engine on the same graph; if that fails,
                 // surface a typed error and let the user power-cycle.
                 if self.engineIsRunning && !self.engine.isRunning {
+                    self.logger.info(
+                        "[EXP-031.engineRestart] attempting engine.start() after configChange"
+                    )
                     do {
                         try self.engine.start()
-                        self.logger.info("Engine restarted after configuration change")
+                        self.logger.info(
+                            "[EXP-031.engineRestart] OK — engine.isRunning=\(self.engine.isRunning)"
+                        )
                     } catch {
                         self.engineIsRunning = false
                         self.logger.error(
-                            "Engine restart after configuration change failed: \(error.localizedDescription)"
+                            "[EXP-031.engineRestart] FAIL — \(error.localizedDescription)"
                         )
                         self.lastError = .engine(
                             "Audio device configuration changed and the engine could not be restarted: "
@@ -622,18 +628,50 @@ public final class AppViewModel: ObservableObject {
             return
         }
         let clamped = min(max(value, 0.0), 1.0)
+        // EXP-031: shares `applyMixGains()` with setBypass, so we mirror the
+        // before/after diagnostic block here. If the bug is in
+        // `applyMixGains` itself, wetDryMix changes will produce the same
+        // log signature shape as bypass toggles.
+        logger.info(
+            "[EXP-031.wetDryMix.before] node=\(shortID) "
+            + "type=\(type(of: node).typeIdentifier) "
+            + "requested=\(clamped) state={\(node.debugStateDescription())}"
+        )
         node.wetDryMix = clamped
+        logger.info(
+            "[EXP-031.wetDryMix.after] node=\(shortID) "
+            + "type=\(type(of: node).typeIdentifier) "
+            + "state={\(node.debugStateDescription())} "
+            + "engine.isRunning=\(engine.isRunning)"
+        )
         logger.info("updateWetDryMix: \(type(of: node).typeIdentifier)/\(shortID) wetDryMix=\(clamped)")
         objectWillChange.send()
         schedulePersistence()
     }
 
     public func setBypass(nodeID: UUID, bypass: Bool) {
+        let shortID = String(nodeID.uuidString.prefix(8))
+        logger.info(
+            "[EXP-031.setBypass.entry] node=\(shortID) requested=\(bypass) "
+            + "engineIsRunning=\(engineIsRunning) engine.isRunning=\(engine.isRunning)"
+        )
         guard let node = graph.nodes.first(where: { $0.id == nodeID }) else {
+            logger.warning("[EXP-031.setBypass.entry] unknown node \(shortID)")
             lastError = .parameter("Unknown node \(nodeID).")
             return
         }
+        logger.info(
+            "[EXP-031.setBypass.before] node=\(shortID) "
+            + "type=\(type(of: node).typeIdentifier) "
+            + "state={\(node.debugStateDescription())}"
+        )
         node.bypass = bypass
+        logger.info(
+            "[EXP-031.setBypass.after] node=\(shortID) "
+            + "type=\(type(of: node).typeIdentifier) "
+            + "state={\(node.debugStateDescription())} "
+            + "engine.isRunning=\(engine.isRunning)"
+        )
         objectWillChange.send()
         schedulePersistence()
     }
@@ -674,17 +712,25 @@ public final class AppViewModel: ObservableObject {
     /// `powerOn` uses (source node → mainMixerNode).
     private func mutateGraph(_ mutation: (Graph) throws -> Void) {
         let wasRunning = engineIsRunning
-        logger.info("mutateGraph: wasRunning=\(wasRunning)")
+        logger.info(
+            "[EXP-031.mutateGraph.entry] wasRunning=\(wasRunning) "
+            + "engine.isRunning=\(engine.isRunning)"
+        )
         if engineIsRunning {
             engine.stop()
             graph.detach()
             engineIsRunning = false
-            logger.info("mutateGraph: detached for live mutation")
+            logger.info(
+                "[EXP-031.mutateGraph.detached] engine.stop() + graph.detach() done — "
+                + "engine.isRunning=\(engine.isRunning)"
+            )
         }
         do {
             try mutation(graph)
         } catch {
-            logger.error("mutateGraph: mutation failed: \(error.localizedDescription)")
+            logger.error(
+                "[EXP-031.mutateGraph.error] mutation failed: \(error.localizedDescription)"
+            )
             lastError = .graph(error.localizedDescription)
             if wasRunning {
                 reattachAfterMutation()
@@ -695,16 +741,24 @@ public final class AppViewModel: ObservableObject {
         schedulePersistence()
 
         if wasRunning {
-            logger.info("mutateGraph: reattaching after live mutation")
+            logger.info("[EXP-031.mutateGraph.reattaching] calling reattachAfterMutation")
             reattachAfterMutation()
         }
+        logger.info(
+            "[EXP-031.mutateGraph.exit] wasRunning=\(wasRunning) "
+            + "engineIsRunning_now=\(engineIsRunning) engine.isRunning=\(engine.isRunning)"
+        )
     }
 
     /// Re-attach the graph after a live mutation and restart the engine.
     /// V2 path: the graph head is the captureSourceNode, not
     /// `engine.inputNode`.
     private func reattachAfterMutation() {
+        logger.info("[EXP-031.reattach.entry] called")
         guard let sourceNode = capture.captureSourceNode else {
+            logger.error(
+                "[EXP-031.reattach.fail] captureSourceNode unavailable"
+            )
             handleReattachFailure(
                 NSError(
                     domain: "tnf.viewmodel",
@@ -722,14 +776,24 @@ public final class AppViewModel: ObservableObject {
                 source: sourceNode,
                 destination: engine.mainMixerNode
             )
+            logger.info("[EXP-031.reattach.graphAttached] graph.attach OK")
         } catch {
+            logger.error(
+                "[EXP-031.reattach.fail] graph.attach error=\(error.localizedDescription)"
+            )
             handleReattachFailure(error, stage: "graph attach", graphAttached: false)
             return
         }
         do {
             try engine.start()
             engineIsRunning = true
+            logger.info(
+                "[EXP-031.reattach.engineStarted] engine.isRunning=\(engine.isRunning)"
+            )
         } catch {
+            logger.error(
+                "[EXP-031.reattach.fail] engine.start error=\(error.localizedDescription)"
+            )
             handleReattachFailure(error, stage: "engine start", graphAttached: true)
         }
     }

@@ -2,32 +2,87 @@
 
 ## Status
 
-**Last updated**: 2026-05-28 (post-EXP-029; production + Reader test both pass)
+**Last updated**: 2026-05-28 (post-EXP-030 + EXP-031 + EXP-B1 +
+speaker test; major reframing — see FC-004 below)
 
-**Current frame**: EXP-029's instrumented A/B confirms both code
-paths reach `AudioDeviceStart=0` and deliver real Safari audio when
-the HAL is in a clean state (`prestart.taps count=1`, our own
-freshly-created tap only). H9, H10, H11, H12, H14 all refuted —
-none of the candidate single-variable or combination explanations
-discriminate pass from fail. **H13 (leaked HAL state from prior
-runs) is the surviving leading hypothesis** for the EXP-027 /
-EXP-028 deterministic failures, but remains unconfirmed until we
-deliberately reproduce it by force-killing the app mid-capture and
-observing `prestart.taps count > 1` correlated with `AudioDeviceStart`
-return 'nope'.
+**Current frame**: Two distinct bugs identified, the second only
+exposed because the first was partially refuted.
 
-Two new active hypotheses surfaced from EXP-029:
-- **H15** (source-grounded): macOS routes BT into HFP whenever a
-  process-tap IOProc is active, regardless of engine wiring. The
-  architectural refactor cannot avoid this — it's an OS routing
-  policy. Codex predicted this at the start of the investigation.
-  Decision pending: ADR-019 / uncertainty entry to document and
-  decide V0.1 ship policy.
-- **H16** (un-instrumented): toggling `setBypass` on a graph node
-  during capture cuts audio entirely (user-reported during EXP-029
-  production). The `setBypass` action is invisible to current
-  logging; we can't articulate a sharper hypothesis until we
-  instrument it (Step 3 in current plan).
+- **Bug A (was H16, now refined)**: Toggling reverb's bypass during
+  capture cuts audio entirely **only when the system output is BT
+  (HFP mode active)**. On built-in speakers, reverb bypass works
+  cleanly. EQ bypass does not cut on any route. Chain position is
+  not the discriminator (confirmed by chain-swap sub-experiment of
+  EXP-031). The parallel-fan-out topology is NOT the cause
+  (confirmed by EXP-B1 standalone repro: DOES_NOT_REPRODUCE).
+  Remaining hypothesis space: H-S3/H-S4 — the BT/HFP route +
+  `AVAudioEngineConfigurationChange` interaction with our parallel
+  mixer scaffold for AVAudioUnitReverb specifically. Mechanism
+  untested.
+
+- **Bug B (new — H17)**: A **sample-rate / channel-layout mismatch
+  at the `AVAudioSourceNode` boundary** corrupts every capture,
+  producing audio that is "pitched-down, voice-changer-anonymize"
+  in character with "static crackling" and a left-channel-shift,
+  observable on speakers (was masked by HFP downsampling on BT and
+  by the Bug A cutout). The tap delivers 48 kHz × 2ch
+  non-interleaved Float32; the engine chain reports
+  44100.0 Hz × 2 ch at every internal node; the
+  `AVAudioSourceNode` was declared with the tap's format. Either
+  AVAudioEngine silently demoted the source to 44.1 kHz (playing
+  48 kHz samples at the wrong rate → pitched down by 0.919x), or
+  the channel-layout / interleaving expectation at the source-node
+  render callback boundary doesn't match the engine's expectation
+  (left-shift artifact). The exact mechanism requires source-node
+  format readback we have not yet logged.
+
+**Previous active hypotheses, current status**:
+- **H13 (leaked HAL state)** → moved to **Inactive — REFUTED by
+  EXP-030** (force-kill protocol; no orphans visible to new
+  instance; cleanup found nothing; AudioDeviceStart still returned
+  0). EXP-027 / EXP-028 mechanism remains unexplained but inert
+  (no recurrence across EXP-029 + EXP-030 + EXP-031 — 6+
+  successful Starts).
+- **H15 (HFP forced by capture on BT)** → still active, source-
+  grounded. Decision still pending: ADR-019 / uncertainty entry +
+  V0.1 ship-policy decision. Confirmed by speaker test (no HFP
+  when BT disconnected; rate stays at native).
+- **H16 (bypass toggle cuts audio)** → renamed Bug A; refined to
+  BT-only.
+
+**Operational state**:
+- Build CDHash v3 currently shipped:
+  `78daded470d4d1aaa9660826de8f39990423d7a8`. Includes
+  `applyMixGains` fallback fix + format diagnostics + EXP-030
+  orphan cleanup + EXP-031 instrumentation. Production code is
+  otherwise unchanged.
+- The proposed ReverbNode refactor (native `reverb.wetDryMix` +
+  `reverb.bypass`) has been **paused** — it would have addressed
+  Bug A by sidestepping the parallel mixer, but B1's verdict
+  shows the parallel mixer is not the cause. Refactor would
+  have been fixing the wrong thing.
+- The next active investigation is **Bug B (H17)** — verify the
+  source-node format / channel-layout hypothesis with a small
+  amount of additional logging at the source-node and chain
+  boundary. Bug A is parked on the BT/HFP discriminator and may
+  ultimately be ADR-19-territory (intrinsic OS routing
+  limitation) rather than a code-level bug.
+
+**Earlier frames (now revised)**:
+- Post-EXP-029, pre-EXP-030: H13 was the leading hypothesis for
+  the EXP-027 / EXP-028 deterministic failures. **Refuted by
+  EXP-030.**
+- Post-EXP-031 runs 1-3, pre-B1: "AVAudioUnitReverb in parallel
+  fan-out triggers a pruning optimization at wet_dest=0" was the
+  leading mechanism for the cutout. **Refuted by EXP-B1**
+  (standalone repro showed all parallel-fan-out configurations
+  produce audible dry signal in isolation).
+- Pre-speaker test: "reverb bypass cuts on all routes" was the
+  assumption. **Refuted**: on speakers it does not cut.
+- Pre-speaker test: We treated user-reported "audio sounds
+  degraded during capture" as HFP-only artifact. The speaker
+  test exposed a separate corruption (Bug B / H17) that was
+  always present but masked.
 
 **Earlier frames (now revised)**:
 - post-EXP-028, the frame was "deterministic regression in the
@@ -225,50 +280,10 @@ IOProc machinery works mechanically.
 
 ### Active
 
-#### H13 — Leaked HAL state from prior runs blocks AudioDeviceStart (LEADING, unconfirmed)
-
-**Claim**: A tap or aggregate device from a prior crashed or
-unclean run is sitting in the HAL's process-tap registry, and the
-new tap/aggregate creation succeeds (returns a fresh ID) but
-AudioDeviceStart fails with `kAudioHardwareIllegalOperationError`
-('nope', 1852797029) because the HAL refuses to start a new device
-while orphans tagged to our process exist. The HAL eventually GCs
-orphans after the originating process is gone for some time, which
-is why EXP-029 (run after a multi-minute gap) succeeded where
-EXP-027 / EXP-028 (run immediately after failed attempts) failed.
-
-**Type**: behavior-inferred.
-
-**Auxiliaries** (must be true for H13 to be the cause):
-- The HAL maintains per-process-tap registries that persist if the
-  originating process exits without calling
-  `AudioHardwareDestroyProcessTap`. This is normal HAL behaviour.
-- 'nope' from AudioDeviceStart on a freshly-created aggregate is
-  correlated with the presence of pre-existing taps from the same
-  app, not with the current tap's properties.
-- A reboot, daemon restart (`coreaudiod`), or sufficient idle time
-  resets the registry.
-- `enumerateProcessTaps()` (now in `CoreAudioInterface`) accurately
-  reports the current count of taps known to the HAL.
-
-**Would falsify H13**:
-- Deliberately force-killing the app mid-capture to leave a tap
-  orphaned, then restarting, does NOT cause AudioDeviceStart to
-  return 'nope'.
-- The `prestart.taps count` is observed > 1 *with no failure* during
-  a Start (suggests orphans aren't blocking).
-- A controlled experiment with a tap-cleanup at app-launch time
-  succeeds at preventing the failure but the underlying cause was
-  actually something else.
-
-**How to confirm H13**:
-- EXP-030 (planned): force-kill the app while a capture is running.
-  Restart. Observe `prestart.taps count > 1`. Attempt Start. If
-  AudioDeviceStart returns 'nope', H13 is confirmed source-grounded.
-  If it returns 0, H13 is significantly weakened.
-
-**Time budget**: EXP-030 should take ~30 min including the defensive
-cleanup implementation.
+(H13 moved to Inactive — REFUTED by EXP-030's force-kill protocol.
+The post-force-kill instance sees no orphan taps or aggregates in
+the HAL; `AudioDeviceStart` returns 0 anyway. See H13 refutation
+entry in Inactive section.)
 
 #### H15 — Active process-tap IOProc forces BT into HFP routing (source-grounded)
 
@@ -313,42 +328,226 @@ the limitation. Options for V0.1:
 3. Investigate a less-invasive workaround (e.g., AudioServerPlugin,
    route override, etc.) — uncertain payoff.
 
-#### H16 — Bypass toggle on a graph node breaks the audio chain (unlogged, untestable as-is)
+#### H17 — Sample rate / channel-layout mismatch at AVAudioSourceNode boundary corrupts capture audio (NEW, source-grounded for symptoms, mechanism untested)
 
-**Claim**: Toggling `setBypass(nodeID:, bypass:)` on a node in the
-running effect graph causes the audio to cut out entirely (user-
-reported during EXP-029 production run; not visible in the file
-log). Suspect interaction between the new direct-IOProc-+-source-node
-architecture and the existing graph mutation code, possibly via the
-engine-restart-on-config-change branch Codex's P1 fix introduced.
+**Claim**: The capture path's `AVAudioSourceNode` was declared
+with the tap's stream format (48 kHz × 2 ch Float32 non-interleaved)
+but the engine chain runs at 44.1 kHz × 2 ch (every internal mixer
+reports `44100.0Hz×2ch` per EXP-031 v3 logs). Either AVAudioEngine
+silently demoted the source's effective rate (so 48 kHz ring-buffer
+samples are played at 44.1 kHz → pitch shift of 44.1/48 = 0.919x ≈
+1.5 semitones down) or the render callback's channel-layout
+expectation mismatches the engine's per-render-call buffer layout
+(producing left-shift artifact + crackling at buffer boundaries).
+The symptom is **present on every capture regardless of BT/speaker
+route**, was masked on BT by HFP downsampling and the Bug A
+cutout, and is now audible on speakers as "pitched-down,
+voice-changer-anonymize + static crackling + left-shifted" sound.
 
-**Type**: behavior-inferred from one user report; NOT source-
-grounded yet because the action is invisible to current
-instrumentation.
+**Type**: Source-grounded for the symptoms (user-attested,
+consistent characterization across multiple toggles, persists even
+with both effects bypassed → must be upstream of every effect →
+implies source-node boundary). Behavior-inferred for the
+mechanism — we have not yet logged the `AVAudioSourceNode`'s
+effective format vs declared format, nor the connection format
+passed at `engine.connect(source, to: first.inputBus, format: ?)`.
 
-**Auxiliaries**: (TBD — cannot articulate sharply until instrumented)
-- `setBypass` modifies the AVAudioUnit's `bypass` property, which is
-  documented as a passthrough toggle that doesn't affect engine
-  topology.
-- The new architecture's source-node-→-mainMixer wiring may interact
-  with bypass differently than the old inputNode-driven path.
-- The graph's `mutate` path (used for add/remove/reorder) may be
-  invoked by bypass — or not — depending on Graph's implementation.
+**Auxiliaries** (must be true for H17 to be the cause):
+- `AVAudioSourceNode(format: reader.format)` with `reader.format` =
+  48 kHz × 2 ch (per `TapIOProcReader.init` setting
+  `self.format = AVAudioFormat(standardFormatWithSampleRate:
+  asbd.mSampleRate, channels: ...)` from the tap's ASBD).
+- AVAudioEngine's internal sample-rate-conversion at the
+  source-node-to-chain boundary either is not happening, or is
+  happening at the wrong rate, or is being bypassed.
+- The render callback (`CaptureController.renderFromRing`) fills
+  the `AudioBufferList` assuming non-interleaved Float layout,
+  while the engine may expect interleaved.
+- The "voice-changer-anonymize + crackling + left-shift" character
+  is the audible signature of a format mismatch at this boundary,
+  not coloration from a different cause (e.g., mixer chain).
 
-**Would falsify H16**:
-- With observability added, the bypass toggle reproduces the
-  cut-out and a clear graph-mutation event is logged → confirms a
-  graph-mutation interaction.
-- Reproduction shows bypass alone doesn't cut audio, but a different
-  user action (slider drag, source-switch) did → H16 misidentifies
-  the trigger.
+**Would falsify H17**:
+- Source-node `outputFormat(forBus: 0)` reports 48 kHz × 2 ch
+  matching the declaration, AND the chain reports 44.1 kHz, AND a
+  WAV capture of `mainMixer.installTap` shows pitch-accurate audio
+  → AVAudioEngine is properly SRC'ing and the artifact is from
+  something else.
+- Symptom disappears with no code change (e.g., on a different
+  macOS version, after a reboot, with a different source app).
+- Symptom persists after fixing the source-node format declaration
+  to match the engine's rate.
 
-**Path forward**: instrumentation first (logging in `setBypass`,
-`Graph.mutate`, `engine.attach/detach`, and the
-config-change-restart branch). Then reproduce. Then articulate a
-sharper hypothesis.
+**How to confirm H17**:
+- Add three log entries: `captureSourceNode.outputFormat(forBus:
+  0)`, `engine.mainMixerNode.outputFormat(forBus: 0)`,
+  `engine.outputNode.outputFormat(forBus: 0)`. If source's format
+  differs from declared (48 kHz) → engine demoted it → mechanism
+  confirmed for the pitch part.
+- Capture mainMixer tap to WAV during a both-bypassed window. Play
+  back at varying sample rates and compare to a reference Safari
+  recording. If the WAV at 44.1 kHz sounds pitched-down, but at
+  48 kHz sounds clean → confirms the rate-mismatch mechanism
+  (samples were 48 kHz content interpreted as 44.1 kHz).
+- Inspect the render callback's `audioBufferList` arrangement vs
+  the engine's expected layout to source-ground the channel /
+  left-shift part.
+
+**Time budget**: 15 min to add the format logging + rebuild;
+~3 min user retest; then either confirmed and we can plan a fix,
+or the data points elsewhere.
+
+**Relation to Bug A**: H17 and Bug A are independent. H17 explains
+the persistent "strange effect" present across all routes; Bug A
+(H16, below) explains the dramatic cutout that is BT-specific. The
+two were entangled because Bug A's cutout on BT made it impossible
+to evaluate audio quality during capture; only on speakers could
+H17's underlying degradation become audible.
+
+#### H16 — Reverb bypass cuts audio on BT/HFP route specifically (source-grounded for the audible behaviour; mechanism unknown)
+
+**Claim**: Toggling `setBypass(nodeID: ReverbNode.id, bypass: true)`
+during active capture cuts audio entirely **when system output is
+BT in HFP mode**. The same toggle on speakers (no BT) does not cut
+audio. EQ bypass does not cut audio on any route. Chain position is
+not the discriminator (chain-swap sub-experiment of EXP-031:
+Reverb-as-first and Reverb-as-second both cut on BT). The
+parallel-fan-out topology is not the cause (EXP-B1 standalone repro
+DOES_NOT_REPRODUCE — every parallel-fan-out config produced
+audible signal in isolation).
+
+**Original (now-refined) suspect**: interaction between the
+direct-IOProc-+-source-node architecture and graph mutation,
+possibly via the engine-restart-on-config-change branch Codex's P1
+fix introduced. **Current narrowed suspect**: an interaction
+between BT/HFP route + `AVAudioEngineConfigurationChange` event +
+our parallel-mixer scaffold for `AVAudioUnitReverb` specifically.
+
+**Type**: Source-grounded for the audible behaviour (multiple
+deliberate toggles by user, audibly reproducible, log-confirmed
+state at moment of toggle, log-confirmed identical state for the
+non-cutting EQ case). Behavior-inferred for the mechanism — we
+don't know *why* AVAudioUnitReverb in this chain on BT/HFP causes
+the cutout when EQ does not, and when the same topology in
+isolation (EXP-B1) does not.
+
+**Auxiliaries** (current narrowed suspects):
+- `AVAudioEngineConfigurationChange` fires on Start (BT route → HFP),
+  triggering our handler's `engine.start()` recovery branch. The
+  recovery may leave Reverb's parallel scaffold in a state that's
+  sensitive to subsequent bypass toggles in a way EQ's isn't.
+- AVAudioUnitReverb has internal tail-processing state that, when
+  combined with HFP's 16 kHz × 1 ch buffer cadence, produces a pull
+  pattern AVAudioMixerNode handles pathologically.
+- The HFP output causes the engine's render quantum to differ in a
+  way that interacts with Reverb's parallel dry mixer chain but not
+  EQ's.
+
+**Refuted candidates** (do not resurrect):
+- ❌ `graph.mutate` is triggered by setBypass — refuted by EXP-031
+  run 2 (no `[EXP-031.mutateGraph.*]` events near setBypass).
+- ❌ `AVAudioEngineConfigurationChange` race at the moment of
+  bypass — refuted by EXP-031 run 2 (no configChange events near
+  setBypass timestamps; the only configChange fires once at engine
+  start time, well before any bypass).
+- ❌ `applyMixGains` fallback bug silencing `mixer.volume`
+  — fixed in v3 build, audio still cuts on BT.
+- ❌ Format mismatch between Reverb and EQ chain elements — all
+  formats identical at every internal node.
+- ❌ AU-internal bypass — both `reverbAUBypass=false` and
+  `eqAUBypass=false`.
+- ❌ Chain-position-specific — chain-swap sub-experiment confirmed
+  Reverb cuts wherever it is, EQ doesn't cut wherever it is.
+- ❌ Parallel-fan-out topology alone — EXP-B1 standalone repro:
+  every config in isolation produces audible dry signal at the
+  same peak amplitude as EQ's equivalent.
+
+**Would falsify H16 (now-narrowed)**:
+- A future test that shows reverb bypass cuts audio on speakers
+  (with no BT) — would refute the BT-only framing.
+- A test where the configChange handler is disabled and bypass
+  still cuts on BT — would refute the configChange-handler-leaves-
+  scaffold-broken hypothesis.
+- A wired-output (USB DAC, USB headphones) test that shows cutout
+  — would refute the HFP-specific framing and point at "any
+  non-built-in-speaker output."
+
+**Path forward**: Bug A is now **lower priority** than Bug B (H17).
+H17 is degrading every capture and is plausibly addressable; Bug A
+is BT/HFP-specific and may be intrinsic OS routing pathology
+(adjacent to H15). Plan:
+1. Resolve H17 (Bug B) first — that's the fundamental capture
+   correctness issue.
+2. Once H17 is fixed, retest Bug A on BT. If the H17 fix changes
+   the format/quantum at the source-node boundary, Bug A may also
+   change behavior. If Bug A persists on BT, treat as a separate
+   investigation; if it disappears, the two were coupled.
+3. If Bug A persists post-H17 and is unfixable in V0.1 scope,
+   document in ADR-019 alongside H15 (HFP) as an intrinsic-OS-route
+   limitation. V0.1 README caveats apply.
 
 ### Inactive
+
+#### H13 — Leaked HAL state from prior runs blocks AudioDeviceStart (REFUTED 2026-05-28 by EXP-030)
+
+**Original claim**: A tap or aggregate device from a prior crashed
+or unclean run sits in the HAL's process-tap registry; the new
+tap/aggregate creation succeeds (fresh ID) but `AudioDeviceStart`
+fails with `kAudioHardwareIllegalOperationError` ('nope',
+1852797029) because the HAL refuses to start a new device while
+orphans tagged to our process exist. Was the leading hypothesis
+for the EXP-027 / EXP-028 deterministic failures.
+
+**Refutation**: EXP-030's 3-launch force-kill protocol. Launch 2
+was deliberately force-killed mid-capture (capture state was
+`running`, no Stop event logged); 39 s later, Launch 3 ran the
+cleanup pass and the production Start. Launch 3 saw
+`[EXP-030.preinit.taps] enumerated=0 matched=0` and
+`[EXP-030.preinit.aggregates] enumerated=6 matched=0` — no orphans
+visible to the new process instance — and `AudioDeviceStart`
+returned 0 anyway. The HAL either auto-destroys process taps and
+private aggregate devices on process death, or makes them
+invisible to a new process instance via the enumeration
+properties. The mechanism H13 hypothesized — "orphan tap in HAL
+registry blocks new AudioDeviceStart" — cannot operate because the
+preconditions never obtain.
+
+**Auxiliaries the refutation relied on**:
+- `kAudioHardwarePropertyTapList` reads consistently (verified by
+  `[EXP-029.prestart.taps] count=1` on each launch's
+  freshly-created tap — the property works; "zero at init" is not
+  a query failure).
+- `enumerateAllAudioDevices()` works (returned 6 devices each
+  launch, matching the system's known audio device count).
+- The UID-prefix match logic works (would have matched any
+  aggregate whose UID starts with `tap-n-filter.aggregate.` —
+  matches at-capture-time but absent at init time as expected).
+
+**Status of EXP-027 / EXP-028 mechanism**: Unexplained but
+inert. No recurrence across 6+ Starts in EXP-029 + EXP-030 +
+EXP-031. The most parsimonious frame: some daemon-side state
+caused those original failures and has since cleared.
+
+**Resurrection condition**: A future scenario reproduces the
+EXP-027 / EXP-028 `AudioDeviceStart 1852797029` failure
+deterministically, AND `[EXP-030.preinit.matched]` count is
+observed > 0 at the failing launch's cleanup pass. Then H13's
+simple form can be re-examined.
+
+**Broader "leaked state" framing still plausible but un-actionable**:
+coreaudiod-internal per-process state not exposed via
+`kAudioHardwarePropertyTapList`; IOProc-ID bindings the daemon
+hasn't fully released; rapid-restart race conditions. These cannot
+be interrogated via the EXP-030 protocol. Would need
+`sample`/`lldb` on coreaudiod, or a different reproduction trigger.
+
+**Code in place**: `CaptureController.cleanupOrphans()` runs at
+init, destroys any taps with name prefix `tap-n-filter.tap.` and
+any aggregates with UID prefix `tap-n-filter.aggregate.`. Honors
+`UserDefaults.standard.bool(forKey:
+"tap-n-filter.disableOrphanCleanup")` as a negative-control knob.
+Benign defensive infrastructure: ~30 ms cost at launch, no-op in
+normal operation. Stays in place for future-proofing.
 
 #### H9 — Tap's `isPrivate=true` causes `AudioDeviceStart` to return 'nope' (REFUTED 2026-05-28 by EXP-029)
 
@@ -2323,6 +2522,385 @@ discarded by the OS"). H6's "deferred-active" status escalates to
 **active blocker** because Outcome D is its user-level
 manifestation.
 
+### EXP-031 — Bypass toggle audio-cutout instrumentation (RAN, MULTIPLE SUB-EXPERIMENTS)
+
+**Status**: completed (multi-build, multi-sub-experiment).
+**Date**: 2026-05-28 (~03:05 EDT through ~05:28 EDT).
+**Author**: current session.
+
+**Question**: When the user toggles `setBypass` on a graph effect
+node during active capture, audio cuts out (H16). What sequence
+of events does the toggle trigger, and where in the chain is the
+cutout introduced?
+
+**Hypothesis under test at start**: H16 (bypass toggle breaks the
+audio chain). Specifically the original framing: "interaction
+between direct-IOProc-+-source-node architecture and graph mutation
+or the engine-restart-on-config-change branch."
+
+**Pre-registered outcomes**:
+- **H16-A (mixer gain misapplied)**: setBypass logs show clean
+  gain changes; no concurrent configChange/mutateGraph; audio
+  still cuts. → AVAudioMixerNode destination-volume bug.
+- **H16-B (config-change race)**: setBypass followed within ~100 ms
+  by `[EXP-031.configChange]` AND/OR `[EXP-031.engineRestart]`.
+- **H16-C (graph mutation triggered)**: `[EXP-031.mutateGraph.*]`
+  fires during/after setBypass.
+- **H16-D (no smoking gun, Heisenbug)**: clean log + no cutout.
+- **H16-E (gain set but destination missing)**:
+  `dryDestExists=false` after setBypass.
+
+**Variables held constant**: BT (Bose QC) connected; Safari as
+source; chain `tnf.reverb → tnf.eq` (initially).
+
+**Variables changed across builds**:
+- v1 (`a12e6f...`): added `[EXP-031.setBypass.*]`,
+  `[EXP-031.wetDryMix.*]`, `[EXP-031.configChange]`,
+  `[EXP-031.engineRestart]`, `[EXP-031.mutateGraph.*]`,
+  `[EXP-031.reattach.*]` tags. Added
+  `EffectNode.debugStateDescription()` as a protocol *extension*
+  method (Swift static-dispatch bug — overrides not called).
+- v2 (`fbf5d113e8...`): promoted `debugStateDescription` to a
+  protocol *requirement* so concrete overrides on ReverbNode and
+  EQNode dispatch dynamically. Override surfaces
+  `dryDestExists`/`dryDestVol`/`dryMixerVol`/`wetDestExists`/
+  `wetDestVol`/`wetMixerVol`/`attached`.
+- v3 (`78daded470...`): two changes:
+  (a) Removed `applyMixGains`'s fallback path that set
+  `mixer.volume = dryGain` when the destination lookup returned
+  nil — that fallback could leave the mixer's master volume stuck
+  at 0 after a transient nil at attach time. Always keep
+  `dryMixer.volume = dryMixer = 1.0` now; only modulate the
+  destination volumes.
+  (b) Extended `debugStateDescription` with per-mixer
+  input/output formats and the wet processor's
+  bypass/wetDryMix readback.
+
+**Artifacts**:
+- `~/Library/Logs/tap-n-filter/app.log` lines 1535-1547 (v1),
+  2109-2120 (v2), 2324-2341 + 2370-2382 (v3 first phase, BT route),
+  2408-2419 + 2441-2479 (v3 speaker test).
+
+#### EXP-031.A — Main bypass toggle test (v1/v2/v3, BT route)
+
+**Method**: User on BT, capture Safari, set both nodes to
+wetDryMix=1.0, toggle Reverb's bypass; then toggle EQ's bypass.
+
+**Observations** (consolidated across builds):
+
+| Event | Action | Audible outcome |
+|---|---|---|
+| Reverb bypass false→true | requested=true | **AUDIO CUTS** |
+| Reverb bypass true→false | requested=false | Audio restored |
+| EQ bypass false→true | requested=true | No cut |
+| EQ bypass true→false | requested=false | No cut |
+
+v3 log readback at the moment of bypass=true, BT route:
+- BOTH Reverb and EQ: `dryDestExists=true dryDestVol=1.0
+  dryMixerVol=1.0 wetDestExists=true wetDestVol=0.0
+  wetMixerVol=1.0 attached=true`
+- BOTH: every internal format reads `44100.0Hz×2ch`
+- BOTH: `*AUBypass=false`
+- Reverb only: `reverbUnitWetDryMix=100.0`
+- NO `[EXP-031.configChange]` events near the toggle.
+- NO `[EXP-031.mutateGraph.*]` events near the toggle.
+- NO `[EXP-031.engineRestart]` events near the toggle.
+
+**Outcome H16-A matches** (gain set as intended, audio still
+cuts; no configChange/mutateGraph). NOT H16-B/C/D/E. With one
+crucial refinement: the outcome H16-A predicted "AVAudioMixerNode
+destination-volume bug" as the mechanism, but every observable
+field is identical between Reverb (cuts) and EQ (works) — so the
+mechanism must be something not visible to our instrumentation.
+
+#### EXP-031.B — Chain-order swap (verifies chain position is not the discriminator)
+
+**Date**: 2026-05-28 04:48 EDT.
+**Question**: Is the cutout chain-position-specific
+(first-node-only) or AU-specific?
+
+**Method**: With capture stopped, drag EQ above Reverb in the UI
+(chain becomes `tnf.eq → tnf.reverb`). Verify wiring really
+changed:
+- Line 2348: `moveEffect: from 1 to 0` (logged).
+- Line 2370: `powerOn complete: ... chain: tnf.eq -> tnf.reverb`.
+- Source-grounded: `Graph.attach()` wires `nodes[i].outputBus →
+  nodes[i+1].inputBus` in array order, so the engine wiring
+  matches the displayed order, not just the UI.
+
+Restart capture. Toggle EQ (now first). Toggle Reverb (now
+second).
+
+**Observations**:
+- Line 2376: EQ bypass false→true (first-node) → **no cut**.
+- Line 2379: EQ bypass true→false → no cut.
+- Line 2382: Reverb bypass false→true (second-node) → **CUTS**.
+
+**Conclusion**: Chain position is NOT the discriminator. Reverb
+cuts wherever it is in the chain; EQ doesn't cut wherever it is.
+The bug is **AVAudioUnitReverb-specific** (or, more precisely,
+ReverbNode-as-implemented-specific), not chain-head-specific.
+
+#### EXP-031.C — Sub-experiment EXP-B1: standalone isolation repro
+
+Spawned as a chip session (worktree
+`investigation/exp-b1-parallel-fanout-repro`). See dedicated
+EXP-B1 entry below and `docs/investigations/exp-b1-results.md`.
+
+**Summary verdict**: DOES_NOT_REPRODUCE. The
+parallel-fan-out-with-Reverb topology — replicated faithfully in
+a standalone `AVAudioEngine` harness driven by `AVAudioPlayerNode`
+(not `AVAudioSourceNode`), outputting via `mainMixer.installTap`
+(not hardware) — produces audible dry signal at unity peak
+(0.5012, matching the source amplitude) when wet=0. The
+`reverb_wet_0.001` manipulation produced peak 0.5018 (essentially
+identical to 0.0), refuting the exact-zero-pruning sub-hypothesis
+as well.
+
+**Implication**: The mechanism is not in the parallel-fan-out
+topology alone. The bug requires something from tap-n-filter's
+production environment that B1 deliberately omitted:
+`AVAudioSourceNode` semantics, ring-buffer pull cadence, real
+hardware output (especially BT/HFP), the
+`AVAudioEngineConfigurationChange` observer + recovery branch, or
+some combination.
+
+#### EXP-031.D — Speaker route test (BT disconnected)
+
+**Date**: 2026-05-28 ~05:26 EDT.
+**Question**: Does Bug A (cutout on reverb bypass) require the BT
+context, or does it reproduce on speakers too?
+
+**Method**: Disconnect BT; system output is built-in speakers.
+Quit + relaunch tap-n-filter. Start capture (Safari source).
+Toggle Reverb bypass with both effects at wetDryMix=1.0.
+
+**Observations**:
+- Chain: `tnf.eq → tnf.reverb` (carryover from EXP-031.B).
+- Multiple toggles of reverb bypass at 05:27 and 05:28 EDT.
+- Every log field at bypass.before / bypass.after: identical to
+  the BT-route runs, including all formats reading
+  `44100.0Hz×2ch`.
+- No `[EXP-031.configChange]` events in this run (no HFP route
+  switch because BT is disconnected).
+- **Audible outcome: REVERB BYPASS NO LONGER CUTS AUDIO ENTIRELY.**
+- **But a new persistent artifact is audible during the entire
+  capture session, regardless of which effect is bypassed**:
+  user-characterized as "very low pitched, voice-changer-anonymize
+  + static crackling + left-channel shift." Present even with both
+  effects bypassed (so it's upstream of every effect — at or
+  before the source-node boundary).
+
+**Conclusions**:
+
+1. **Bug A (H16) refined: BT-route-specific.** The cutout
+   requires the BT/HFP output context. On speakers it does not
+   reproduce. Combined with B1's negative result, the bug is
+   neither in the topology alone nor in the AU alone — it
+   requires the BT/HFP route. H-S3 (BT/HFP context) / H-S4
+   (configChange handler interaction) hypothesis family
+   significantly strengthened.
+
+2. **New Bug B (H17) discovered**: the persistent "voice-changer
+   + crackling + left-shift" artifact is a separate, more
+   fundamental capture-path bug that has been silently degrading
+   every capture. Was masked on BT by HFP downsampling and the
+   Bug A cutout. Hypothesis: sample-rate / channel-layout
+   mismatch at the `AVAudioSourceNode` boundary. See H17 entry in
+   the hypothesis ledger.
+
+**Follow-ups**:
+- Resolve H17 (Bug B) first — fundamental capture correctness.
+  Next test: log `captureSourceNode.outputFormat(forBus: 0)`,
+  `engine.mainMixerNode.outputFormat(forBus: 0)`,
+  `engine.outputNode.outputFormat(forBus: 0)` at powerOn time.
+- After H17 fix, re-evaluate Bug A on BT (the two may be coupled).
+- The proposed ReverbNode refactor (`reverb.wetDryMix` +
+  `reverb.bypass`) is **paused indefinitely** — B1 showed it
+  would have been fixing the wrong thing.
+
+---
+
+### EXP-B1 — Standalone parallel-fan-out repro (DELEGATED, returned DOES_NOT_REPRODUCE)
+
+**Status**: completed in a separate chip session.
+**Date**: 2026-05-28.
+**Author**: spawned task on branch
+`investigation/exp-b1-parallel-fanout-repro` (commit `44bcc60`).
+Results document: `docs/investigations/exp-b1-results.md`.
+
+**Why this exists**: EXP-031.A/B narrowed Bug A to
+"AVAudioUnitReverb-specific in our chain." Codex's external
+research recommended refactoring ReverbNode to use the AU's
+native `wetDryMix` + `bypass` rather than the parallel-mixer
+scaffold, but explicitly flagged that the underlying mechanism
+hypothesis ("wet=0 silences sibling dry path due to AVAudioEngine
+pruning") should be validated in a minimal standalone repro
+*before* shipping the refactor — otherwise we would be fixing the
+wrong thing if the bug actually lives elsewhere.
+
+**Question**: Does placing `AVAudioUnitReverb` in a parallel
+fan-out connection (sibling to an `AVAudioMixerNode`, both feeding
+separate input buses of a downstream summing mixer), with the
+reverb branch's destination volume set to 0.0, cause the sibling
+dry path's signal to silently fail to propagate downstream — *in
+isolation*, without tap-n-filter's capture path, source node,
+ring buffer, or hardware output?
+
+**Pre-registered outcomes**:
+- REPRODUCES_IN_ISOLATION → mechanism confirmed at the topology
+  level; refactor is the right fix.
+- DOES_NOT_REPRODUCE → bug requires something
+  tap-n-filter-specific that B1 omitted; refactor was about to
+  fix the wrong thing; refocus on the omitted pieces.
+
+**Variables held constant**: macOS 26.3, AVAudioUnitReverb +
+`largeHall` preset + `reverb.wetDryMix = 100.0`, exact
+ReverbNode.attach()-style wiring, 44.1 kHz × 2 ch Float32.
+
+**Variables changed (vs production)**: Source is
+`AVAudioPlayerNode` scheduling a synthesized 440 Hz sine at -6
+dBFS (not `AVAudioSourceNode` + ring buffer). Output via
+`mainMixer.installTap` to WAV (not hardware). No process tap, no
+aggregate device, no IOProc, no
+`AVAudioEngineConfigurationChange`.
+
+**Method**: Five configurations, each 3 s, output captured to
+WAV, peak amplitude + non-zero-frame count measured:
+1. `reverb_wet_0`: parallel fan-out, AVAudioUnitReverb, wet=0
+   dry=1.
+2. `reverb_wet_1`: same, wet=1 dry=0 (baseline reverb-only).
+3. `reverb_wet_0.001`: same, wet=0.001 dry=1 (manipulation:
+   tests exact-zero pruning).
+4. `eq_wet_0`: same topology with AVAudioUnitEQ instead (positive
+   control).
+5. `single_chain`: no parallel mixer, `player → reverb →
+   mainMixer` (serial sanity).
+
+**Observations** (from `exp-b1-results.md`):
+
+| Config | wetDest | dryDest | wet AU | Peak | Verdict |
+|---|---|---|---|---|---|
+| reverb_wet_0 | 0.0 | 1.0 | Reverb | 0.5012 | AUDIBLE |
+| reverb_wet_1 | 1.0 | 0.0 | Reverb | 0.6812 | AUDIBLE |
+| reverb_wet_0.001 | 0.001 | 1.0 | Reverb | 0.5018 | AUDIBLE |
+| eq_wet_0 | 0.0 | 1.0 | EQ | 0.5012 | AUDIBLE |
+| single_chain | n/a | n/a | Reverb | 0.6810 | AUDIBLE |
+
+`reverb_wet_0` peak is exactly the -6 dBFS source amplitude
+(0.5012) and matches `eq_wet_0` to four decimal places. The
+`reverb_wet_0.001` differs from `reverb_wet_0` by 0.0006 — also
+refuting the exact-zero-pruning sub-hypothesis.
+
+**Conclusion**: **DOES_NOT_REPRODUCE.** The parallel fan-out
+topology with AVAudioUnitReverb works correctly in isolation. The
+bug is NOT in the parallel mixer pattern as such; it requires
+something tap-n-filter-specific.
+
+**Implications for the parent investigation**:
+- Refutes T1 ("AVAudioUnitReverb in parallel fan-out triggers
+  pruning"), T3 ("preset-specific to `largeHall`"), T5
+  ("`reverb.wetDryMix = 100` is the trigger"), and the
+  exact-zero-pruning sub-hypothesis.
+- Does NOT refute (because B1 omitted them) hypotheses involving:
+  `AVAudioSourceNode` semantics, ring-buffer pull cadence,
+  hardware output / BT HFP pull pattern, the
+  `AVAudioEngineConfigurationChange` observer + recovery branch.
+- The recommended ReverbNode refactor (to native `reverb.wetDryMix`
+  + `reverb.bypass`) is paused — it would have masked the bug
+  rather than addressing it.
+
+**Methodological note**: This was a Hacking-style intervention
+test. The negative result is informationally rich precisely
+because B1's design deliberately removed every tap-n-filter-side
+variable. The remaining hypothesis space is narrowed to the
+removed variables, which is what we need.
+
+---
+
+### EXP-030 — H13 reproducibility + defensive orphan cleanup (REFUTED H13)
+
+**Status**: completed (3-run protocol).
+**Date**: 2026-05-28 (01:45 / 01:46 / 01:47 EDT).
+**Author**: current session.
+
+**Question**: Does force-killing the app while capture is running
+leave orphan process taps or aggregate devices visible to a fresh
+instance via `kAudioHardwarePropertyTapList` /
+`kAudioHardwarePropertyDevices`, and does their presence correlate
+with `AudioDeviceStart` returning `kAudioHardwareIllegalOperation-
+Error` ('nope', 1852797029) on the first Start after the unclean
+exit?
+
+**Hypothesis under test**: H13 (leaked HAL state from prior runs).
+
+**Pre-registered outcomes**:
+- H13-α (CONFIRMING): force-kill leaves visible orphans AND
+  without cleanup the start fails ('nope'). Cleanup eliminates
+  the failure.
+- H13-β (NON-REPRODUCING): force-kill leaves no visible orphans.
+  HAL auto-cleans on process death; the bug we observed in
+  EXP-027/EXP-028 was via some other path.
+- H13-γ (PARTIAL REFUTATION): orphans visible but
+  AudioDeviceStart returns 0 anyway.
+- H13-δ (CLEANUP INSUFFICIENT): orphans visible AND cleanup
+  destroys them but start still fails.
+
+**Variables held constant**: Hardware, source process (Safari),
+BT state (Bose QC connected), EXP-029 observability still
+running.
+
+**Variables changed**: Added new `CoreAudioInterface` methods
+(`enumerateAllAudioDevices`, `audioDeviceUID`, `tapName`); added
+`CaptureController.cleanupOrphans()` at init time gated by a
+`UserDefaults` knob (`tap-n-filter.disableOrphanCleanup`); added
+`[EXP-030.preinit.*]` tagged log lines.
+
+**Artifacts**: Build CDHash
+`b783086404388259697a76ac6264322c9a0a04d8`. Log file
+`~/Library/Logs/tap-n-filter/app.log` lines 1424-1505.
+
+**Method** (3-run protocol):
+1. Launch 1 — clean baseline: cleanup pass, Start, Stop normally.
+2. Launch 2 — to-be-killed: Start, capture running. **Force-kill
+   mid-capture via Activity Monitor.**
+3. Launch 3 — post-kill: relaunch within ~40 s; cleanup pass
+   runs; Start.
+
+**Observations**:
+
+| Phase | Launch 1 | Launch 2 (to-be-killed) | Launch 3 (post-kill) |
+|---|---|---|---|
+| Cleanup `taps enumerated` | 0 | 0 | **0** |
+| Cleanup `taps matched` | 0 | 0 | **0** |
+| Cleanup `aggregates enumerated` | 6 | 6 | **6** |
+| Cleanup `aggregates matched` | 0 | 0 | **0** |
+| `[EXP-029.prestart.taps]` count | 1 | 1 | 1 |
+| `AudioDeviceStart` return | **0** | **0** | **0** |
+
+Critical: Launch 3 ran 39 s after Launch 2's Start with NO Stop
+transition in between — direct evidence of force-kill mid-capture.
+Post-force-kill Launch 3 saw zero orphan taps in
+`kAudioHardwarePropertyTapList` and zero orphan aggregates
+matching our UID prefix.
+
+**Conclusion**: **Outcome H13-β — H13 refuted via this protocol.**
+The HAL either auto-destroys taps and private aggregate devices
+on process death, or makes them invisible to a new process
+instance via the enumeration properties. The "orphan tap blocks
+new start" mechanism cannot operate because the preconditions
+never obtain.
+
+EXP-027 / EXP-028 mechanism remains **unexplained but inert** —
+no recurrence in 6+ subsequent Starts.
+
+**Follow-ups**:
+- H13 moved to Inactive (refutation entry above).
+- Cleanup code stays in place — benign defensive infrastructure.
+- Pivoted to EXP-031 (Bug A / H16 instrumentation).
+
+---
+
 ### EXP-029 — Instrumented A/B with minimal-reader control (PRE-REGISTERED)
 
 **Status**: pre-registered; run pending
@@ -3484,6 +4062,91 @@ documenting the decision; then incremental refactor of CaptureCont-
 roller + AppViewModel to use the new path. HFPSpike code can be
 adapted (with the IOProc-no-fire bug fixed) as the seed.
 
+### FC-004 — Frame check after B1 negative + speaker test: a foundational bug was masked
+
+**Date**: 2026-05-28 ~05:30 EDT.
+
+**Trigger**: EXP-B1 returned DOES_NOT_REPRODUCE for the topology
+mechanism we had narrowed to over EXP-031's three runs. Speaker
+test then refuted the "bypass cuts on all routes" framing and
+exposed a previously-invisible capture-path artifact (pitched-
+down + crackling + left-shift) that had been present all along
+but masked by HFP downsampling on BT and by Bug A's dramatic
+cutout.
+
+**Current frame (pre-FC-004)**:
+
+> Bug A (reverb bypass cuts audio) is THE bug to fix. We've been
+> instrumenting it, narrowing the mechanism, and would have
+> refactored ReverbNode to use AVAudioUnitReverb's native
+> wetDryMix + bypass per Codex's research recommendation. Once Bug
+> A is fixed, capture works correctly.
+
+**Alternative frame surfaced**:
+
+> The investigation has been chasing the most dramatic symptom
+> (Bug A's full cutout) while a more fundamental capture-path
+> bug (Bug B / H17 — sample-rate or channel-layout mismatch at
+> the AVAudioSourceNode boundary) has been silently degrading
+> every capture. Bug B is route-independent; Bug A is
+> BT/HFP-specific. They are independent. The "fix" for Bug A
+> would not have improved capture quality on speakers at all,
+> because Bug B would still have been making every capture sound
+> wrong. The investigation should have included an "is the
+> output of the chain bit-correct against a reference?" gate
+> earlier — *before* deep-diving on any specific user-reported
+> symptom.
+
+**Distinguishing observations**:
+
+- On speakers (no BT, no HFP, no cutout), capture still sounds
+  wrong: voice-changer-anonymize pitch shift + crackling +
+  left-shift artifact. Present even with both effects bypassed.
+- On BT, the cutout dominates perception; HFP downsampling
+  further obscures the underlying capture quality.
+- EXP-024 / EXP-025 / EXP-027 / EXP-028 all heard "silence" or
+  "HFP-degraded" — never characterized as
+  "voice-changer-anonymize" until speaker test, because every
+  prior run had either BT in HFP or a more dramatic upstream
+  failure.
+
+**Decision**: **Frame shifted.** Bug B (H17) becomes the
+top-priority investigation. Bug A is downgraded to "BT-route-
+specific; may be intrinsic OS routing pathology adjacent to H15;
+re-evaluate post-Bug-B fix." The proposed ReverbNode refactor is
+parked.
+
+**Why we didn't see this sooner**: Three compounding factors:
+1. User testing was BT-default; HFP downsampling on every BT
+   run masked the capture quality.
+2. The cutout (Bug A) was the loudest symptom — every Phase-3-
+   era experiment was structured around it.
+3. We never built a "capture quality vs. reference" gate. EXP-024
+   captured `mainMixerNode` to WAV but interpreted the output as
+   "engine isn't pulling," not as "engine IS pulling but the data
+   it pulls is corrupted." With hindsight, EXP-024's zero-buffer
+   result was consistent with engine-not-pulling *and* with
+   engine-pulling-corrupted-format; we picked the first
+   interpretation because the user's stated symptom was silence,
+   not corruption.
+
+**Lesson**: When investigating a user-reported symptom, build a
+baseline test that validates the *non-symptomatic* properties of
+the output (correctness, quality, bit-accuracy) early — not just
+the property the user complained about. Otherwise, fixing the
+loud bug exposes the quiet bug only at the end, and the
+investigation arc is unnecessarily long.
+
+**Mechanism added to protocol** (proposed for `docs/investigations/README.md`):
+
+> Every Phase ≥ 1 investigation that touches a capture or render
+> path must include a "correctness baseline" experiment that
+> compares the path's output against a reference (e.g., a WAV
+> dump of a known signal through the system, compared to the
+> input signal). This sits alongside the user-reported-symptom
+> investigation. It is allowed to be a single early experiment;
+> it is not allowed to be omitted.
+
 ## Changelog
 
 - 2026-05-25 06:35 EDT — initial notebook created (this session).
@@ -3567,3 +4230,99 @@ adapted (with the IOProc-no-fire bug fixed) as the seed.
   unlogged). Filled in EXP-029's Artifacts / Observations /
   Conclusion sections. Updated Status block. Moved H9–H12 + H14 to
   Inactive with refutation entries.
+- 2026-05-28 01:45 / 01:46 / 01:47 EDT — ran EXP-030 (3-launch
+  force-kill protocol for H13). Implemented defensive orphan
+  cleanup at `CaptureController.init` with `[EXP-030.preinit.*]`
+  instrumentation and a `UserDefaults` knob for negative control.
+  Build CDHash `b783086404388259697a76ac6264322c9a0a04d8`.
+  **Outcome H13-β — H13 refuted.** Post-force-kill instance saw
+  zero orphan taps and zero orphans matching our aggregate UID
+  prefix; `AudioDeviceStart` returned 0 anyway. EXP-027/EXP-028
+  mechanism remains unexplained but inert. Cleanup code stays as
+  benign defensive infrastructure. H13 moved to Inactive.
+- 2026-05-28 ~03:05 EDT — ran EXP-031 run 1 (build v1 CDHash
+  `a12e6f535d29b53aa9652c4bd080499f3b093ece`). Reverb bypass
+  false→true cuts audio on BT; EQ bypass does not. Log line shape
+  exposed a Swift dispatch bug: `debugStateDescription()` declared
+  only in protocol extension was statically dispatched; Reverb/EQ
+  overrides not called. Promoted to a protocol requirement.
+- 2026-05-28 ~03:13 EDT — ran EXP-031 run 2 (build v2 CDHash
+  `fbf5d113e8d562a5010b89ce7ce6d2b11d5c3e42`). With dynamic
+  dispatch fixed, every state field is logged: both Reverb and EQ
+  show identical `dryDestExists=true dryDestVol=1.0
+  dryMixerVol=0.0 wetDestExists=true wetDestVol=0.0
+  wetMixerVol=1.0` after bypass=true. `dryMixerVol=0.0` traced to
+  `applyMixGains` fallback path running at attach time with
+  persisted-state wetDryMix=1.0.
+- 2026-05-28 ~03:30 EDT — fixed the `applyMixGains` fallback (no
+  longer writes `mixer.volume`; always keeps it at unity).
+  Extended `debugStateDescription` with format readback per
+  internal mixer + the wet processor. Build v3 CDHash
+  `78daded470d4d1aaa9660826de8f39990423d7a8`. Re-tested: every
+  format reads `44100.0Hz×2ch` for both Reverb and EQ; mixer
+  master volumes now 1.0 as intended; **audio still cuts on
+  reverb bypass on BT**. The fallback fix was correct in itself
+  but not the audible cause. Outcome H16-A confirmed (gain set as
+  intended, audio still cuts), with the additional refinement
+  that every observable field is identical between Reverb (cuts)
+  and EQ (works) — mechanism must be invisible to our
+  instrumentation.
+- 2026-05-28 — delegated to Codex (`codex:rescue` model=gpt-5.5
+  effort=high). Codex reported no documented Apple bug; canonical
+  AVAudioUnitReverb wet/dry pattern uses the AU's own
+  `wetDryMix`; Apple's `AVAEMixerSample` does not build a parallel
+  scaffold for reverb; explicitly flagged that the
+  "wet=0 prunes the sibling dry path" mechanism is a plausible
+  inference but must be validated by a minimal standalone repro
+  outside tap-n-filter before driving an ADR.
+- 2026-05-28 04:48 EDT — ran EXP-031.B (chain-order swap). User
+  drag-reordered chain to `tnf.eq → tnf.reverb`. Source-grounded
+  via `moveEffect: from 1 to 0` log + the
+  `Graph.attach`-wires-in-array-order code path. EQ bypass
+  (first-node) did not cut; Reverb bypass (second-node) cut.
+  **Chain position refuted as discriminator.** Reverb cuts
+  wherever it is in the chain; EQ doesn't cut wherever it is.
+- 2026-05-28 — spawned chip session for EXP-B1 (standalone
+  isolation repro) on branch
+  `investigation/exp-b1-parallel-fanout-repro`. Designed 5
+  configurations probing the parallel-fan-out topology in
+  isolation using `AVAudioPlayerNode` (not `AVAudioSourceNode`)
+  and `mainMixer.installTap` output (not hardware).
+- 2026-05-28 — EXP-B1 returned **DOES_NOT_REPRODUCE.** All 5
+  configurations produced audible signal: `reverb_wet_0` peak
+  0.5012 matched `eq_wet_0` peak 0.5012 exactly; `reverb_wet_0.001`
+  peak 0.5018 essentially identical (refuting exact-zero-pruning
+  too). The parallel-fan-out topology with AVAudioUnitReverb is
+  not the cause. Refutes T1, T3, T5 from the EXP-031.A
+  underdetermination space. The proposed ReverbNode refactor is
+  paused — would have been fixing the wrong thing. Remaining
+  hypothesis space: variables B1 omitted (AVAudioSourceNode
+  semantics, ring-buffer pull cadence, hardware output / BT HFP,
+  `AVAudioEngineConfigurationChange` observer + recovery branch).
+- 2026-05-28 ~05:26 EDT — ran EXP-031.D (speaker route test).
+  Disconnected BT; system output = built-in speakers. Repeated
+  reverb bypass toggle. **Audio no longer cuts entirely on
+  reverb bypass.** State fields identical to BT-route runs; no
+  `[EXP-031.configChange]` events (no HFP route switch with BT
+  disconnected). Bug A (H16) refined to **BT-route-specific**.
+- 2026-05-28 ~05:28 EDT — same speaker session: user reported a
+  **new persistent artifact during capture**, present even with
+  both effects bypassed. Characterized as "very low pitched,
+  voice-changer-anonymize + static crackling + left-channel
+  shift." Present regardless of which effect (if any) is
+  bypassed → must be upstream of every effect → implies
+  source-node boundary. Added **H17 (sample-rate /
+  channel-layout mismatch at AVAudioSourceNode boundary)** to
+  active ledger. The artifact was masked on BT by HFP
+  downsampling and the Bug A cutout. **Bug B is now the
+  top-priority investigation; Bug A is parked pending Bug B
+  resolution.**
+- 2026-05-28 — added FC-004 frame check. Lesson: the
+  investigation should have included a "capture output
+  correctness baseline" earlier, separate from chasing
+  user-reported symptoms. EXP-024's zero-buffer interpretation
+  was consistent with both "engine not pulling" and "engine
+  pulling corrupted format" — we picked the first because the
+  user reported silence, not corruption. Proposed protocol
+  update: require a correctness-baseline experiment for any
+  capture/render investigation.

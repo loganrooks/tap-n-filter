@@ -127,6 +127,33 @@ public protocol CoreAudioInterface {
     /// here; if that property is the wrong one for taps we fall back
     /// to returning `[]` and log the error.
     func enumerateProcessTaps() -> [AudioObjectID]
+
+    // MARK: - Orphan cleanup helpers (EXP-030)
+    //
+    // These four methods support the defensive cleanup at
+    // `CaptureController.init` that destroys taps and aggregate devices
+    // left behind by a force-killed prior run (H13). They are pure
+    // diagnostic reads except for the destroy methods (which already
+    // exist on the protocol — `destroyTap` and
+    // `destroyAggregateDevice`).
+
+    /// Lists every audio device the HAL knows about
+    /// (`kAudioHardwarePropertyDevices`). Used by the orphan-cleanup
+    /// path to find aggregate devices we created in a prior run.
+    /// Returns an empty array on enumeration failure.
+    func enumerateAllAudioDevices() -> [AudioDeviceID]
+
+    /// Reads `kAudioDevicePropertyDeviceUID` from the given device.
+    /// Returns `nil` on query failure. Used to identify aggregates we
+    /// own by matching the `tap-n-filter.aggregate.*` UID prefix.
+    func audioDeviceUID(_ deviceID: AudioDeviceID) -> String?
+
+    /// Reads `kAudioObjectPropertyName` from the given tap object.
+    /// Returns `nil` on query failure. Process taps we create in
+    /// `createTap(for:)` are named `tap-n-filter.tap.<audioProcessID>`;
+    /// the orphan-cleanup path uses this to identify our taps among
+    /// any others the HAL exposes.
+    func tapName(_ tapID: AudioObjectID) -> String?
 }
 
 // MARK: - Real implementation
@@ -502,5 +529,78 @@ public struct RealCoreAudioInterface: CoreAudioInterface {
         }
         guard fetchStatus == noErr else { return [] }
         return ids
+    }
+
+    // MARK: - Orphan cleanup helpers (EXP-030)
+
+    public func enumerateAllAudioDevices() -> [AudioDeviceID] {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var dataSize: UInt32 = 0
+        let sizeStatus = AudioObjectGetPropertyDataSize(
+            AudioObjectID(kAudioObjectSystemObject),
+            &address,
+            0,
+            nil,
+            &dataSize
+        )
+        guard sizeStatus == noErr, dataSize > 0 else { return [] }
+        let count = Int(dataSize) / MemoryLayout<AudioDeviceID>.size
+        var ids = [AudioDeviceID](repeating: kAudioObjectUnknown, count: count)
+        let fetchStatus = ids.withUnsafeMutableBufferPointer { buf -> OSStatus in
+            AudioObjectGetPropertyData(
+                AudioObjectID(kAudioObjectSystemObject),
+                &address,
+                0,
+                nil,
+                &dataSize,
+                buf.baseAddress!
+            )
+        }
+        guard fetchStatus == noErr else { return [] }
+        return ids
+    }
+
+    public func audioDeviceUID(_ deviceID: AudioDeviceID) -> String? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceUID,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var uid: Unmanaged<CFString>?
+        var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        let status = AudioObjectGetPropertyData(
+            deviceID,
+            &address,
+            0,
+            nil,
+            &size,
+            &uid
+        )
+        guard status == noErr, let uid else { return nil }
+        return uid.takeRetainedValue() as String
+    }
+
+    public func tapName(_ tapID: AudioObjectID) -> String? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioObjectPropertyName,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var name: Unmanaged<CFString>?
+        var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        let status = AudioObjectGetPropertyData(
+            tapID,
+            &address,
+            0,
+            nil,
+            &size,
+            &name
+        )
+        guard status == noErr, let name else { return nil }
+        return name.takeRetainedValue() as String
     }
 }

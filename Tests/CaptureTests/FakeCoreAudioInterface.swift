@@ -200,4 +200,26 @@ final class FakeCoreAudioInterface: CoreAudioInterface {
     func enumerateProcessTaps() -> [AudioObjectID] {
         return []
     }
+
+    // MARK: Orphan cleanup helpers (EXP-030)
+    //
+    // No-op fakes. The cleanup path is exercised in tests by injecting
+    // closures (below) on demand; the defaults here keep existing
+    // tests passing.
+
+    var enumerateAllAudioDevicesResult: () -> [AudioDeviceID] = { [] }
+    var audioDeviceUIDResult: (AudioDeviceID) -> String? = { _ in nil }
+    var tapNameResult: (AudioObjectID) -> String? = { _ in nil }
+
+    func enumerateAllAudioDevices() -> [AudioDeviceID] {
+        return enumerateAllAudioDevicesResult()
+    }
+
+    func audioDeviceUID(_ deviceID: AudioDeviceID) -> String? {
+        return audioDeviceUIDResult(deviceID)
+    }
+
+    func tapName(_ tapID: AudioObjectID) -> String? {
+        return tapNameResult(tapID)
+    }
 }

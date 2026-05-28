@@ -77,6 +77,119 @@ public final class CaptureController: CaptureControllerProtocol, @unchecked Send
         self.coreAudio = coreAudio
         self.log = log
         self.subject = CurrentValueSubject(.idle)
+
+        // EXP-030 defensive orphan cleanup. Runs once at construction
+        // time — typically once per process launch. Destroys any taps
+        // or aggregate devices left behind by a force-killed prior
+        // run of this app. See `cleanupOrphans()` and the EXP-030
+        // entry in `docs/investigations/2026-05-audio-pipeline.md`.
+        cleanupOrphans()
+    }
+
+    /// Enumerate HAL state and destroy any process taps or aggregate
+    /// devices that match our naming convention but are not currently
+    /// owned by this process instance. Idempotent and best-effort —
+    /// failures are logged and swallowed because the goal is to leave
+    /// the HAL in a sane state, not to surface every status code.
+    ///
+    /// Honors `UserDefaults.standard.bool(forKey:
+    /// "tap-n-filter.disableOrphanCleanup")` so EXP-030 can run a
+    /// negative control with cleanup disabled. The flag defaults to
+    /// false (cleanup ON) so production users are protected without
+    /// needing to set anything.
+    ///
+    /// Destruction order: aggregates first (they reference taps via
+    /// `kAudioAggregateDevicePropertyTapList`), taps second. The
+    /// reverse would leave dangling tap-UID references on the
+    /// aggregate; while the HAL likely tolerates this when both are
+    /// being destroyed in the same process, the documented order is
+    /// safer.
+    private func cleanupOrphans() {
+        let disabled = UserDefaults.standard.bool(
+            forKey: "tap-n-filter.disableOrphanCleanup"
+        )
+        if disabled {
+            log(
+                "[EXP-030.preinit] SKIPPED "
+                + "(UserDefaults tap-n-filter.disableOrphanCleanup=true)"
+            )
+            return
+        }
+
+        log("[EXP-030.preinit] beginning orphan-cleanup pass")
+
+        // --- Tap enumeration + match
+        let taps = coreAudio.enumerateProcessTaps()
+        var matchedTaps: [(id: AudioObjectID, name: String)] = []
+        for tap in taps {
+            guard let name = coreAudio.tapName(tap) else { continue }
+            if name.hasPrefix("tap-n-filter.tap.") {
+                matchedTaps.append((id: tap, name: name))
+            }
+        }
+        log(
+            "[EXP-030.preinit.taps] enumerated=\(taps.count) "
+            + "matched=\(matchedTaps.count) "
+            + "ids=\(matchedTaps.map { $0.id }) "
+            + "names=\(matchedTaps.map { $0.name })"
+        )
+
+        // --- Aggregate enumeration + match
+        let devices = coreAudio.enumerateAllAudioDevices()
+        var matchedAggregates: [(id: AudioDeviceID, uid: String)] = []
+        for dev in devices {
+            guard let uid = coreAudio.audioDeviceUID(dev) else { continue }
+            if uid.hasPrefix("tap-n-filter.aggregate.") {
+                matchedAggregates.append((id: dev, uid: uid))
+            }
+        }
+        log(
+            "[EXP-030.preinit.aggregates] enumerated=\(devices.count) "
+            + "matched=\(matchedAggregates.count) "
+            + "ids=\(matchedAggregates.map { $0.id }) "
+            + "uids=\(matchedAggregates.map { $0.uid })"
+        )
+
+        // --- Destruction (aggregates first, then taps)
+        var aggregatesDestroyed = 0
+        for entry in matchedAggregates {
+            do {
+                try coreAudio.destroyAggregateDevice(entry.id)
+                aggregatesDestroyed += 1
+                log(
+                    "[EXP-030.preinit.cleaned] destroyed aggregate "
+                    + "id=\(entry.id) uid=\(entry.uid)"
+                )
+            } catch {
+                log(
+                    "[EXP-030.preinit.cleaned] FAILED to destroy aggregate "
+                    + "id=\(entry.id) uid=\(entry.uid) error=\(error)"
+                )
+            }
+        }
+
+        var tapsDestroyed = 0
+        for entry in matchedTaps {
+            do {
+                try coreAudio.destroyTap(entry.id)
+                tapsDestroyed += 1
+                log(
+                    "[EXP-030.preinit.cleaned] destroyed tap "
+                    + "id=\(entry.id) name=\(entry.name)"
+                )
+            } catch {
+                log(
+                    "[EXP-030.preinit.cleaned] FAILED to destroy tap "
+                    + "id=\(entry.id) name=\(entry.name) error=\(error)"
+                )
+            }
+        }
+
+        log(
+            "[EXP-030.preinit] DONE "
+            + "aggregates_destroyed=\(aggregatesDestroyed) "
+            + "taps_destroyed=\(tapsDestroyed)"
+        )
     }
 
     // MARK: Source enumeration
