@@ -142,6 +142,142 @@ public final class AppViewModel: ObservableObject {
         defaults.set(showDebugPanel, forKey: AppViewModelDefaultsKey.debugPanel)
     }
 
+    // MARK: - EXP-029 minimal-reader control (throwaway)
+    //
+    // Debug-panel-driven test that runs a `TapIOProcReader` for 5 s
+    // WITHOUT any `engine.attach(sourceNode)` — i.e., the exact same
+    // tap + aggregate + IOProc path as production, but with NO contact
+    // with the AVAudioEngine. Compare its log block (tagged
+    // `[EXP-029.*]`) to the production Start path's block to identify
+    // which observable signal first diverges between the two paths.
+    // Remove once H10 / H9 / H11 / H12 / H13 is resolved.
+
+    /// Whether the EXP-029 reader test is currently running.
+    @Published public private(set) var isReaderTestRunning: Bool = false
+
+    @MainActor
+    public func runReaderTest() {
+        guard !isReaderTestRunning else { return }
+        guard let source = currentSource else {
+            logger.warning("runReaderTest: no source selected; pick one first")
+            return
+        }
+        isReaderTestRunning = true
+        Task { @MainActor in
+            await self.performReaderTest(source: source)
+            self.isReaderTestRunning = false
+        }
+    }
+
+    @MainActor
+    private func performReaderTest(source: CaptureSource) async {
+        let testLogger = TnfLogger(source: "ReaderTest", store: debugLog)
+        testLogger.info("[EXP-029.path] RDRTEST (TapIOProcReader, NO engine.attach)")
+        testLogger.info(
+            "[EXP-029.input.source] pid=\(source.pid) "
+            + "audioProcessID(stored)=\(source.audioProcessID) "
+            + "bundleID=\(source.bundleIdentifier ?? "nil") "
+            + "displayName=\(source.displayName)"
+        )
+
+        let coreAudio = RealCoreAudioInterface()
+        let liveProcessID: AudioObjectID
+        do {
+            liveProcessID = try coreAudio.audioProcessID(forPID: source.pid)
+            testLogger.info(
+                "[EXP-029.input.resolve] OK liveProcessID=\(liveProcessID) "
+                + "(stored was \(source.audioProcessID); "
+                + "match=\(liveProcessID == source.audioProcessID))"
+            )
+        } catch {
+            testLogger.error("[EXP-029.input.resolve] FAIL \(error)")
+            return
+        }
+
+        let reader: TapIOProcReader
+        do {
+            reader = try TapIOProcReader(
+                audioProcessID: liveProcessID,
+                coreAudio: coreAudio,
+                log: { message in testLogger.info(message) }
+            )
+        } catch {
+            testLogger.error("[EXP-029.reader.init] FAIL \(error)")
+            return
+        }
+
+        do {
+            try reader.start()
+            testLogger.info("[EXP-029.rdrtest] start() returned; running 5s")
+        } catch {
+            testLogger.error("[EXP-029.reader.start] FAIL \(error)")
+            reader.stop()
+            return
+        }
+
+        // Drain the ring at ~100 ms cadence so it doesn't overflow.
+        let ring = reader.ring
+        let channelCount = Int(reader.format.channelCount)
+        let frameBatch = 4096
+        let totalCapacity = frameBatch * channelCount
+        let storage = UnsafeMutablePointer<Float>.allocate(capacity: totalCapacity)
+        defer { storage.deallocate() }
+        var channelPtrs: [UnsafeMutablePointer<Float>] = []
+        channelPtrs.reserveCapacity(channelCount)
+        for c in 0..<channelCount {
+            channelPtrs.append(storage.advanced(by: c * frameBatch))
+        }
+
+        var totalFrames = 0
+        var nonZeroFrames = 0
+        var maxAbs: Float = 0
+        var readCount = 0
+
+        let deadline = Date().addingTimeInterval(5.0)
+        while Date() < deadline {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            let framesRead = ring.read(into: channelPtrs, frames: frameBatch)
+            readCount += 1
+            totalFrames += framesRead
+            if framesRead > 0 {
+                let ch0 = channelPtrs[0]
+                for i in 0..<framesRead {
+                    let s = ch0[i]
+                    if s != 0 { nonZeroFrames += 1 }
+                    let a = Swift.abs(s)
+                    if a > maxAbs { maxAbs = a }
+                }
+            }
+        }
+
+        testLogger.info(
+            "[EXP-029.rdrtest.stats] reads=\(readCount) "
+            + "totalFrames=\(totalFrames) nonZeroFrames=\(nonZeroFrames) "
+            + "maxAbs=\(maxAbs)"
+        )
+        if totalFrames == 0 {
+            testLogger.warning(
+                "[EXP-029.rdrtest.result] FAIL_NO_FRAMES — AudioDeviceStart "
+                + "succeeded but IOProc delivered nothing. Cause is downstream "
+                + "of the start (e.g., tap not actually pumping)."
+            )
+        } else if nonZeroFrames == 0 {
+            testLogger.warning(
+                "[EXP-029.rdrtest.result] FAIL_ZEROS_ONLY — frames arrived but all "
+                + "are zero. Suspect macOS 26 zero-buffer bug (forums 825780)."
+            )
+        } else {
+            testLogger.info(
+                "[EXP-029.rdrtest.result] PASS — \(totalFrames) frames, "
+                + "\(nonZeroFrames) non-zero, peak \(maxAbs). Direct-IOProc path "
+                + "works without an engine. If production STILL fails: H10 "
+                + "(engine.attach pre-empts) is the leading candidate."
+            )
+        }
+
+        reader.stop()
+    }
+
     // MARK: Collaborators
 
     private let capture: CaptureControllerProtocol
@@ -243,9 +379,19 @@ public final class AppViewModel: ObservableObject {
     }
 
     public convenience init() {
+        // Construct the debug log store + a Capture-tagged logger BEFORE
+        // CaptureController so we can route the controller's diagnostic
+        // breadcrumbs (EXP-029 + future) through the same file log as
+        // the rest of the app.
+        let debugLog = DebugLogStore()
+        let captureLogger = TnfLogger(source: "Capture", store: debugLog)
         self.init(
-            capture: CaptureController(coreAudio: RealCoreAudioInterface()),
-            engine: AVAudioEngine()
+            capture: CaptureController(
+                coreAudio: RealCoreAudioInterface(),
+                log: { message in captureLogger.info(message) }
+            ),
+            engine: AVAudioEngine(),
+            debugLog: debugLog
         )
     }
 

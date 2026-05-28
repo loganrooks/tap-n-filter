@@ -2,7 +2,45 @@
 
 ## Status
 
-**Last updated**: 2026-05-27 22:15 EDT (post-EXP-026; architecture validated)
+**Last updated**: 2026-05-28 (post-EXP-029; production + Reader test both pass)
+
+**Current frame**: EXP-029's instrumented A/B confirms both code
+paths reach `AudioDeviceStart=0` and deliver real Safari audio when
+the HAL is in a clean state (`prestart.taps count=1`, our own
+freshly-created tap only). H9, H10, H11, H12, H14 all refuted —
+none of the candidate single-variable or combination explanations
+discriminate pass from fail. **H13 (leaked HAL state from prior
+runs) is the surviving leading hypothesis** for the EXP-027 /
+EXP-028 deterministic failures, but remains unconfirmed until we
+deliberately reproduce it by force-killing the app mid-capture and
+observing `prestart.taps count > 1` correlated with `AudioDeviceStart`
+return 'nope'.
+
+Two new active hypotheses surfaced from EXP-029:
+- **H15** (source-grounded): macOS routes BT into HFP whenever a
+  process-tap IOProc is active, regardless of engine wiring. The
+  architectural refactor cannot avoid this — it's an OS routing
+  policy. Codex predicted this at the start of the investigation.
+  Decision pending: ADR-019 / uncertainty entry to document and
+  decide V0.1 ship policy.
+- **H16** (un-instrumented): toggling `setBypass` on a graph node
+  during capture cuts audio entirely (user-reported during EXP-029
+  production). The `setBypass` action is invisible to current
+  logging; we can't articulate a sharper hypothesis until we
+  instrument it (Step 3 in current plan).
+
+**Earlier frames (now revised)**:
+- post-EXP-028, the frame was "deterministic regression in the
+  refactor; AudioDeviceStart-on-aggregate is broken when called
+  through CaptureController." EXP-029 refuted this: the same code
+  path passes when the HAL is clean. The bug is state-dependent,
+  not deterministic.
+- post-EXP-026 / pre-EXP-027, the frame was "architecture
+  validated; live test will close the investigation." EXP-027
+  refuted that. The architecture is correct but exposes a new
+  HAL-state-leakage mode under failure.
+
+**Earlier frame (still valid)**:
 
 **Current frame**: AVAudioEngine + process tap + aggregate device
 (current production architecture) is structurally incompatible with
@@ -186,6 +224,318 @@ IOProc machinery works mechanically.
 ## Hypothesis ledger
 
 ### Active
+
+#### H13 — Leaked HAL state from prior runs blocks AudioDeviceStart (LEADING, unconfirmed)
+
+**Claim**: A tap or aggregate device from a prior crashed or
+unclean run is sitting in the HAL's process-tap registry, and the
+new tap/aggregate creation succeeds (returns a fresh ID) but
+AudioDeviceStart fails with `kAudioHardwareIllegalOperationError`
+('nope', 1852797029) because the HAL refuses to start a new device
+while orphans tagged to our process exist. The HAL eventually GCs
+orphans after the originating process is gone for some time, which
+is why EXP-029 (run after a multi-minute gap) succeeded where
+EXP-027 / EXP-028 (run immediately after failed attempts) failed.
+
+**Type**: behavior-inferred.
+
+**Auxiliaries** (must be true for H13 to be the cause):
+- The HAL maintains per-process-tap registries that persist if the
+  originating process exits without calling
+  `AudioHardwareDestroyProcessTap`. This is normal HAL behaviour.
+- 'nope' from AudioDeviceStart on a freshly-created aggregate is
+  correlated with the presence of pre-existing taps from the same
+  app, not with the current tap's properties.
+- A reboot, daemon restart (`coreaudiod`), or sufficient idle time
+  resets the registry.
+- `enumerateProcessTaps()` (now in `CoreAudioInterface`) accurately
+  reports the current count of taps known to the HAL.
+
+**Would falsify H13**:
+- Deliberately force-killing the app mid-capture to leave a tap
+  orphaned, then restarting, does NOT cause AudioDeviceStart to
+  return 'nope'.
+- The `prestart.taps count` is observed > 1 *with no failure* during
+  a Start (suggests orphans aren't blocking).
+- A controlled experiment with a tap-cleanup at app-launch time
+  succeeds at preventing the failure but the underlying cause was
+  actually something else.
+
+**How to confirm H13**:
+- EXP-030 (planned): force-kill the app while a capture is running.
+  Restart. Observe `prestart.taps count > 1`. Attempt Start. If
+  AudioDeviceStart returns 'nope', H13 is confirmed source-grounded.
+  If it returns 0, H13 is significantly weakened.
+
+**Time budget**: EXP-030 should take ~30 min including the defensive
+cleanup implementation.
+
+#### H15 — Active process-tap IOProc forces BT into HFP routing (source-grounded)
+
+**Claim**: macOS 26.3's audio routing layer forces Bluetooth output
+into HFP voice mode (16 kHz × 1 ch) whenever any process tap's
+IOProc is active and the default output is a Bluetooth device. The
+trigger is the active capture, NOT the AVAudioEngine wiring. The
+direct-IOProc architecture (ADR-018) cannot avoid this — it's at the
+OS routing layer, below where any V0.1-scope code can intervene.
+
+**Type**: source-grounded (EXP-029 production log shows
+`outputNode=44100Hz×2ch` at `engine.preattach`, then
+`outputNode=16000Hz×1ch` 65 ms after `AudioDeviceStart=0`, with no
+intervening engine reconfiguration on our side).
+
+**Auxiliaries**:
+- The `AVAudioEngineConfigurationChange` notification at
+  `00:37:20.480` is the first observable side-effect of the
+  AudioDeviceStart, and it reports outputNode at HFP rate.
+- The HFP transition is BT-stack-level, not AVAudioEngine-level
+  (Codex's original report; Apple-Forums posts on the same topic;
+  ADR-014 / ADR-018 context).
+- Workarounds we already tested in earlier investigation:
+  - `sudo defaults write com.apple.BluetoothAudioAgent "Disable HFP"
+    -bool true` — DID NOT WORK on macOS 26.3.
+  - HAL plugin (Rogue Amoeba ARK pattern) — would work but is V0.2
+    scope, requires DriverKit / kext-style installation.
+
+**Would falsify H15**:
+- A future macOS release that doesn't force HFP for our tap.
+- An app-side configuration (entitlement, plist key, audio session
+  category) that we haven't tried that suppresses the route switch.
+- Wired output or non-BT output → no HFP (this isn't falsifying so
+  much as confirming the trigger).
+
+**Decision pending**: ADR-019 (or uncertainty-log entry) to document
+the limitation. Options for V0.1:
+1. Ship V0.1 with a README caveat: "for full quality, use a wired
+   output or built-in speakers. BT output is HFP-degraded while
+   filtering is active. V0.2 will investigate the HAL-plugin path."
+2. Block V0.1 on a HAL-plugin investigation. Adds weeks of scope.
+3. Investigate a less-invasive workaround (e.g., AudioServerPlugin,
+   route override, etc.) — uncertain payoff.
+
+#### H16 — Bypass toggle on a graph node breaks the audio chain (unlogged, untestable as-is)
+
+**Claim**: Toggling `setBypass(nodeID:, bypass:)` on a node in the
+running effect graph causes the audio to cut out entirely (user-
+reported during EXP-029 production run; not visible in the file
+log). Suspect interaction between the new direct-IOProc-+-source-node
+architecture and the existing graph mutation code, possibly via the
+engine-restart-on-config-change branch Codex's P1 fix introduced.
+
+**Type**: behavior-inferred from one user report; NOT source-
+grounded yet because the action is invisible to current
+instrumentation.
+
+**Auxiliaries**: (TBD — cannot articulate sharply until instrumented)
+- `setBypass` modifies the AVAudioUnit's `bypass` property, which is
+  documented as a passthrough toggle that doesn't affect engine
+  topology.
+- The new architecture's source-node-→-mainMixer wiring may interact
+  with bypass differently than the old inputNode-driven path.
+- The graph's `mutate` path (used for add/remove/reorder) may be
+  invoked by bypass — or not — depending on Graph's implementation.
+
+**Would falsify H16**:
+- With observability added, the bypass toggle reproduces the
+  cut-out and a clear graph-mutation event is logged → confirms a
+  graph-mutation interaction.
+- Reproduction shows bypass alone doesn't cut audio, but a different
+  user action (slider drag, source-switch) did → H16 misidentifies
+  the trigger.
+
+**Path forward**: instrumentation first (logging in `setBypass`,
+`Graph.mutate`, `engine.attach/detach`, and the
+config-change-restart branch). Then reproduce. Then articulate a
+sharper hypothesis.
+
+### Inactive
+
+#### H9 — Tap's `isPrivate=true` causes `AudioDeviceStart` to return 'nope' (REFUTED 2026-05-28 by EXP-029)
+
+**Claim**: Setting `description.isPrivate = true` on the
+`CATapDescription` (per the production `coreAudio.createTap`)
+prevents `AudioDeviceStart` on the wrapping aggregate from
+returning 0 on macOS 26.3.
+
+**Type**: behavior-inferred (from the differences between EXP-026's
+inline tap creation, which omitted `isPrivate` (default false) and
+passed AudioDeviceStart=0, versus production which sets
+`isPrivate=true` and fails). NOT source-grounded yet — we have not
+read Apple documentation or any source that says private taps are
+forbidden from being started via direct IOProc.
+
+**Auxiliaries** (must be true for H9 to be the cause):
+- `description.isPrivate` defaults to `false` when not explicitly
+  set (CoreAudio framework default).
+- The HAL's permission/policy check distinguishes "private tap +
+  AudioDeviceStart" from "non-private tap + AudioDeviceStart".
+- audiotee from Terminal (which sets `isPrivate = true` per
+  `AudioTapManager.swift`) works because Terminal's TCC grants give
+  it a different policy class than our app, NOT because `isPrivate`
+  is fine in general.
+
+**Would falsify H9**:
+- EXP-029 minimal-reader passes with current `isPrivate=true`. The
+  difference is then somewhere else.
+- Audiotee from Terminal with `isPrivate=true` succeeds AND our
+  EXP-026's inline test with `isPrivate=false` also succeeds, but
+  setting `isPrivate=false` in our production path STILL fails.
+  That would mean `isPrivate` isn't the discriminating variable.
+
+**Time budget**: EXP-029 (~30 min implementation + 5 min run)
+should produce the falsifying or supporting evidence.
+
+#### H10 — `engine.attach(sourceNode)` BEFORE `reader.start()` pre-empts the aggregate (REFUTED 2026-05-28 by EXP-029)
+
+**Refutation**: EXP-029's production path includes `engine.attach(sourceNode)`
+18 ms before `reader.start()` (per the
+`[EXP-029.engine.postattach]` log line at 00:37:20.377), AND
+`AudioDeviceStart` still returned 0. The minimal-reader path with
+NO `engine.attach` ALSO returned 0. The variable I expected to
+discriminate doesn't. **Auxiliaries the refutation relied on**: the
+log timestamps and engine.isRunning readback are accurate (both
+report false before reader.start). **Resurrection condition**: the
+production path begins failing again WITHOUT a state-leak
+explanation AND a follow-up confirms engine.attach is the only
+remaining variable.
+
+**Claim**: On macOS 26.3, calling `AVAudioEngine.attach(sourceNode)`
+forces the engine to lazily initialize its unified IO AU, which
+takes ownership of system audio state in a way that makes the
+subsequent `AudioDeviceStart` on a separately-created tap aggregate
+return 'nope' (kAudioHardwareIllegalOperationError). EXP-026 worked
+because no AVAudioEngine instance was touched before
+`AudioDeviceStart`.
+
+**Type**: behavior-inferred (from the structural difference between
+EXP-026 (no engine in scope) and EXP-027/028 (engine attached
+between tap creation and AudioDeviceStart)).
+
+**Auxiliaries**:
+- `AVAudioEngine.attach()` actually triggers HAL-side state
+  initialization on macOS 26.3 (not just an in-engine bookkeeping
+  step).
+- The "unified IO AU" model (source-grounded in EXP-023) means the
+  engine's audio unit, once initialized, holds onto a default
+  output device claim that conflicts with a tap aggregate.
+- The CaptureController's `engine.attach(sourceNode)` is the FIRST
+  contact with the engine's IO AU during a Start flow (not, e.g.,
+  graph.attach at app launch).
+
+**Would falsify H10**:
+- EXP-029 minimal-reader (NO engine.attach) STILL fails with
+  AudioDeviceStart 'nope'. Then engine.attach isn't the issue.
+- A variant where we reorder `engine.attach` to AFTER
+  `reader.start()` ALSO fails. (Would need a follow-up experiment.)
+
+**Time budget**: EXP-029 directly tests this. Same 35-min budget.
+
+#### H11 — One of {`name` set, `isExclusive=false` explicit} is the cause (REFUTED 2026-05-28 by EXP-029)
+
+**Refutation**: Both EXP-029 paths use `coreAudio.createTap` which
+sets `name` and `isExclusive=false` identically; both passed.
+**Auxiliaries**: `coreAudio.createTap` was actually called in both
+paths (logged via `[EXP-029.tap.create]`). **Resurrection
+condition**: a future experiment that varies these fields shows a
+discriminating effect.
+
+**Claim**: A field difference in the CATapDescription other than
+`isPrivate` and `muteBehavior` discriminates pass from fail. Candidate
+fields: `description.name`, `description.isExclusive` (explicit
+false vs unset).
+
+**Type**: behavior-inferred. Not source-grounded.
+
+**Auxiliaries**:
+- Setting `description.name` to a non-empty string has
+  HAL-observable effects on whether AudioDeviceStart succeeds.
+- Or: `description.isExclusive = false` explicitly differs from
+  leaving it unset (both should resolve to `false`, but if Swift
+  bridges nil/unset differently, the HAL might see different bits).
+
+**Would falsify H11**:
+- EXP-029 minimal-reader succeeds with the same tap description
+  (production's createTap), refuting H11 (because the same fields
+  would be set).
+- A follow-up experiment that ELIMINATES name and isExclusive
+  explicit-set still fails.
+
+#### H12 — Existing AVAudioEngine instance holds HAL state that blocks the new aggregate (REFUTED 2026-05-28 by EXP-029)
+
+**Refutation**: Both EXP-029 paths run inside the same AppViewModel
+with the same live AVAudioEngine instance (instantiated at app
+launch, with graph attached). Production path uses the engine
+directly; Reader test ignores the engine but the instance exists.
+Both pass. The engine instance's existence isn't the blocker.
+**Auxiliaries**: AppViewModel.init had run and the engine
+property was populated before either button was pressed.
+**Resurrection condition**: a future experiment in a fresh
+process (no app-level engine) shows different behaviour from this
+process's behaviour.
+
+**Claim**: `AVAudioEngine()` (or its lazy IO AU initialization
+triggered by any earlier access like `engine.mainMixerNode`)
+acquires HAL state at AppViewModel init time (or graph.attach
+time). That state then prevents `AudioDeviceStart` on a separately-
+created aggregate.
+
+**Type**: behavior-inferred. Differs from H10 in that H10 blames the
+specific `engine.attach(sourceNode)` call in `CaptureController.start`;
+H12 blames any earlier engine state acquisition (e.g., the
+`engine.mainMixerNode` access at app init when restoring the graph).
+
+**Auxiliaries**:
+- `AVAudioEngine()` instantiation alone (no method calls) does not
+  acquire HAL state.
+- BUT `engine.mainMixerNode` accessor DOES trigger lazy IO AU
+  creation (verifiable by reading the AVAudioEngine implementation
+  or by direct experiment).
+- The graph attach at AppViewModel init time wires the effect chain
+  THROUGH mainMixerNode, which means mainMixerNode has been touched
+  before any user Start.
+
+**Would falsify H12**:
+- EXP-029 minimal-reader (which runs inside AppViewModel, with the
+  engine instance already initialized + graph attached) passes.
+  Then the engine instance / graph state isn't blocking.
+- Or: a variant test in a fresh process with NO graph attachment
+  succeeds, but production STILL fails — that would point at the
+  graph attach, not the engine instantiation.
+
+#### H14 — Combination of multiple D-differences, not any single one (REFUTED 2026-05-28 by EXP-029)
+
+**Refutation**: Both EXP-029 paths use IDENTICAL CATapDescription
+field combinations (production uses `coreAudio.createTap`; Reader
+test does too — see code path in `AppViewModel.performReaderTest`)
+and IDENTICAL aggregate description dictionaries, AND both pass.
+There is no D-combination that distinguishes pass from fail in
+this dataset. **Auxiliaries**: the two `coreAudio.createTap` calls
+have identical field assignments by construction. **Resurrection
+condition**: a future experiment shows a specific D-combination
+discriminating pass from fail.
+
+**(see superseded entry below for original claim)**
+
+#### H14-original — Combination of multiple D-differences, not any single one
+
+**Claim**: None of D1–D7 is sufficient on its own. The cause is a
+specific combination (e.g., `isPrivate=true` + `name` set + engine
+attached).
+
+**Type**: behavior-inferred. The "this is the conjunction" theory.
+
+**Auxiliaries**:
+- Each individual difference IS observable in some path that passes.
+- The HAL applies stricter checks when multiple flags align in a
+  particular way.
+
+**Would falsify H14**:
+- Each of D1–D7 alone discriminates pass/fail in a clean
+  single-variable test. (Lots of experiments to prove this.)
+
+**Time budget**: H14 is the residual hypothesis if H9–H13 are all
+individually falsified. Don't budget specifically; iterate on H9–H13
+first.
 
 #### H1 — `pinEngineOutputToDefault` is the upstream blocker
 
@@ -1973,6 +2323,357 @@ discarded by the OS"). H6's "deferred-active" status escalates to
 **active blocker** because Outcome D is its user-level
 manifestation.
 
+### EXP-029 — Instrumented A/B with minimal-reader control (PRE-REGISTERED)
+
+**Status**: pre-registered; run pending
+**Date**: 2026-05-28 (this session)
+**Author**: current session
+
+**Why this exists**: EXP-027 and EXP-028 (below) both produced
+`AudioDeviceStart returned 1852797029` ('nope', =
+`kAudioHardwareIllegalOperationError`). EXP-028 was framed as "the
+muteBehavior fix" with a confident A/B/C prediction; the actual
+outcome (still 'nope') is none of A/B/C — outside the predicted
+space. The deeper problem is that the failing code path has almost
+zero observability: the log records "AudioDeviceStart returned <n>"
+and nothing else about the tap, the aggregate, the engine, or the
+HAL state at the moment of failure. This experiment adds the
+observability + a minimal control so we can adjudicate between
+candidate hypotheses instead of guessing.
+
+**Question 1**: Does a `TapIOProcReader` started WITHOUT any
+`AVAudioEngine.attach(sourceNode)` reach `AudioDeviceStart=0`? I.e.,
+isolate the production failure from any engine entanglement.
+
+**Question 2**: What observable signal differs between EXP-026's
+working AudioDeviceStart=0 path and the failing production path?
+
+**Hypotheses under test** (see hypothesis ledger H9–H14 below):
+- H10 (engine.attach pre-empts) — predicts minimal-reader control
+  succeeds, production fails. Falsified if both succeed or both fail.
+- H9 (isPrivate=true is the cause) — predicts both fail, because both
+  use `coreAudio.createTap` which sets `isPrivate=true`. Falsified if
+  either succeeds. (Disambiguated from H10 only by a follow-up that
+  flips isPrivate.)
+- H12 (existing AVAudioEngine instance holds HAL state) — predicts
+  both fail, since both run inside the AppViewModel whose AVAudioEngine
+  was instantiated at init. Falsified by H10's success of the
+  minimal-reader (the engine instance is unchanged between the two
+  paths in EXP-029).
+- H13 (leaked HAL state from prior runs) — predicts both fail and
+  remain failing across app restarts. Falsified by either succeeding,
+  or by a reboot-then-retry succeeding.
+
+**Pre-registered outcomes** (predict THEN run):
+
+- **Outcome E** — minimal-reader passes (`AudioDeviceStart=0`,
+  IOProc fires ≥10 in 5s, frames > 0), production fails. **H10
+  confirmed.** Engine.attach pre-empts the aggregate's start path on
+  macOS 26.3. Fix: move `engine.attach(sourceNode)` to AFTER
+  `reader.start()`, or otherwise decouple the engine state from the
+  HAL state at start time. *Probability estimate*: ~45%.
+
+- **Outcome F** — both fail with identical `AudioDeviceStart`
+  return. The detailed log will reveal which observable differs
+  from EXP-026. The most likely differences are tap description
+  fields (H9 if `isPrivate`, H11 if other). Next experiment is
+  bisecting field-by-field. *Probability estimate*: ~30%.
+
+- **Outcome G** — both pass. The bug has self-healed between
+  EXP-028 and EXP-029. Suspicious — should investigate environment
+  changes (BT state, HAL daemon restart, system load). Re-run to
+  confirm reproducibility before declaring victory. *Probability
+  estimate*: ~10%.
+
+- **Outcome H** — minimal-reader fails but production passes. Would
+  refute everything I've assumed about the relationship between the
+  two paths. Strong frame-check trigger. *Probability estimate*:
+  ~5%.
+
+- **Outcome I** — observable diff reveals something I haven't
+  hypothesized (e.g., aggregate stream counts differ from EXP-026,
+  or the tap description has a field I'm not tracking). *Probability
+  estimate*: ~10%.
+
+**Variables held constant**:
+- Same build, same source process (Safari Graphics and Media), same
+  BT headphones, same time window (back-to-back invocations).
+
+**Variables changed** (vs EXP-028):
+- TapIOProcReader gains a comprehensive observability block (see
+  "Observability layer" below) — every step logs its inputs, outputs,
+  and the readback of relevant HAL properties.
+- A new debug-panel button ("Reader test") runs a `TapIOProcReader`
+  for 5 s with NO `engine.attach` and NO graph wiring. Logs the same
+  observability block. Counts IOProc fires and ring samples. This is
+  the minimal control.
+- The production Start button still attempts the full path; its
+  observability block surfaces the same fields.
+
+**Auxiliaries held** (any failure of these undermines the conclusion):
+- The observability logging itself is not the cause of any failure
+  (it's all `os_log` writes; should be inert).
+- The minimal-reader button uses the SAME `TapIOProcReader`,
+  `CoreAudioInterface`, and tap creation code as production. The
+  ONLY difference is the absence of `engine.attach(sourceNode)`.
+- The user's BT state, TCC grants, and the source process are
+  identical in both back-to-back tests.
+
+**Observability layer** (what gets logged at each step):
+1. Pre-tap-creation: full CATapDescription field dump (uuid, name,
+   isPrivate, isExclusive, isMixdown, isMono, muteBehavior, processes,
+   deviceUID, stream).
+2. Post-tap-creation: AudioHardwareCreateProcessTap status, tap ID,
+   readback of isPrivate + muteBehavior from the live tap object.
+3. Pre-aggregate-creation: full aggregate dictionary dump.
+4. Post-aggregate-creation: AudioHardwareCreateAggregateDevice
+   status, aggregate ID, stream count for input + output scopes.
+5. Pre-tap-list-set: payload type and tap UID array contents.
+6. Post-tap-list-set: AudioObjectSetPropertyData status, stream count
+   readback (should be input=1 now).
+7. Post-IOProc-create: AudioDeviceCreateIOProcID status, IOProc ID.
+8. Pre-AudioDeviceStart: aggregate's `kAudioDevicePropertyDeviceIs-
+   Running`, engine.isRunning (if engine exists), enumeration of
+   process taps in HAL (for leak detection per H13).
+9. Post-AudioDeviceStart: status with FourCC translation (so
+   1852797029 prints as 'nope').
+
+**Method**:
+1. Apply the observability layer and the new "Reader test" button
+   to the code. No other code changes.
+2. Build, ship to user.
+3. User: with Safari playing, press "Reader test" (minimal control).
+   Wait 6 s for the verdict line.
+4. User: press main Start (production). Capture the resulting error.
+5. Both paths produce a structured log block. Compare side by side
+   to identify the divergent observable.
+
+**Artifacts**:
+- Build CDHash `263e524def28a4cd0026688014df74803abb69c0`
+  (instrumentation only; no functional code changes vs EXP-028 except
+  for the addition of the Reader test button and logger plumbing).
+- `~/Library/Logs/tap-n-filter/app.log` entries 00:37:20 EDT
+  (production path) and 00:43:18 EDT (Reader test).
+- Tagged log lines: every step's log entry starts with
+  `[EXP-029.<phase>]` for grep-ability.
+
+**Observations**:
+
+User ran them in reverse order (production first, then Reader test
+after a 5-minute gap with capture fully idle in between). Both
+sequential. Diff of the two log blocks:
+
+| Observable | Production (00:37:20) | Reader test (00:43:18) | Diff? |
+|---|---|---|---|
+| Path tag | `PRODUCTION (CaptureController.start)` | `RDRTEST (TapIOProcReader, NO engine.attach)` | by design |
+| `audioProcessID` | 129 (Safari) | 129 (Safari) | no |
+| `tap.create` status | OK, `tapID=154` | OK, `tapID=154` (HAL recycled the ID after teardown) | no |
+| Tap stream format | 48 kHz × 2 ch Float32 | 48 kHz × 2 ch Float32 | no |
+| Ring capacity | 96 000 frames/channel | 96 000 frames/channel | no |
+| `engine.preattach` outputFormat | 44.1 kHz × 2 ch (A2DP) | n/a (no engine) | n/a |
+| `engine.postattach` engine.isRunning | false | n/a | n/a |
+| `prestart.taps` count | 1 (our own) | 1 (our own) | no |
+| Aggregate dictionary | identical key set (SubDeviceList=[] + MasterSubDevice=0 + IsPrivate=true; no TapList; no TapAutoStart) | identical | no |
+| `agg.create` | OK, `aggregateID=162` | OK, `aggregateID=155` (fresh) | only IDs |
+| `agg.streams.pre` | input=0 output=0 | input=0 output=0 | no |
+| `taplist.set` | OK | OK | no |
+| `agg.streams.post` | **input=1 output=0** | **input=1 output=0** | no |
+| `ioproc.create` | OK | OK | no |
+| `prestart.agg.isRunning` | false | false | no |
+| **`AudioDeviceStart` return** | **0 (success)** | **0 (success)** | **no** |
+| IOProc delivery in 5 s (Reader test only) | n/a | 196 608 frames, 99 % non-zero, peak 0.736 | n/a |
+| Post-start `outputNode` (engine path only) | 16 kHz × 1 ch (HFP route-switch fires 65 ms after AudioDeviceStart) | n/a | n/a |
+
+User-reported audible behaviour:
+- Production: audio audible through BT headphones in HFP-quality mode.
+  EQ + reverb parameter changes audibly responsive (verified by a
+  ~30-second slider-sweep block in the log from 00:37:40 → 00:38:00).
+- Reader test: Safari audio went silent for the 5 s test window (tap
+  with `.mutedWhenTapped` is active and being read → OS mutes the
+  source). No processed audio reached the user (no engine in the
+  picture). 99.5 % non-zero ring samples confirm the tap delivered
+  real Safari audio into the buffer.
+- Reverb-bypass toggle during the production run caused audio to cut
+  out entirely (user-reported; not present in the log because
+  `setBypass` is not currently instrumented).
+
+**Conclusion**: **Outcome G with a twist** (and a partial **Outcome
+I** for HFP and bypass).
+
+Both pre-registered paths passed `AudioDeviceStart=0`. This is closer
+to Outcome G ("both pass, suspicious") than to E or F because the
+prior EXP-027 / EXP-028 runs failed deterministically with the same
+production code path. The difference between EXP-028 (fail) and
+EXP-029 (pass) is *not* a functional code change — only logging was
+added and a new diagnostic button. The HAL state between sessions is
+the most plausible discriminator.
+
+Direct evidence for each refuted hypothesis:
+- **H10 (engine.attach pre-empts) — refuted.** Production includes
+  `engine.attach(sourceNode)` 18 ms before `reader.start()` (per the
+  `engine.postattach` log line at 00:37:20.377). Production
+  AudioDeviceStart returns 0. Reader test omits `engine.attach`
+  entirely. Both return 0. The variable I expected to discriminate
+  doesn't.
+- **H9 (isPrivate=true) — refuted.** Both paths use
+  `coreAudio.createTap` which sets `isPrivate=true`. Both pass. The
+  field is not load-bearing.
+- **H11 (other field difference) — refuted.** Same as H9; both
+  paths use the same `CATapDescription` construction.
+- **H12 (existing engine instance) — refuted.** Production uses the
+  live `AppViewModel.engine` and passes. The engine instance does
+  not block the aggregate's start.
+- **H14 (combination) — refuted.** No combination of D-differences
+  discriminates pass/fail when the HAL is clean.
+
+What's *left*:
+- **H13 (leaked HAL state) — survives, unconfirmed.** Both EXP-029
+  runs had `prestart.taps count=1` with the ID being our own
+  freshly-created tap. The HAL was in a clean state. EXP-027 /
+  EXP-028 must have had different prestart.taps content (orphans
+  from prior crashes) — but those runs had no instrumentation so we
+  can't verify directly. Confirmation requires deliberate
+  reproduction: force-kill the app mid-capture, restart, observe
+  prestart.taps count > 1 AND AudioDeviceStart fail.
+- **H15 (HFP forced by capture) — new active, source-grounded.**
+  Production's `outputNode` was at 44.1 kHz × 2 ch (A2DP) at
+  `engine.preattach` time. 65 ms after `AudioDeviceStart returned 0`,
+  the `AVAudioEngineConfigurationChange` fires with
+  `outputNode=16000Hz × 1ch` (HFP rate). The architectural refactor
+  fixed the AVAudioEngine-side problem, but the macOS routing layer
+  still forces BT into HFP whenever a process-tap IOProc is active.
+  Codex flagged this at the start of the investigation as
+  intrinsic-to-the-platform; the prediction is now empirically
+  confirmed in our app.
+- **H16 (bypass toggle cuts audio) — new active, unlogged.** The
+  `setBypass` action is invisible to the file log; the
+  graph-mutation path may or may not log; the engine-restart-on-
+  config-change path that Codex P1 introduced may interact with
+  it. Cannot articulate a sharper hypothesis until we instrument.
+
+**Follow-ups**:
+- Step 2 (planned): make H13 *deterministically reproducible* and
+  add defensive cleanup at `CaptureController.init` (or
+  AppViewModel.init) that enumerates orphan process taps tagged with
+  our `tap-n-filter.aggregate.*` UID prefix and destroys them.
+- Step 3 (planned): instrument `setBypass`, `Graph.mutate`,
+  SourceNode `attach/detach`, and the engine-restart-on-config-change
+  branch. Reproduce H16 with logs flowing.
+- Step 4 (decision): document H15 as an OS-layer limitation in an
+  ADR or uncertainty entry. Decide whether V0.1 ships with the
+  HFP-on-BT caveat or blocks on a HAL-plugin investigation (V0.2
+  scope).
+
+### EXP-028 — muteBehavior `.muted` → `.mutedWhenTapped` (REFUTED)
+
+**Status**: completed, refuted
+**Date**: 2026-05-28 00:16 EDT
+**Author**: current session
+
+**Question**: Does flipping the tap's `muteBehavior` from `.muted`
+(ADR-014's original choice) to `.mutedWhenTapped` (EXP-026's choice)
+get `AudioDeviceStart` to return 0 in production?
+
+**Hypothesis at run time**: H8 — `.muted` is incompatible with
+direct-IOProc `AudioDeviceStart` in our TCC context. *Methodological
+note*: H8 was framed as a single-variable hypothesis even though at
+least 6 other observable differences existed between EXP-026 (works)
+and EXP-027 (fails). I noted in passing that audiotee uses `.muted`
+from Terminal and works, which should have lowered confidence in H8
+*before* running EXP-028. I did not let it.
+
+**Pre-registered outcomes** (at the time):
+- A: AudioDeviceStart succeeds, audio plays, effects audible. H8
+  confirmed.
+- B: Still `nope`. H8 refuted; cause is something else.
+- C: AudioDeviceStart succeeds but downstream issues.
+
+**Variables changed (vs EXP-027)**:
+- `CoreAudioInterface.createTap` now sets
+  `description.muteBehavior = .mutedWhenTapped` (was `.muted`).
+- Build CDHash changed from `c9d8bc645954839b...` to
+  `6808f106a8247222...`.
+
+**Observations**: `AudioDeviceStart returned 1852797029`.
+Identical failure mode to EXP-027. No new log lines (no observability
+was added).
+
+**Conclusion**: **Outcome B — H8 refuted.** The muteBehavior change
+alone does not get AudioDeviceStart to return 0. The cause is one or
+more of the other 6 differences between EXP-026 and EXP-028.
+
+**Methodological lesson**: I had no observability to back-pocket if
+the prediction was wrong, and no plan for what to do next. This
+exhausted a turn for one bit of information (`.mutedWhenTapped` is
+not the sole cause) when, with proper instrumentation, the same
+trial could have eliminated 3-4 hypotheses at once.
+
+**Follow-ups**: → EXP-029 (observability + minimal control). Do NOT
+re-attempt single-variable fixes until EXP-029 reports.
+
+### EXP-027 — First live test of merged refactor (REFUTED H7-was-the-only-issue)
+
+**Status**: completed, refuted (the implicit assumption that the
+refactor alone would unblock live audio).
+**Date**: 2026-05-28 00:09 EDT
+**Author**: current session
+
+**Question**: Does the merged Phase 1 rework (ADR-018,
+`TapIOProcReader` + `AVAudioSourceNode`, all V1-architecture code
+deleted) produce audible processed audio through BT headphones on
+macOS 26.3?
+
+**Hypothesis at run time**: H7 (unified-IO-AU silent-discard) is the
+ONLY remaining barrier; with the architecture refactor, capture
+works end-to-end. EXP-026 had already source-grounded that the
+direct-IOProc pattern fires correctly with non-zero samples.
+
+**Pre-registered outcomes** (at the time):
+- A: Clear full-fidelity audio, effects audibly responsive. FC-003
+  validated; Phase 4 ready.
+- B: Degraded audio (HFP-style or distorted). Something specific
+  still wrong.
+- C: Silence. Architectural fix didn't fix anything. Catastrophic.
+- D: App crashes/freezes.
+
+**Observations** (from `~/Library/Logs/tap-n-filter/app.log`):
+```
+00:09:34.717 [WARNING] lastError set: Engine configuration failed: AudioDeviceStart returned 1852797029
+00:09:34.740 [INFO]    captureState: idle -> starting
+00:09:34.740 [INFO]    captureState: starting -> failed(...AudioDeviceStart returned 1852797029...)
+```
+
+The user pressed Start; capture transitioned to `starting`, then
+immediately to `failed`. No intermediate logging captures what the
+tap, aggregate, or IOProc actually did.
+
+**Conclusion**: **None of the pre-registered outcomes A/B/C/D
+match.** What actually happened is an entirely new failure mode in
+the new architecture: `AudioDeviceStart` returns `kAudioHardware-
+IllegalOperationError` (1852797029 = 'nope'). The refactor did not
+hit AVAudioEngine's unified-IO-AU bug — it didn't even get to a
+running engine.
+
+This **does not refute H7** (unified-IO-AU is still believed broken
+in v1). It refutes the implicit assumption that the architecture
+refactor was sufficient to unblock live audio — there's a new bug
+in the refactor itself, specific to running the EXP-026-proven
+pattern inside the production CaptureController + AppViewModel
+context.
+
+The verification subagent's PASS was correct about its scope
+(unit tests, code shape, fake-HAL behavior). The integration test
+(TI.1) was an accepted-deviation because the autonomous run
+couldn't produce a real audio source. So this failure mode was
+outside the verification's evidence frame; not the verifier's fault.
+
+**Failure mode**: I (this session) jumped immediately to a fix
+(EXP-028 muteBehavior) without enumerating the alternative
+differences between EXP-026 and EXP-027. The single-variable
+framing of H8 was the methodological error.
+
+**Follow-ups**: → EXP-028 (refuted) → EXP-029 (the proper response).
+
 ### EXP-026 — Audiotee EXACT pattern with SubDeviceList + MasterSubDevice keys
 
 **Date**: 2026-05-27 22:30 EDT (pre-registration; run pending)
@@ -2843,3 +3544,26 @@ adapted (with the IOProc-no-fire bug fixed) as the seed.
   underlying bugs. Composed a fresh `/goal` prompt (~3525 chars,
   under the 4000 limit) referencing the above; the user runs it
   in a cold-context session to execute the refactor autonomously.
+- 2026-05-28 00:09 EDT — ran EXP-027 (first live test of merged
+  refactor): `AudioDeviceStart returned 1852797029` ('nope').
+  Refuted the implicit "refactor alone unblocks audio" assumption.
+  Reactive jump to EXP-028 was the methodological error.
+- 2026-05-28 00:16 EDT — ran EXP-028 (muteBehavior `.muted` →
+  `.mutedWhenTapped`): identical 'nope' failure. **H8 refuted.**
+  No observability in the failing path; user pushed back on the
+  reactive single-variable fix approach.
+- 2026-05-28 (this session) — pre-registered EXP-029 with proper
+  hypothesis discipline (H9–H14 + falsification conditions),
+  designed observability layer (`[EXP-029.*]` tagged log block at
+  every HAL step), restored a minimal-reader control button in
+  DebugPanel. Built CDHash `263e524def28a4cd...`.
+- 2026-05-28 00:37 / 00:43 EDT — ran EXP-029. **Both production and
+  Reader test pass** with `AudioDeviceStart=0`, identical observables
+  at every step except by-design differences (`engine.attach` absent
+  in Reader test). H9, H10, H11, H12, H14 all refuted. H13 (leaked
+  HAL state) survives as the leading explanation for EXP-027 /
+  EXP-028 failures. Two new active hypotheses: H15 (HFP forced by
+  capture, source-grounded) and H16 (bypass toggle cuts sound,
+  unlogged). Filled in EXP-029's Artifacts / Observations /
+  Conclusion sections. Updated Status block. Moved H9–H12 + H14 to
+  Inactive with refutation entries.

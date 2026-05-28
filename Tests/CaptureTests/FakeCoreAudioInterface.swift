@@ -181,4 +181,23 @@ final class FakeCoreAudioInterface: CoreAudioInterface {
         availableAudioProcessesCallCount += 1
         return try availableAudioProcessesResult()
     }
+
+    // MARK: Observability helpers (EXP-029)
+    //
+    // No-op fakes. Tests that want to assert on diagnostic queries can
+    // override these by subclassing or adding closure properties. For
+    // the existing unit-test surface these defaults are fine.
+
+    func streamCount(deviceID: AudioDeviceID, scope: AudioObjectPropertyScope) -> Int {
+        // Plausible default for a tap-only aggregate: 1 input, 0 output.
+        return scope == kAudioObjectPropertyScopeInput ? 1 : 0
+    }
+
+    func deviceIsRunning(deviceID: AudioDeviceID) -> Bool {
+        return false
+    }
+
+    func enumerateProcessTaps() -> [AudioObjectID] {
+        return []
+    }
 }

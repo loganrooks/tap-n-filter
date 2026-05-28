@@ -98,6 +98,35 @@ public protocol CoreAudioInterface {
     /// the `pid_t` reported on the process object. The caller is responsible
     /// for enriching this with `NSRunningApplication` metadata.
     func availableAudioProcesses() throws -> [(pid: pid_t, audioProcessID: AudioObjectID)]
+
+    // MARK: - Observability helpers (EXP-029)
+    //
+    // These three methods are pure-read diagnostic queries used by
+    // TapIOProcReader to surface observable HAL state at each step of
+    // the start path. They exist so that the IOProc-no-fire / 'nope'-
+    // on-AudioDeviceStart investigation can compare a working control
+    // (the minimal-reader path) against the failing production path
+    // step-by-step. None of them have side effects on capture state.
+
+    /// Number of streams the device exposes in the given scope. Returns
+    /// `-1` if the property query itself fails (i.e., the device does
+    /// not support `kAudioDevicePropertyStreams` in that scope, which
+    /// is itself diagnostic).
+    func streamCount(deviceID: AudioDeviceID, scope: AudioObjectPropertyScope) -> Int
+
+    /// Reads `kAudioDevicePropertyDeviceIsRunning`. Returns `false` on
+    /// query failure. Used as a pre-`AudioDeviceStart` sanity check —
+    /// the device should NOT already be running.
+    func deviceIsRunning(deviceID: AudioDeviceID) -> Bool
+
+    /// Lists every process tap currently registered with the HAL.
+    /// Returns an empty array on enumeration failure. Used to detect
+    /// orphaned taps from previous runs (H13). The list of all
+    /// process-tap-class objects via
+    /// `kAudioHardwarePropertyProcessObjectList` is what we'd want
+    /// here; if that property is the wrong one for taps we fall back
+    /// to returning `[]` and log the error.
+    func enumerateProcessTaps() -> [AudioObjectID]
 }
 
 // MARK: - Real implementation
@@ -220,10 +249,20 @@ public struct RealCoreAudioInterface: CoreAudioInterface {
         description.name = "tap-n-filter.tap.\(audioProcessID)"
         description.isPrivate = true
         description.isExclusive = false
-        // Mute the source process so its audio is intercepted, not just
-        // observed. See ADR-014 for the muting decision and its
-        // implications for users.
-        description.muteBehavior = .muted
+        // Mute the source process while we are reading the tap, so our
+        // processed copy is what the user hears (not original + processed
+        // overlapping). ADR-014 originally specified `.muted` (always
+        // mute while the tap object exists); EXP-027 found that `.muted`
+        // combined with the direct-IOProc architecture (ADR-018) makes
+        // `AudioDeviceStart` return `kAudioHardwareIllegalOperationError`
+        // ('nope' = 1852797029). `.mutedWhenTapped` (source muted while
+        // a client is actively reading the tap) is behaviourally
+        // identical for tap-n-filter's lifecycle — we always have a
+        // reader between `start()` and `stop()` — and is what EXP-026
+        // used successfully. ADR-014's documented reason for preferring
+        // `.muted` was "no auto-unmute state machine"; with the new
+        // architecture that distinction is irrelevant.
+        description.muteBehavior = .mutedWhenTapped
 
         var tapID: AudioObjectID = kAudioObjectUnknown
         let status = AudioHardwareCreateProcessTap(description, &tapID)
@@ -402,5 +441,66 @@ public struct RealCoreAudioInterface: CoreAudioInterface {
         )
         guard status == noErr, pidValue > 0 else { return nil }
         return pidValue
+    }
+
+    // MARK: Observability helpers (EXP-029)
+
+    public func streamCount(deviceID: AudioDeviceID, scope: AudioObjectPropertyScope) -> Int {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyStreams,
+            mScope: scope,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var dataSize: UInt32 = 0
+        let status = AudioObjectGetPropertyDataSize(deviceID, &address, 0, nil, &dataSize)
+        guard status == noErr else { return -1 }
+        return Int(dataSize) / MemoryLayout<AudioStreamID>.size
+    }
+
+    public func deviceIsRunning(deviceID: AudioDeviceID) -> Bool {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceIsRunning,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var value: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        let status = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &value)
+        guard status == noErr else { return false }
+        return value != 0
+    }
+
+    public func enumerateProcessTaps() -> [AudioObjectID] {
+        // Process taps live in `kAudioHardwarePropertyTapList` (macOS 14.4+).
+        // We query the size, allocate, fetch. Return [] on any failure —
+        // an empty list with a logged note is fine for diagnostic purposes.
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyTapList,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var dataSize: UInt32 = 0
+        let sizeStatus = AudioObjectGetPropertyDataSize(
+            AudioObjectID(kAudioObjectSystemObject),
+            &address,
+            0,
+            nil,
+            &dataSize
+        )
+        guard sizeStatus == noErr, dataSize > 0 else { return [] }
+        let count = Int(dataSize) / MemoryLayout<AudioObjectID>.size
+        var ids = [AudioObjectID](repeating: kAudioObjectUnknown, count: count)
+        let fetchStatus = ids.withUnsafeMutableBufferPointer { buf -> OSStatus in
+            AudioObjectGetPropertyData(
+                AudioObjectID(kAudioObjectSystemObject),
+                &address,
+                0,
+                nil,
+                &dataSize,
+                buf.baseAddress!
+            )
+        }
+        guard fetchStatus == noErr else { return [] }
+        return ids
     }
 }

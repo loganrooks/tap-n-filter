@@ -50,6 +50,13 @@ public final class CaptureController: CaptureControllerProtocol, @unchecked Send
     private let coreAudio: CoreAudioInterface
     private let lock = NSRecursiveLock()
 
+    /// Diagnostic logger passed through to `TapIOProcReader`. Default is
+    /// a no-op; the app's view model injects a closure that writes to
+    /// both `os.Logger` and the file log so EXP-029-style diagnostic
+    /// breadcrumbs survive across runs and can be diffed against the
+    /// minimal-reader control.
+    private let log: (String) -> Void
+
     /// Active capture resources. Set during `running` and cleared during
     /// `stopping`. The reader owns the tap + aggregate + IOProc; the
     /// source node owns the engine-side render block.
@@ -63,8 +70,12 @@ public final class CaptureController: CaptureControllerProtocol, @unchecked Send
 
     // MARK: Init
 
-    public init(coreAudio: CoreAudioInterface = RealCoreAudioInterface()) {
+    public init(
+        coreAudio: CoreAudioInterface = RealCoreAudioInterface(),
+        log: @escaping (String) -> Void = { _ in }
+    ) {
         self.coreAudio = coreAudio
+        self.log = log
         self.subject = CurrentValueSubject(.idle)
     }
 
@@ -135,13 +146,15 @@ public final class CaptureController: CaptureControllerProtocol, @unchecked Send
         lock.unlock()
 
         do {
+            log("[EXP-029.path] PRODUCTION (CaptureController.start)")
             let resolvedAudioProcessID = try coreAudio.audioProcessID(forPID: source.pid)
 
             // The reader owns the tap; it is the new home for tap creation,
             // tap-format probing, and the aggregate/IOProc machinery.
             let reader = try TapIOProcReader(
                 audioProcessID: resolvedAudioProcessID,
-                coreAudio: coreAudio
+                coreAudio: coreAudio,
+                log: log
             )
             var didFinishSuccessfully = false
             defer {
@@ -159,7 +172,16 @@ public final class CaptureController: CaptureControllerProtocol, @unchecked Send
                     audioBufferList: audioBufferList
                 )
             }
+            log(
+                "[EXP-029.engine.preattach] engine.isRunning=\(engine.isRunning) "
+                + "outputFormat=\(engine.outputNode.outputFormat(forBus: 0).sampleRate)Hz×\(engine.outputNode.outputFormat(forBus: 0).channelCount)ch "
+                + "inputFormat=\(engine.inputNode.outputFormat(forBus: 0).sampleRate)Hz×\(engine.inputNode.outputFormat(forBus: 0).channelCount)ch"
+            )
             engine.attach(sourceNode)
+            log(
+                "[EXP-029.engine.postattach] engine.isRunning=\(engine.isRunning) "
+                + "(attach is supposed to be lightweight; H10 hypothesis says this triggers lazy IO-AU init)"
+            )
             var didAttachSourceNode = true
             defer {
                 if !didFinishSuccessfully, didAttachSourceNode {

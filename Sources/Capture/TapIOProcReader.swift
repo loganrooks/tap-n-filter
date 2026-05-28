@@ -37,6 +37,14 @@ import Foundation
 /// The lifetime invariant — "the reader outlives every IOProc
 /// invocation" — is enforced by `stop()` calling `stopDevice` (which is
 /// synchronous w.r.t. the IOProc thread) before destroying anything.
+/// EXP-029 diagnostic logger signature. Called at each observable step
+/// of the tap → aggregate → IOProc → AudioDeviceStart path with a
+/// pre-formatted message. The default value is a no-op so production
+/// users that don't pass one pay nothing. The line format is structured
+/// (`tag=value` pairs) so it can be grepped/diffed across runs.
+@available(macOS 14.4, *)
+public typealias TapIOProcReaderLogger = (String) -> Void
+
 @available(macOS 14.4, *)
 public final class TapIOProcReader: @unchecked Sendable {
 
@@ -53,6 +61,10 @@ public final class TapIOProcReader: @unchecked Sendable {
     /// (rather than read from `format.channelCount` per IOProc fire) so
     /// the C `@convention(c)` callback can read it cheaply.
     fileprivate let channelCount: Int
+
+    /// Optional diagnostic logger. Called with structured `tag=value`
+    /// messages at each observable step. Default: no-op.
+    private let log: TapIOProcReaderLogger
 
     /// `true` between successful `start()` and the next `stop()`.
     public var isRunning: Bool {
@@ -73,14 +85,34 @@ public final class TapIOProcReader: @unchecked Sendable {
 
     public init(
         audioProcessID: AudioObjectID,
-        coreAudio: CoreAudioInterface
+        coreAudio: CoreAudioInterface,
+        log: @escaping TapIOProcReaderLogger = { _ in }
     ) throws {
         self.audioProcessID = audioProcessID
         self.coreAudio = coreAudio
+        self.log = log
 
-        let tap = try coreAudio.createTap(for: audioProcessID)
+        log("[EXP-029.input] audioProcessID=\(audioProcessID)")
+        log("[EXP-029.tap.create] calling createTap(for:)")
+
+        let tap: AudioObjectID
+        do {
+            tap = try coreAudio.createTap(for: audioProcessID)
+            log("[EXP-029.tap.create] OK tapID=\(tap)")
+        } catch {
+            log("[EXP-029.tap.create] FAIL error=\(error)")
+            throw error
+        }
+
         do {
             let asbd = try coreAudio.tapStreamFormat(for: tap)
+            log(
+                "[EXP-029.tap.format] sampleRate=\(asbd.mSampleRate) "
+                + "channels=\(asbd.mChannelsPerFrame) "
+                + "formatID=\(asbd.mFormatID) "
+                + "formatFlags=\(asbd.mFormatFlags) "
+                + "bytesPerFrame=\(asbd.mBytesPerFrame)"
+            )
             guard asbd.mSampleRate > 0, asbd.mChannelsPerFrame > 0 else {
                 throw CaptureError.engineConfigurationFailed(
                     "tap stream format is degenerate "
@@ -102,7 +134,12 @@ public final class TapIOProcReader: @unchecked Sendable {
             let capacity = max(1, Int(asbd.mSampleRate) * 2)
             self.ring = AudioRingBuffer(channelCount: channels, capacity: capacity)
             self.tapID = tap
+            log(
+                "[EXP-029.ring.alloc] channels=\(channels) capacity=\(capacity) "
+                + "(frames per channel)"
+            )
         } catch {
+            log("[EXP-029.init] FAIL during format probe; destroying tap")
             try? coreAudio.destroyTap(tap)
             throw error
         }
@@ -122,10 +159,18 @@ public final class TapIOProcReader: @unchecked Sendable {
             )
         }
         if aggregateID != nil, ioProcID != nil {
+            log("[EXP-029.start] already running; no-op")
             return
         }
 
+        // Diagnostic: snapshot HAL state BEFORE we touch anything. This
+        // lets us see whether an orphan from a previous run is present
+        // (H13).
+        let preTapEnum = coreAudio.enumerateProcessTaps()
+        log("[EXP-029.prestart.taps] count=\(preTapEnum.count) ids=\(preTapEnum)")
+
         let uid = try coreAudio.tapUID(for: tap)
+        log("[EXP-029.taplist.uid] uid=\(uid)")
         let aggregateUID =
             "tap-n-filter.aggregate.\(audioProcessID).\(UUID().uuidString)"
 
@@ -141,19 +186,55 @@ public final class TapIOProcReader: @unchecked Sendable {
             kAudioAggregateDeviceIsPrivateKey: true,
             kAudioAggregateDeviceIsStackedKey: false,
         ]
+        log(
+            "[EXP-029.agg.desc] name=\"tap-n-filter aggregate \(audioProcessID)\" "
+            + "uid=\(aggregateUID) "
+            + "SubDeviceList=[](empty CFArray) "
+            + "MasterSubDevice=0 "
+            + "IsPrivate=true IsStacked=false "
+            + "TapList=NOT_SET_AT_CREATION TapAutoStart=NOT_SET"
+        )
         let aggregate = try coreAudio.createAggregateDevice(
             description: description as CFDictionary
+        )
+        log("[EXP-029.agg.create] OK aggregateID=\(aggregate)")
+        let preInputStreams = coreAudio.streamCount(
+            deviceID: aggregate,
+            scope: kAudioObjectPropertyScopeInput
+        )
+        let preOutputStreams = coreAudio.streamCount(
+            deviceID: aggregate,
+            scope: kAudioObjectPropertyScopeOutput
+        )
+        log(
+            "[EXP-029.agg.streams.pre] input=\(preInputStreams) "
+            + "output=\(preOutputStreams) (expected before tap list set: 0,0)"
         )
         var didFinishSuccessfully = false
         defer {
             if !didFinishSuccessfully {
+                log("[EXP-029.cleanup] destroying aggregate \(aggregate)")
                 try? coreAudio.destroyAggregateDevice(aggregate)
             }
         }
 
         // Post-set the tap list as CFArray<CFString>. The array-of-dict
         // form does not work here per EXP-026 / audiotee.
+        log("[EXP-029.taplist.set] payload=CFArray<CFString> count=1 uid=\(uid)")
         try coreAudio.setAggregateTapList(aggregate, tapUIDs: [uid] as CFArray)
+        log("[EXP-029.taplist.set] OK")
+        let postInputStreams = coreAudio.streamCount(
+            deviceID: aggregate,
+            scope: kAudioObjectPropertyScopeInput
+        )
+        let postOutputStreams = coreAudio.streamCount(
+            deviceID: aggregate,
+            scope: kAudioObjectPropertyScopeOutput
+        )
+        log(
+            "[EXP-029.agg.streams.post] input=\(postInputStreams) "
+            + "output=\(postOutputStreams) (expected after tap list set: 1,0)"
+        )
 
         let cd = Unmanaged.passUnretained(self).toOpaque()
         let proc = try coreAudio.createIOProcID(
@@ -161,14 +242,28 @@ public final class TapIOProcReader: @unchecked Sendable {
             ioProc: tapIOProcReaderIOProc,
             clientData: cd
         )
+        log("[EXP-029.ioproc.create] OK")
         var didStartDevice = false
         defer {
             if !didFinishSuccessfully && !didStartDevice {
+                log("[EXP-029.cleanup] destroying IOProc ID")
                 try? coreAudio.destroyIOProcID(deviceID: aggregate, ioProcID: proc)
             }
         }
 
-        try coreAudio.startDevice(deviceID: aggregate, ioProcID: proc)
+        let aggIsRunningPre = coreAudio.deviceIsRunning(deviceID: aggregate)
+        log(
+            "[EXP-029.prestart.agg] isRunning=\(aggIsRunningPre) "
+            + "(expected false; AudioDeviceStart will flip it)"
+        )
+
+        do {
+            try coreAudio.startDevice(deviceID: aggregate, ioProcID: proc)
+            log("[EXP-029.start] OK AudioDeviceStart returned 0")
+        } catch {
+            log("[EXP-029.start] FAIL \(error) (FourCC translation: \(Self.fourCCErrorString(error)))")
+            throw error
+        }
         didStartDevice = true
         // From this point any failure path must also call stopDevice
         // before destroying the IOProc ID. There are no remaining
@@ -179,6 +274,31 @@ public final class TapIOProcReader: @unchecked Sendable {
         self.aggregateID = aggregate
         self.ioProcID = proc
         didFinishSuccessfully = true
+    }
+
+    /// Pretty-print an OSStatus-style error as its FourCC. The HAL
+    /// returns its policy/state errors as four-character codes packed
+    /// into Int32. 1852797029 = 0x6E6F7065 = 'nope' =
+    /// `kAudioHardwareIllegalOperationError`, for instance.
+    private static func fourCCErrorString(_ error: Error) -> String {
+        let captureError = error as? CaptureError
+        let status: OSStatus
+        switch captureError {
+        case let .engineConfigurationFailed(message):
+            // Extract trailing integer from "AudioDeviceStart returned N".
+            let parts = message.split(separator: " ")
+            if let last = parts.last, let parsed = OSStatus(last) {
+                status = parsed
+            } else {
+                return "(no status in message: \(message))"
+            }
+        default:
+            return "(not an engineConfigurationFailed)"
+        }
+        var s = status.bigEndian
+        let bytes = withUnsafeBytes(of: &s) { Array($0) }
+        let str = String(bytes: bytes, encoding: .ascii) ?? "?"
+        return "\(status) ('\(str)')"
     }
 
     /// Stop the IOProc, destroy the IOProc ID, destroy the aggregate,
