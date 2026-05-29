@@ -135,9 +135,14 @@ Shipping V0.1 against current macOS is more useful than waiting.
 
 **Enabled:**
 
-- AVAudioEngine output stays on the user's default output device. No HFP
-  trigger on Bluetooth; BT stays in A2DP at 44.1 kHz × 2 ch with effects
-  audibly applied.
+- AVAudioEngine output stays on the user's default output device, which
+  removes the *engine-output-rebinding* HFP trigger. **Superseded in part
+  (2026-05-29 — see ADR-019 / H15):** this is necessary but not sufficient.
+  A second, independent trigger survives — an active process tap registers
+  as a running input, and macOS forces HFP when the Bluetooth device is
+  also the system default *input*. So Bluetooth does **not** reliably stay
+  in A2DP on this architecture alone; ADR-019's default-input switch is what
+  keeps it in A2DP at 44.1 kHz × 2 ch during capture.
 - The IOProc is push-driven by the tap device's clock, independent of
   the engine's render pull. Decoupling means engine reconfigurations
   don't stall capture and tap events don't stall the engine.

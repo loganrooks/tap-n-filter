@@ -80,12 +80,14 @@ State handling:
   and restores the saved input if capture is not active.
 - On a clean stop, the app restores the saved input and clears the marker.
 
-The implementation, including the discriminating prediction and its risky
-branch, is pre-registered as **EXP-037** before any device-switch code is
-written, per `docs/governance/debugging-protocol.md`. This ADR records the
-decision; EXP-037 records the intervention. The race with a user who is
-actively using the Bluetooth microphone (see Risks) is the open design
-point EXP-037 settles.
+The implementation **will be** pre-registered as **EXP-037** — including
+the discriminating prediction and its risky branch — *before* any
+device-switch code is written, per `docs/governance/debugging-protocol.md`.
+That pre-registration is the gate, and as of this ADR it does not yet exist
+(no `### EXP-037` entry in the notebook): this ADR records the *decision*;
+EXP-037 will record the *intervention* when the settings PR implements it.
+The race with a user who is actively using the Bluetooth microphone (see
+Risks) is the open design point EXP-037 will settle.
 
 The README caveat is retained as the fallback for the toggle-off case and
 for Macs with no usable non-Bluetooth input.
@@ -163,7 +165,8 @@ who would rather we never touch their input device.
 
 - `docs/investigations/2026-05-audio-pipeline.md` — H15 (refined),
   EXP-029 (HFP trigger observed), EXP-036 (default-input lever found),
-  EXP-037 (the app-side automation, pre-registered before code), Q4.
+  EXP-037 (the app-side automation — to be pre-registered before its code,
+  not yet written), Q4.
 - ADR-018 — direct IOProc capture architecture; this ADR corrects its
   "No HFP trigger on Bluetooth" consequence and adds the mitigation that
   the surviving trigger requires.
