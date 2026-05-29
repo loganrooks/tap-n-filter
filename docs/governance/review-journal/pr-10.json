@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "pr_number": 10,
   "repo": "loganrooks/tap-n-filter",
-  "last_synced_at": "2026-05-29T05:01:17.411504+00:00",
+  "last_synced_at": "2026-05-29T05:17:52.891010+00:00",
   "threads": [
     {
       "id": "PRRT_kwDOSjmLjM6Flbqm",
@@ -22,7 +22,14 @@
       "verdict_notes": "Added EffectNode.refreshMixState() (default no-op), overridden by ReverbNode/EQNode to call applyMixGains(); Graph.refreshNodeMixState() is now called after engine.start() in powerOn and reattach. On-device verification of the preset-bypass case pending.",
       "verdict_source": "block",
       "reconsidered_verdict": null,
-      "verdict_history": [],
+      "verdict_history": [
+        {
+          "at": "2026-05-29T05:17:52.890469+00:00",
+          "source": "block",
+          "verdict": "ACCEPTED_MODIFIED",
+          "by": "tool"
+        }
+      ],
       "extras": {}
     },
     {
@@ -43,7 +50,14 @@
       "verdict_notes": "The code's .mutedWhenTapped is intentional (EXP-027: .muted makes AudioDeviceStart fail on the direct-IOProc path). Fixed by amending the stale ADRs, not the code: ADR-014 (Status + new Amendment section + alternative + references) and ADR-018 (decision step 1, consequences, references).",
       "verdict_source": "block",
       "reconsidered_verdict": null,
-      "verdict_history": [],
+      "verdict_history": [
+        {
+          "at": "2026-05-29T05:17:52.890977+00:00",
+          "source": "block",
+          "verdict": "ACCEPTED_MODIFIED",
+          "by": "tool"
+        }
+      ],
       "extras": {}
     },
     {
@@ -64,7 +78,14 @@
       "verdict_notes": "Removed the engine.inputNode.outputFormat read from the [EXP-029.engine.preattach] diagnostic; kept the outputNode read. Added a NOTE comment citing ADR-018/EXP-023 so it is not reintroduced.",
       "verdict_source": "block",
       "reconsidered_verdict": null,
-      "verdict_history": [],
+      "verdict_history": [
+        {
+          "at": "2026-05-29T05:17:52.890984+00:00",
+          "source": "block",
+          "verdict": "ACCEPTED_MODIFIED",
+          "by": "tool"
+        }
+      ],
       "extras": {}
     },
     {
@@ -83,6 +104,76 @@
       "verdict_commit": "05d77c1",
       "verdict_refs": [],
       "verdict_notes": "Logged as U-012 in docs/decisions/uncertainty-log.md, deferred to V0.2. Real multi-instance hazard, but tap-n-filter is single-instance for V0.1 and the disableOrphanCleanup escape hatch exists. V0.2 adds a PID/liveness ownership marker.",
+      "verdict_source": "block",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-05-29T05:17:52.890987+00:00",
+          "source": "block",
+          "verdict": "DEFERRED",
+          "by": "tool"
+        }
+      ],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6Flq50",
+      "path": "Sources/ViewModel/AppViewModel.swift",
+      "line": 386,
+      "reviewer": "chatgpt-codex-connector",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "P2",
+      "category": "preset-state-correctness",
+      "finding_excerpt": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Refresh mix state after automatic engine restart**\n\nWhen an `AVAudioEngineConfigurationChange` stops the engine and this path restarts it, the new `refreshNodeMixState()` hook is not called. This PR changed EQ/Re",
+      "created_at": "2026-05-29T05:06:44Z",
+      "resolved": true,
+      "outdated": false,
+      "verdict": "ACCEPTED_MODIFIED",
+      "verdict_commit": "4a4f12e",
+      "verdict_refs": [],
+      "verdict_notes": "Added graph.refreshNodeMixState() to the AVAudioEngineConfigurationChange restart path \u2014 the third engine-restart path alongside powerOn and reattach. Completes the first-round refreshMixState fix.",
+      "verdict_source": "block",
+      "reconsidered_verdict": null,
+      "verdict_history": [],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6FlsZe",
+      "path": "Sources/ViewModel/AppViewModel.swift",
+      "line": 386,
+      "reviewer": "chatgpt-codex-connector",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "P2",
+      "category": "preset-state-correctness",
+      "finding_excerpt": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Refresh effect mix gains after config-change restarts**\n\nWhen a route/configuration change stops the engine, this restart path calls `engine.start()` but does not re-run `graph.refreshNodeMixState()`. The new `Ef",
+      "created_at": "2026-05-29T05:09:26Z",
+      "resolved": true,
+      "outdated": false,
+      "verdict": "DUPLICATE",
+      "verdict_commit": "4a4f12e",
+      "verdict_refs": [],
+      "verdict_notes": "Same finding/line as thread PRRT_kwDOSjmLjM6Flq50 (refresh mix state after the config-change engine restart). Fixed in 4a4f12e.",
+      "verdict_source": "block",
+      "reconsidered_verdict": null,
+      "verdict_history": [],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6FlsZh",
+      "path": "Sources/ViewModel/AppViewModel.swift",
+      "line": 177,
+      "reviewer": "chatgpt-codex-connector",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "P2",
+      "category": "debug-tool-safety",
+      "finding_excerpt": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Block power-on while the reader test owns a tap**\n\nThis starts the 5-second reader test by setting only `isReaderTestRunning`, while `captureState` remains `.idle`; `powerOn()` gates on `captureState` but not thi",
+      "created_at": "2026-05-29T05:09:26Z",
+      "resolved": true,
+      "outdated": false,
+      "verdict": "ACCEPTED_MODIFIED",
+      "verdict_commit": "4a4f12e",
+      "verdict_refs": [],
+      "verdict_notes": "powerOn() now guards on !isReaderTestRunning (sets a user-visible lastError and returns), symmetric with the runReaderTest captureState == .idle guard. Chose refuse-with-message over await/cancel since the reader test is debug-only and <= 5 s.",
       "verdict_source": "block",
       "reconsidered_verdict": null,
       "verdict_history": [],
@@ -106,7 +197,14 @@
       "verdict_notes": "Same line/issue as the Codex thread on the inputNode read (PRRT_kwDOSjmLjM6Flbqp). Fixed by removing the access in 05d77c1.",
       "verdict_source": "block",
       "reconsidered_verdict": null,
-      "verdict_history": [],
+      "verdict_history": [
+        {
+          "at": "2026-05-29T05:17:52.890995+00:00",
+          "source": "block",
+          "verdict": "DUPLICATE",
+          "by": "tool"
+        }
+      ],
       "extras": {}
     },
     {
@@ -127,7 +225,14 @@
       "verdict_notes": "Corrected the enumerateProcessTaps() protocol doc comment to name kAudioHardwarePropertyTapList (the impl at line ~505 already uses it). Phrasing tightened slightly vs the suggested diff.",
       "verdict_source": "block",
       "reconsidered_verdict": null,
-      "verdict_history": [],
+      "verdict_history": [
+        {
+          "at": "2026-05-29T05:17:52.890997+00:00",
+          "source": "block",
+          "verdict": "ACCEPTED_MODIFIED",
+          "by": "tool"
+        }
+      ],
       "extras": {}
     },
     {
@@ -148,7 +253,14 @@
       "verdict_notes": "Added `guard captureState == .idle` (with a warning log) to runReaderTest(), using the existing Equatable CaptureState, so the debug reader test cannot create a second tap during live capture.",
       "verdict_source": "block",
       "reconsidered_verdict": null,
-      "verdict_history": [],
+      "verdict_history": [
+        {
+          "at": "2026-05-29T05:17:52.891000+00:00",
+          "source": "block",
+          "verdict": "ACCEPTED_MODIFIED",
+          "by": "tool"
+        }
+      ],
       "extras": {}
     },
     {
@@ -169,7 +281,14 @@
       "verdict_notes": "performReaderTest now drains the ring fully each tick (inner while-loop) instead of a single 4096-frame read; comment updated. Debug-only diagnostic path.",
       "verdict_source": "block",
       "reconsidered_verdict": null,
-      "verdict_history": [],
+      "verdict_history": [
+        {
+          "at": "2026-05-29T05:17:52.891002+00:00",
+          "source": "block",
+          "verdict": "ACCEPTED_MODIFIED",
+          "by": "tool"
+        }
+      ],
       "extras": {}
     }
   ]
