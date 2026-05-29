@@ -142,6 +142,154 @@ public final class AppViewModel: ObservableObject {
         defaults.set(showDebugPanel, forKey: AppViewModelDefaultsKey.debugPanel)
     }
 
+    // MARK: - EXP-029 minimal-reader control (throwaway)
+    //
+    // Debug-panel-driven test that runs a `TapIOProcReader` for 5 s
+    // WITHOUT any `engine.attach(sourceNode)` — i.e., the exact same
+    // tap + aggregate + IOProc path as production, but with NO contact
+    // with the AVAudioEngine. Compare its log block (tagged
+    // `[EXP-029.*]`) to the production Start path's block to identify
+    // which observable signal first diverges between the two paths.
+    // Remove once H10 / H9 / H11 / H12 / H13 is resolved.
+
+    /// Whether the EXP-029 reader test is currently running.
+    @Published public private(set) var isReaderTestRunning: Bool = false
+
+    @MainActor
+    public func runReaderTest() {
+        guard !isReaderTestRunning else { return }
+        guard captureState == .idle else {
+            logger.warning(
+                "runReaderTest: capture is active; stop capture before running "
+                + "the reader test (it would create a second tap on the same "
+                + "process and can fire a configuration change on the live engine)"
+            )
+            return
+        }
+        guard let source = currentSource else {
+            logger.warning("runReaderTest: no source selected; pick one first")
+            return
+        }
+        isReaderTestRunning = true
+        Task { @MainActor in
+            await self.performReaderTest(source: source)
+            self.isReaderTestRunning = false
+        }
+    }
+
+    @MainActor
+    private func performReaderTest(source: CaptureSource) async {
+        let testLogger = TnfLogger(source: "ReaderTest", store: debugLog)
+        testLogger.info("[EXP-029.path] RDRTEST (TapIOProcReader, NO engine.attach)")
+        testLogger.info(
+            "[EXP-029.input.source] pid=\(source.pid) "
+            + "audioProcessID(stored)=\(source.audioProcessID) "
+            + "bundleID=\(source.bundleIdentifier ?? "nil") "
+            + "displayName=\(source.displayName)"
+        )
+
+        let coreAudio = RealCoreAudioInterface()
+        let liveProcessID: AudioObjectID
+        do {
+            liveProcessID = try coreAudio.audioProcessID(forPID: source.pid)
+            testLogger.info(
+                "[EXP-029.input.resolve] OK liveProcessID=\(liveProcessID) "
+                + "(stored was \(source.audioProcessID); "
+                + "match=\(liveProcessID == source.audioProcessID))"
+            )
+        } catch {
+            testLogger.error("[EXP-029.input.resolve] FAIL \(error)")
+            return
+        }
+
+        let reader: TapIOProcReader
+        do {
+            reader = try TapIOProcReader(
+                audioProcessID: liveProcessID,
+                coreAudio: coreAudio,
+                log: { message in testLogger.info(message) }
+            )
+        } catch {
+            testLogger.error("[EXP-029.reader.init] FAIL \(error)")
+            return
+        }
+
+        do {
+            try reader.start()
+            testLogger.info("[EXP-029.rdrtest] start() returned; running 5s")
+        } catch {
+            testLogger.error("[EXP-029.reader.start] FAIL \(error)")
+            reader.stop()
+            return
+        }
+
+        // Drain the ring fully each ~100 ms tick. A single frameBatch read
+        // (4096) under-drains at 48 kHz (~4800 frames per 100 ms window), so
+        // the inner loop reads until the ring is empty to keep totalFrames
+        // accurate and avoid a slow ring overflow. (CodeRabbit PR #10 review.)
+        let ring = reader.ring
+        let channelCount = Int(reader.format.channelCount)
+        let frameBatch = 4096
+        let totalCapacity = frameBatch * channelCount
+        let storage = UnsafeMutablePointer<Float>.allocate(capacity: totalCapacity)
+        defer { storage.deallocate() }
+        var channelPtrs: [UnsafeMutablePointer<Float>] = []
+        channelPtrs.reserveCapacity(channelCount)
+        for c in 0..<channelCount {
+            channelPtrs.append(storage.advanced(by: c * frameBatch))
+        }
+
+        var totalFrames = 0
+        var nonZeroFrames = 0
+        var maxAbs: Float = 0
+        var readCount = 0
+
+        let deadline = Date().addingTimeInterval(5.0)
+        while Date() < deadline {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            var framesRead = ring.read(into: channelPtrs, frames: frameBatch)
+            while framesRead > 0 {
+                readCount += 1
+                totalFrames += framesRead
+                let ch0 = channelPtrs[0]
+                for i in 0..<framesRead {
+                    let s = ch0[i]
+                    if s != 0 { nonZeroFrames += 1 }
+                    let a = Swift.abs(s)
+                    if a > maxAbs { maxAbs = a }
+                }
+                framesRead = ring.read(into: channelPtrs, frames: frameBatch)
+            }
+        }
+
+        testLogger.info(
+            "[EXP-029.rdrtest.stats] reads=\(readCount) "
+            + "totalFrames=\(totalFrames) nonZeroFrames=\(nonZeroFrames) "
+            + "maxAbs=\(maxAbs)"
+        )
+        if totalFrames == 0 {
+            testLogger.warning(
+                "[EXP-029.rdrtest.result] FAIL_NO_FRAMES — AudioDeviceStart "
+                + "succeeded but IOProc delivered nothing. Cause is downstream "
+                + "of the start (e.g., tap not actually pumping)."
+            )
+        } else if nonZeroFrames == 0 {
+            testLogger.warning(
+                "[EXP-029.rdrtest.result] FAIL_ZEROS_ONLY — frames arrived but all "
+                + "are zero. Suspect macOS 26 zero-buffer bug (forums 825780)."
+            )
+        } else {
+            testLogger.info(
+                "[EXP-029.rdrtest.result] PASS — \(totalFrames) frames, "
+                + "\(nonZeroFrames) non-zero, peak \(maxAbs). Direct-IOProc path "
+                + "works without an engine. If production STILL fails: H10 "
+                + "(engine.attach pre-empts) is the leading candidate."
+            )
+        }
+
+        reader.stop()
+    }
+
     // MARK: Collaborators
 
     private let capture: CaptureControllerProtocol
@@ -208,8 +356,9 @@ public final class AppViewModel: ObservableObject {
                 guard let self = self else { return }
                 let outFmt = self.engine.outputNode.outputFormat(forBus: 0)
                 self.logger.info(
-                    "AVAudioEngineConfigurationChange fired: engine.isRunning=\(self.engine.isRunning), "
-                    + "outputNode=\(outFmt.sampleRate) Hz x \(outFmt.channelCount) ch"
+                    "[EXP-031.configChange] fired engine.isRunning=\(self.engine.isRunning) "
+                    + "engineIsRunning_flag=\(self.engineIsRunning) "
+                    + "outputNode=\(outFmt.sampleRate)Hz×\(outFmt.channelCount)ch"
                 )
                 // If we believed the engine was running but it stopped
                 // itself on the configuration change (output device
@@ -220,13 +369,25 @@ public final class AppViewModel: ObservableObject {
                 // restart the engine on the same graph; if that fails,
                 // surface a typed error and let the user power-cycle.
                 if self.engineIsRunning && !self.engine.isRunning {
+                    self.logger.info(
+                        "[EXP-031.engineRestart] attempting engine.start() after configChange"
+                    )
                     do {
                         try self.engine.start()
-                        self.logger.info("Engine restarted after configuration change")
+                        // Re-apply node mix gains: the engine just restarted,
+                        // and the mixer destinations were nil while it was
+                        // stopped, so a route / sample-rate change must not
+                        // leave bypass or wet/dry at default until the user
+                        // touches a control. Third restart path alongside
+                        // powerOn + reattach. (Codex PR #10 re-review.)
+                        self.graph.refreshNodeMixState()
+                        self.logger.info(
+                            "[EXP-031.engineRestart] OK — engine.isRunning=\(self.engine.isRunning)"
+                        )
                     } catch {
                         self.engineIsRunning = false
                         self.logger.error(
-                            "Engine restart after configuration change failed: \(error.localizedDescription)"
+                            "[EXP-031.engineRestart] FAIL — \(error.localizedDescription)"
                         )
                         self.lastError = .engine(
                             "Audio device configuration changed and the engine could not be restarted: "
@@ -243,9 +404,19 @@ public final class AppViewModel: ObservableObject {
     }
 
     public convenience init() {
+        // Construct the debug log store + a Capture-tagged logger BEFORE
+        // CaptureController so we can route the controller's diagnostic
+        // breadcrumbs (EXP-029 + future) through the same file log as
+        // the rest of the app.
+        let debugLog = DebugLogStore()
+        let captureLogger = TnfLogger(source: "Capture", store: debugLog)
         self.init(
-            capture: CaptureController(coreAudio: RealCoreAudioInterface()),
-            engine: AVAudioEngine()
+            capture: CaptureController(
+                coreAudio: RealCoreAudioInterface(),
+                log: { message in captureLogger.info(message) }
+            ),
+            engine: AVAudioEngine(),
+            debugLog: debugLog
         )
     }
 
@@ -319,6 +490,20 @@ public final class AppViewModel: ObservableObject {
         guard captureState == .idle || isFailedState(captureState) else {
             return
         }
+        // The debug reader test owns a tap on this same process for ~5 s, and
+        // it leaves captureState at .idle, so the guard above does not catch
+        // it. Starting production capture concurrently would create a second
+        // tap/aggregate on the process (the overlap runReaderTest's own guard
+        // prevents in the other direction), risking a HAL configuration change
+        // or start failure. Refuse until the test finishes. (Codex PR #10
+        // re-review — symmetric with the runReaderTest idle guard.)
+        guard !isReaderTestRunning else {
+            lastError = .engine(
+                "A diagnostic reader test is running. Wait a few seconds for it "
+                + "to finish, then press Start again."
+            )
+            return
+        }
         lastError = nil
 
         // Re-resolve the source from the live HAL list. Match by PID
@@ -370,7 +555,8 @@ public final class AppViewModel: ObservableObject {
             try graph.attach(
                 to: engine,
                 source: sourceNode,
-                destination: engine.mainMixerNode
+                destination: engine.mainMixerNode,
+                sourceFormat: capture.captureFormat
             )
         } catch {
             stopCaptureLoggingRollbackError(primaryStage: "graph attach")
@@ -384,10 +570,23 @@ public final class AppViewModel: ObservableObject {
         do {
             try engine.start()
             engineIsRunning = true
+            // Re-apply each node's wet/dry + bypass gains now that the engine
+            // is running. The mixer destinations the nodes use are nil while
+            // the engine is stopped, so gains set during attach do not land
+            // until here — without this a preset-loaded bypass / non-50-50 mix
+            // is ignored on power-on until the user touches a control.
+            // (Codex PR #10 review.)
+            graph.refreshNodeMixState()
             let chainSummary = graph.nodes.isEmpty
                 ? "EMPTY (audio passes through unprocessed; add effects to hear filtering)"
                 : graph.nodes.map { type(of: $0).typeIdentifier }.joined(separator: " -> ")
             logger.info("powerOn complete: engine started, capture running on \(resolvedSource.displayName), chain: \(chainSummary)")
+            Self.logChainFormats(
+                stage: "powerOn",
+                sourceNode: sourceNode,
+                engine: engine,
+                logger: logger
+            )
         } catch {
             graph.detach()
             stopCaptureLoggingRollbackError(primaryStage: "engine start")
@@ -476,18 +675,50 @@ public final class AppViewModel: ObservableObject {
             return
         }
         let clamped = min(max(value, 0.0), 1.0)
+        // EXP-031: shares `applyMixGains()` with setBypass, so we mirror the
+        // before/after diagnostic block here. If the bug is in
+        // `applyMixGains` itself, wetDryMix changes will produce the same
+        // log signature shape as bypass toggles.
+        logger.info(
+            "[EXP-031.wetDryMix.before] node=\(shortID) "
+            + "type=\(type(of: node).typeIdentifier) "
+            + "requested=\(clamped) state={\(node.debugStateDescription())}"
+        )
         node.wetDryMix = clamped
+        logger.info(
+            "[EXP-031.wetDryMix.after] node=\(shortID) "
+            + "type=\(type(of: node).typeIdentifier) "
+            + "state={\(node.debugStateDescription())} "
+            + "engine.isRunning=\(engine.isRunning)"
+        )
         logger.info("updateWetDryMix: \(type(of: node).typeIdentifier)/\(shortID) wetDryMix=\(clamped)")
         objectWillChange.send()
         schedulePersistence()
     }
 
     public func setBypass(nodeID: UUID, bypass: Bool) {
+        let shortID = String(nodeID.uuidString.prefix(8))
+        logger.info(
+            "[EXP-031.setBypass.entry] node=\(shortID) requested=\(bypass) "
+            + "engineIsRunning=\(engineIsRunning) engine.isRunning=\(engine.isRunning)"
+        )
         guard let node = graph.nodes.first(where: { $0.id == nodeID }) else {
+            logger.warning("[EXP-031.setBypass.entry] unknown node \(shortID)")
             lastError = .parameter("Unknown node \(nodeID).")
             return
         }
+        logger.info(
+            "[EXP-031.setBypass.before] node=\(shortID) "
+            + "type=\(type(of: node).typeIdentifier) "
+            + "state={\(node.debugStateDescription())}"
+        )
         node.bypass = bypass
+        logger.info(
+            "[EXP-031.setBypass.after] node=\(shortID) "
+            + "type=\(type(of: node).typeIdentifier) "
+            + "state={\(node.debugStateDescription())} "
+            + "engine.isRunning=\(engine.isRunning)"
+        )
         objectWillChange.send()
         schedulePersistence()
     }
@@ -528,17 +759,25 @@ public final class AppViewModel: ObservableObject {
     /// `powerOn` uses (source node → mainMixerNode).
     private func mutateGraph(_ mutation: (Graph) throws -> Void) {
         let wasRunning = engineIsRunning
-        logger.info("mutateGraph: wasRunning=\(wasRunning)")
+        logger.info(
+            "[EXP-031.mutateGraph.entry] wasRunning=\(wasRunning) "
+            + "engine.isRunning=\(engine.isRunning)"
+        )
         if engineIsRunning {
             engine.stop()
             graph.detach()
             engineIsRunning = false
-            logger.info("mutateGraph: detached for live mutation")
+            logger.info(
+                "[EXP-031.mutateGraph.detached] engine.stop() + graph.detach() done — "
+                + "engine.isRunning=\(engine.isRunning)"
+            )
         }
         do {
             try mutation(graph)
         } catch {
-            logger.error("mutateGraph: mutation failed: \(error.localizedDescription)")
+            logger.error(
+                "[EXP-031.mutateGraph.error] mutation failed: \(error.localizedDescription)"
+            )
             lastError = .graph(error.localizedDescription)
             if wasRunning {
                 reattachAfterMutation()
@@ -549,16 +788,24 @@ public final class AppViewModel: ObservableObject {
         schedulePersistence()
 
         if wasRunning {
-            logger.info("mutateGraph: reattaching after live mutation")
+            logger.info("[EXP-031.mutateGraph.reattaching] calling reattachAfterMutation")
             reattachAfterMutation()
         }
+        logger.info(
+            "[EXP-031.mutateGraph.exit] wasRunning=\(wasRunning) "
+            + "engineIsRunning_now=\(engineIsRunning) engine.isRunning=\(engine.isRunning)"
+        )
     }
 
     /// Re-attach the graph after a live mutation and restart the engine.
     /// V2 path: the graph head is the captureSourceNode, not
     /// `engine.inputNode`.
     private func reattachAfterMutation() {
+        logger.info("[EXP-031.reattach.entry] called")
         guard let sourceNode = capture.captureSourceNode else {
+            logger.error(
+                "[EXP-031.reattach.fail] captureSourceNode unavailable"
+            )
             handleReattachFailure(
                 NSError(
                     domain: "tnf.viewmodel",
@@ -574,16 +821,35 @@ public final class AppViewModel: ObservableObject {
             try graph.attach(
                 to: engine,
                 source: sourceNode,
-                destination: engine.mainMixerNode
+                destination: engine.mainMixerNode,
+                sourceFormat: capture.captureFormat
             )
+            logger.info("[EXP-031.reattach.graphAttached] graph.attach OK")
         } catch {
+            logger.error(
+                "[EXP-031.reattach.fail] graph.attach error=\(error.localizedDescription)"
+            )
             handleReattachFailure(error, stage: "graph attach", graphAttached: false)
             return
         }
         do {
             try engine.start()
             engineIsRunning = true
+            // See powerOn: re-apply node mix gains once the engine is running.
+            graph.refreshNodeMixState()
+            logger.info(
+                "[EXP-031.reattach.engineStarted] engine.isRunning=\(engine.isRunning)"
+            )
+            Self.logChainFormats(
+                stage: "reattach",
+                sourceNode: sourceNode,
+                engine: engine,
+                logger: logger
+            )
         } catch {
+            logger.error(
+                "[EXP-031.reattach.fail] engine.start error=\(error.localizedDescription)"
+            )
             handleReattachFailure(error, stage: "engine start", graphAttached: true)
         }
     }
@@ -641,6 +907,49 @@ public final class AppViewModel: ObservableObject {
     }
 
     // MARK: Persistence
+
+    /// [EXP-032] H17 source-grounding. Logs the negotiated audio format
+    /// at the engine boundaries the user-audible
+    /// "voice-changer / pitched-down / crackling / left-shift" artifact
+    /// could originate from: the `AVAudioSourceNode` we declared with the
+    /// tap's `reader.format`, the mainMixer node (after the effect chain),
+    /// and the engine's output node. If the source-node's reported
+    /// outputFormat differs from the tap's 48 kHz × 2 ch — or if
+    /// `commonFormat` / `isInterleaved` flips somewhere in the chain — the
+    /// engine has silently renegotiated the format and H17 is confirmed.
+    /// See `docs/investigations/2026-05-audio-pipeline.md` (H17,
+    /// "How to confirm").
+    @MainActor
+    private static func logChainFormats(
+        stage: String,
+        sourceNode: AVAudioSourceNode,
+        engine: AVAudioEngine,
+        logger: TnfLogger
+    ) {
+        let sourceFmt = sourceNode.outputFormat(forBus: 0)
+        let mainMixerIn = engine.mainMixerNode.inputFormat(forBus: 0)
+        let mainMixerOut = engine.mainMixerNode.outputFormat(forBus: 0)
+        let outputIn = engine.outputNode.inputFormat(forBus: 0)
+        let outputOut = engine.outputNode.outputFormat(forBus: 0)
+        logger.info("[EXP-032.format.source stage=\(stage)] \(describeFormat(sourceFmt))")
+        logger.info("[EXP-032.format.mainMixerIn stage=\(stage)] \(describeFormat(mainMixerIn))")
+        logger.info("[EXP-032.format.mainMixerOut stage=\(stage)] \(describeFormat(mainMixerOut))")
+        logger.info("[EXP-032.format.outputIn stage=\(stage)] \(describeFormat(outputIn))")
+        logger.info("[EXP-032.format.outputOut stage=\(stage)] \(describeFormat(outputOut))")
+    }
+
+    private static func describeFormat(_ format: AVAudioFormat) -> String {
+        let common: String
+        switch format.commonFormat {
+        case .pcmFormatFloat32: common = "Float32"
+        case .pcmFormatFloat64: common = "Float64"
+        case .pcmFormatInt16: common = "Int16"
+        case .pcmFormatInt32: common = "Int32"
+        case .otherFormat: common = "other"
+        @unknown default: common = "unknown"
+        }
+        return "rate=\(format.sampleRate) ch=\(format.channelCount) common=\(common) interleaved=\(format.isInterleaved)"
+    }
 
     private static func restoreGraph(
         from defaults: UserDefaults,

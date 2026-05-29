@@ -2,7 +2,12 @@
 
 ## Status
 
-Accepted
+Accepted (2026-05-21). **Amended 2026-05-29**: the concrete `muteBehavior`
+is now `.mutedWhenTapped`, not `.muted` — `.muted` makes `AudioDeviceStart`
+fail on the direct-IOProc architecture (EXP-027 / ADR-018). The *intent*
+below (mute the source process while filtering) is unchanged; only the enum
+value differs, and `.mutedWhenTapped` is behaviourally identical for
+tap-n-filter's always-reading lifecycle. See the Amendment section.
 
 ## Context
 
@@ -45,6 +50,23 @@ returns the source process to unmuted, so its audio resumes normally.
 This matches the V1 user model: "tap-n-filter on" filters what you
 hear; "tap-n-filter off" gives you the original audio.
 
+## Amendment (2026-05-29): `.mutedWhenTapped` for the direct-IOProc path
+
+The original decision set `.muted`. When capture moved to direct IOProc on
+the tap aggregate (ADR-018), EXP-027 found that `.muted` combined with that
+path makes `AudioDeviceStart` return `kAudioHardwareIllegalOperationError`
+('nope', 1852797029) — the aggregate will not start. `.mutedWhenTapped`
+(source muted while a client is actively reading the tap) starts cleanly and
+is what EXP-026 used successfully.
+
+`.mutedWhenTapped` is behaviourally identical to `.muted` for tap-n-filter:
+a reader exists continuously between `start()` and `stop()`, so the source
+is muted exactly when we are capturing. The original reason for preferring
+`.muted` ("no auto-unmute state machine") is irrelevant under the new
+architecture. `Sources/Capture/CoreAudioInterface.swift` now sets
+`description.muteBehavior = .mutedWhenTapped`. See
+`docs/investigations/2026-05-audio-pipeline.md` (EXP-026, EXP-027).
+
 ## Alternatives considered
 
 ### Stay `.unmuted`, mix processed signal on top of original
@@ -57,11 +79,13 @@ broken even when both signals are deliberate.
 
 ### `.mutedWhenTapped`
 
-Rejected. The behaviour is identical to `.muted` while the tap is being
-read, and tap-n-filter always reads the tap continuously between
-`powerOn` and `powerOff`. The extra state machine complexity in
-`.mutedWhenTapped` (auto-unmute when no reader is present) is unhelpful
-because we never have a "tap exists but no reader" state.
+Originally rejected (behaviourally identical to `.muted` while the tap is
+read, and tap-n-filter always reads continuously between `powerOn` and
+`powerOff`, so the auto-unmute state machine looked like needless
+complexity). **Later adopted** — see the Amendment above: under the
+direct-IOProc architecture (ADR-018), `.muted` makes `AudioDeviceStart`
+fail, while `.mutedWhenTapped` starts cleanly and is behaviourally identical
+for our always-reading lifecycle.
 
 ### Route the processed audio to a virtual loopback device (BlackHole)
 
@@ -110,6 +134,8 @@ remains `.muted` + system output.
 - `docs/orchestration/phases/01-capture-spike.md` — architecture diagram
   with the "audio output (intercepted)" annotation.
 - `Sources/Capture/CoreAudioInterface.swift` — `createTap` sets
-  `muteBehavior = .muted`.
+  `muteBehavior = .mutedWhenTapped` (see Amendment 2026-05-29).
+- `docs/investigations/2026-05-audio-pipeline.md` — EXP-026, EXP-027 (the
+  `.muted` → `.mutedWhenTapped` finding).
 - `CATapDescription` and `CATapMuteBehavior` in the macOS CoreAudio
   framework.

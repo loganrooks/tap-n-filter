@@ -45,10 +45,23 @@ public final class CaptureController: CaptureControllerProtocol, @unchecked Send
         return active?.sourceNode
     }
 
+    public var captureFormat: AVAudioFormat? {
+        lock.lock()
+        defer { lock.unlock() }
+        return active?.reader.format
+    }
+
     // MARK: Collaborators
 
     private let coreAudio: CoreAudioInterface
     private let lock = NSRecursiveLock()
+
+    /// Diagnostic logger passed through to `TapIOProcReader`. Default is
+    /// a no-op; the app's view model injects a closure that writes to
+    /// both `os.Logger` and the file log so EXP-029-style diagnostic
+    /// breadcrumbs survive across runs and can be diffed against the
+    /// minimal-reader control.
+    private let log: (String) -> Void
 
     /// Active capture resources. Set during `running` and cleared during
     /// `stopping`. The reader owns the tap + aggregate + IOProc; the
@@ -63,9 +76,126 @@ public final class CaptureController: CaptureControllerProtocol, @unchecked Send
 
     // MARK: Init
 
-    public init(coreAudio: CoreAudioInterface = RealCoreAudioInterface()) {
+    public init(
+        coreAudio: CoreAudioInterface = RealCoreAudioInterface(),
+        log: @escaping (String) -> Void = { _ in }
+    ) {
         self.coreAudio = coreAudio
+        self.log = log
         self.subject = CurrentValueSubject(.idle)
+
+        // EXP-030 defensive orphan cleanup. Runs once at construction
+        // time — typically once per process launch. Destroys any taps
+        // or aggregate devices left behind by a force-killed prior
+        // run of this app. See `cleanupOrphans()` and the EXP-030
+        // entry in `docs/investigations/2026-05-audio-pipeline.md`.
+        cleanupOrphans()
+    }
+
+    /// Enumerate HAL state and destroy any process taps or aggregate
+    /// devices that match our naming convention but are not currently
+    /// owned by this process instance. Idempotent and best-effort —
+    /// failures are logged and swallowed because the goal is to leave
+    /// the HAL in a sane state, not to surface every status code.
+    ///
+    /// Honors `UserDefaults.standard.bool(forKey:
+    /// "tap-n-filter.disableOrphanCleanup")` so EXP-030 can run a
+    /// negative control with cleanup disabled. The flag defaults to
+    /// false (cleanup ON) so production users are protected without
+    /// needing to set anything.
+    ///
+    /// Destruction order: aggregates first (they reference taps via
+    /// `kAudioAggregateDevicePropertyTapList`), taps second. The
+    /// reverse would leave dangling tap-UID references on the
+    /// aggregate; while the HAL likely tolerates this when both are
+    /// being destroyed in the same process, the documented order is
+    /// safer.
+    private func cleanupOrphans() {
+        let disabled = UserDefaults.standard.bool(
+            forKey: "tap-n-filter.disableOrphanCleanup"
+        )
+        if disabled {
+            log(
+                "[EXP-030.preinit] SKIPPED "
+                + "(UserDefaults tap-n-filter.disableOrphanCleanup=true)"
+            )
+            return
+        }
+
+        log("[EXP-030.preinit] beginning orphan-cleanup pass")
+
+        // --- Tap enumeration + match
+        let taps = coreAudio.enumerateProcessTaps()
+        var matchedTaps: [(id: AudioObjectID, name: String)] = []
+        for tap in taps {
+            guard let name = coreAudio.tapName(tap) else { continue }
+            if name.hasPrefix("tap-n-filter.tap.") {
+                matchedTaps.append((id: tap, name: name))
+            }
+        }
+        log(
+            "[EXP-030.preinit.taps] enumerated=\(taps.count) "
+            + "matched=\(matchedTaps.count) "
+            + "ids=\(matchedTaps.map { $0.id }) "
+            + "names=\(matchedTaps.map { $0.name })"
+        )
+
+        // --- Aggregate enumeration + match
+        let devices = coreAudio.enumerateAllAudioDevices()
+        var matchedAggregates: [(id: AudioDeviceID, uid: String)] = []
+        for dev in devices {
+            guard let uid = coreAudio.audioDeviceUID(dev) else { continue }
+            if uid.hasPrefix("tap-n-filter.aggregate.") {
+                matchedAggregates.append((id: dev, uid: uid))
+            }
+        }
+        log(
+            "[EXP-030.preinit.aggregates] enumerated=\(devices.count) "
+            + "matched=\(matchedAggregates.count) "
+            + "ids=\(matchedAggregates.map { $0.id }) "
+            + "uids=\(matchedAggregates.map { $0.uid })"
+        )
+
+        // --- Destruction (aggregates first, then taps)
+        var aggregatesDestroyed = 0
+        for entry in matchedAggregates {
+            do {
+                try coreAudio.destroyAggregateDevice(entry.id)
+                aggregatesDestroyed += 1
+                log(
+                    "[EXP-030.preinit.cleaned] destroyed aggregate "
+                    + "id=\(entry.id) uid=\(entry.uid)"
+                )
+            } catch {
+                log(
+                    "[EXP-030.preinit.cleaned] FAILED to destroy aggregate "
+                    + "id=\(entry.id) uid=\(entry.uid) error=\(error)"
+                )
+            }
+        }
+
+        var tapsDestroyed = 0
+        for entry in matchedTaps {
+            do {
+                try coreAudio.destroyTap(entry.id)
+                tapsDestroyed += 1
+                log(
+                    "[EXP-030.preinit.cleaned] destroyed tap "
+                    + "id=\(entry.id) name=\(entry.name)"
+                )
+            } catch {
+                log(
+                    "[EXP-030.preinit.cleaned] FAILED to destroy tap "
+                    + "id=\(entry.id) name=\(entry.name) error=\(error)"
+                )
+            }
+        }
+
+        log(
+            "[EXP-030.preinit] DONE "
+            + "aggregates_destroyed=\(aggregatesDestroyed) "
+            + "taps_destroyed=\(tapsDestroyed)"
+        )
     }
 
     // MARK: Source enumeration
@@ -135,13 +265,15 @@ public final class CaptureController: CaptureControllerProtocol, @unchecked Send
         lock.unlock()
 
         do {
+            log("[EXP-029.path] PRODUCTION (CaptureController.start)")
             let resolvedAudioProcessID = try coreAudio.audioProcessID(forPID: source.pid)
 
             // The reader owns the tap; it is the new home for tap creation,
             // tap-format probing, and the aggregate/IOProc machinery.
             let reader = try TapIOProcReader(
                 audioProcessID: resolvedAudioProcessID,
-                coreAudio: coreAudio
+                coreAudio: coreAudio,
+                log: log
             )
             var didFinishSuccessfully = false
             defer {
@@ -150,6 +282,19 @@ public final class CaptureController: CaptureControllerProtocol, @unchecked Send
                 }
             }
 
+            // [EXP-033 / H17 fix] Declare the source node at the tap's
+            // native format. The render callback delivers raw tap frames
+            // from the ring at this rate (no resampling here). The chain
+            // is then wired at this same rate by `graph.attach(...,
+            // sourceFormat:)` so the whole engine runs at the capture
+            // rate and the engine's `mainMixerNode` performs the single
+            // SRC to the output device. Declaring the node here is not
+            // enough on its own — an attached-but-unconnected source node
+            // reports the engine's 44.1 kHz default from
+            // `outputFormat(forBus:)`, which is why `graph.attach` must be
+            // told the real format rather than reading it back. See
+            // EXP-032 / H17 in
+            // `docs/investigations/2026-05-audio-pipeline.md`.
             let sourceNode = AVAudioSourceNode(format: reader.format) {
                 [weak ring = reader.ring] isSilence, _, frameCount, audioBufferList in
                 return Self.renderFromRing(
@@ -159,7 +304,32 @@ public final class CaptureController: CaptureControllerProtocol, @unchecked Send
                     audioBufferList: audioBufferList
                 )
             }
+            // NOTE: deliberately does NOT read `engine.inputNode`. Per
+            // ADR-018 / EXP-023, inputNode and outputNode share one unified IO
+            // audio unit on macOS 26.x, so touching inputNode can initialize
+            // the input side the direct-IOProc architecture exists to avoid
+            // (it never uses inputNode). Diagnostics stay on outputNode and the
+            // source node. (Codex + CodeRabbit PR #10 review.)
+            log(
+                "[EXP-029.engine.preattach] engine.isRunning=\(engine.isRunning) "
+                + "outputFormat=\(engine.outputNode.outputFormat(forBus: 0).sampleRate)Hz×\(engine.outputNode.outputFormat(forBus: 0).channelCount)ch"
+            )
             engine.attach(sourceNode)
+            log(
+                "[EXP-029.engine.postattach] engine.isRunning=\(engine.isRunning) "
+                + "(attach is supposed to be lightweight; H10 hypothesis says this triggers lazy IO-AU init)"
+            )
+            // [EXP-033 / H17] The source node's output bus reports the
+            // engine's 44.1 kHz default here (it is attached but not yet
+            // connected). The chain rate is established when `graph.attach`
+            // connects it at `reader.format`; the real confirmation is the
+            // `[EXP-032.format.source]` readback after `engine.start()`,
+            // which should now show the tap rate.
+            log(
+                "[EXP-033.h17.tapFormat] tap=\(reader.format.sampleRate)Hz×\(reader.format.channelCount)ch "
+                + "sourceNodePreConnect=\(sourceNode.outputFormat(forBus: 0).sampleRate)Hz "
+                + "(chain will be pinned to tap rate by graph.attach)"
+            )
             var didAttachSourceNode = true
             defer {
                 if !didFinishSuccessfully, didAttachSourceNode {
@@ -268,6 +438,12 @@ public final class CaptureController: CaptureControllerProtocol, @unchecked Send
     /// source node was handed. On underrun, zero-fill the remainder of
     /// the destination buffers and report `isSilence`. Static so the
     /// render callback can be a non-capturing C-compatible block.
+    ///
+    /// No sample-rate conversion happens here — the source node is
+    /// declared at the tap's format and the chain is wired at the same
+    /// rate (see the H17 fix), so the ring's frames map 1:1 to the
+    /// frames the engine requests. The engine's `mainMixerNode` performs
+    /// the single SRC to the output device.
     ///
     /// `isSilence` is set on every call (not just the silent path) so a
     /// stale `true` from a prior underrun doesn't survive into a later

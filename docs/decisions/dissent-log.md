@@ -113,6 +113,21 @@ Entries are added at the bottom. They are not edited after commit (except for ty
 
 ---
 
+## 2026-05-29 — HFP-on-Bluetooth: app-side default-input switch over caveat/HAL
+
+**Decision**: V0.1 mitigates HFP degradation by switching the system default *input* device away from the Bluetooth device during capture (default-on toggle "Preserve Bluetooth quality"), restoring it on stop. Full reasoning in ADR-019; intervention pre-registered as EXP-037.
+
+**Phase**: 4 (build)
+
+**Considered**:
+- README caveat only (original plan) — demoted to fallback; EXP-036 found a working in-app mitigation, so caveat-only leaves quality on the table.
+- Block V0.1 on a HAL-plugin virtual device — rejected for V0.1 (DriverKit/kext, different distribution model, weeks of scope); deferred to V0.2 as robustness.
+- `defaults write Disable HFP` — ruled out, does not work on macOS 26.3.
+- Off-by-default opt-in toggle — rejected per user choice; default Bluetooth experience is bad enough to mitigate by default, with an escape hatch.
+- App-side default-input switch, default-on (chosen) — only user-space lever that works (EXP-036), reversible and visible.
+
+---
+
 ## Future entries
 
 The orchestrator appends new entries here during build. Examples of decisions that would warrant an entry:

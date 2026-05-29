@@ -27,6 +27,16 @@ public protocol CaptureControllerProtocol: AnyObject {
     /// (`graph.attach(to:source:destination:)`).
     var captureSourceNode: AVAudioSourceNode? { get }
 
+    /// The tap's native stream format (e.g. 48 kHz × 2 ch) while capture
+    /// is running, or `nil` otherwise. The caller passes this to
+    /// `graph.attach(..., sourceFormat:)` so the effect chain is wired at
+    /// the capture rate rather than the engine's 44.1 kHz default — see
+    /// the H17 fix in `docs/investigations/2026-05-audio-pipeline.md`.
+    /// Declared as a requirement (not extension-only) so the concrete
+    /// controller's override dispatches dynamically through the protocol
+    /// type; conformers that don't own a tap inherit the `nil` default.
+    var captureFormat: AVAudioFormat? { get }
+
     /// List applications currently producing audio that can be captured.
     ///
     /// Returned sources are filtered to those that have a resolvable
@@ -48,4 +58,11 @@ public protocol CaptureControllerProtocol: AnyObject {
     /// aggregate device, destroys the tap, detaches the source node from
     /// the engine. Safe to call from `idle` (no-op).
     func stop() throws
+}
+
+extension CaptureControllerProtocol {
+    /// Default: `nil`. Conformers that don't own a process tap (UI mocks,
+    /// the accessibility-dump stub) inherit this; only `CaptureController`
+    /// returns a real tap format.
+    public var captureFormat: AVAudioFormat? { nil }
 }

@@ -232,6 +232,99 @@ final class TapIOProcReaderTests: XCTestCase {
         }
     }
 
+    // MARK: T2.9 — IOProc de-interleaves an interleaved tap (EXP-034 regression)
+
+    /// Regression guard for the capture-corruption fix (EXP-034 / H17b).
+    /// macOS 26.x delivers a stereo process tap as a single *interleaved*
+    /// buffer (`[L, R, L, R, …]`, formatFlags=9 = Float|Packed, no
+    /// non-interleaved bit, bytesPerFrame=8). The pre-fix IOProc treated
+    /// buffer 0 as one planar channel, writing 2× the real frame count into
+    /// a single channel — the octave-down / left-shifted / crackling
+    /// artifact. This test feeds one interleaved buffer and asserts the ring
+    /// receives the *real* frame count with left and right split into
+    /// separate channels. Without it, a regression to planar handling of an
+    /// interleaved tap would pass CI silently.
+    func test_ioproc_callback_deinterleaves_interleaved_tap() throws {
+        let fake = FakeCoreAudioInterface()
+        // Interleaved stereo: Float | Packed, NO non-interleaved bit;
+        // bytesPerFrame = 8 (2 ch × 4 bytes) — the macOS 26.x tap shape.
+        fake.tapStreamFormatResult = { _ in
+            var asbd = AudioStreamBasicDescription()
+            asbd.mSampleRate = 48_000
+            asbd.mFormatID = kAudioFormatLinearPCM
+            asbd.mFormatFlags = kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked
+            asbd.mBytesPerPacket = 8
+            asbd.mFramesPerPacket = 1
+            asbd.mBytesPerFrame = 8
+            asbd.mChannelsPerFrame = 2
+            asbd.mBitsPerChannel = 32
+            return asbd
+        }
+
+        let reader = try TapIOProcReader(
+            audioProcessID: knownAudioProcessID,
+            coreAudio: fake
+        )
+
+        // One interleaved buffer: [L0, R0, L1, R1, …]. Distinct per-frame
+        // values per channel catch channel-swap, off-by-one stride, and
+        // frame-count-doubling regressions together.
+        let frames = 512
+        let interleavedCount = frames * 2
+        let interleaved = UnsafeMutablePointer<Float>.allocate(capacity: interleavedCount)
+        defer { interleaved.deallocate() }
+        for f in 0..<frames {
+            interleaved[f * 2] = Float(f)             // left
+            interleaved[f * 2 + 1] = Float(f) + 1000  // right
+        }
+
+        var abl = AudioBufferList()
+        abl.mNumberBuffers = 1
+        abl.mBuffers = AudioBuffer(
+            mNumberChannels: 2,
+            mDataByteSize: UInt32(interleavedCount * MemoryLayout<Float>.size),
+            mData: UnsafeMutableRawPointer(interleaved)
+        )
+
+        var inputTime = AudioTimeStamp()
+        var nowTime = AudioTimeStamp()
+        var outputTime = AudioTimeStamp()
+        let clientData = Unmanaged.passUnretained(reader).toOpaque()
+        withUnsafeMutablePointer(to: &abl) { ablPtr in
+            _ = tapIOProcReaderIOProc(
+                0,
+                &nowTime,
+                UnsafePointer(ablPtr),
+                &inputTime,
+                ablPtr,
+                &outputTime,
+                clientData
+            )
+        }
+
+        // Load-bearing assertion: the ring holds the REAL frame count
+        // (`frames`), not the doubled interleaved float count (2 × frames)
+        // the pre-EXP-034 bug produced.
+        XCTAssertEqual(
+            reader.ring.fillCount, frames,
+            "interleaved buffer must yield `frames` frames, not 2×frames"
+        )
+
+        // De-interleaved correctly: left in channel 0, right in channel 1.
+        let dch0 = UnsafeMutablePointer<Float>.allocate(capacity: frames)
+        let dch1 = UnsafeMutablePointer<Float>.allocate(capacity: frames)
+        defer {
+            dch0.deallocate()
+            dch1.deallocate()
+        }
+        let read = reader.ring.read(into: [dch0, dch1], frames: frames)
+        XCTAssertEqual(read, frames)
+        for f in 0..<frames {
+            XCTAssertEqual(dch0[f], Float(f), "left channel sample \(f)")
+            XCTAssertEqual(dch1[f], Float(f) + 1000, "right channel sample \(f)")
+        }
+    }
+
     // MARK: T2.7 — destroyTap and destroyAggregateDevice are called by stop
 
     func test_stop_calls_destroyTap_and_destroyAggregateDevice() throws {

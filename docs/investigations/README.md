@@ -12,14 +12,30 @@ experiment without repeating prior work.
 
 ## Epistemic posture
 
-These notebooks adopt a **post-falsificationist** stance: claims about
-"the cause" are held provisionally and tracked against the auxiliary
-assumptions they rest on. The framework borrows from Lakatos (hypotheses
-cluster into a hard core + protective belt; programmes can be progres-
-sive or degenerate) and from Duhem-Quine (no experiment tests a hypoth-
-esis in isolation — it tests the hypothesis plus its auxiliaries).
+These notebooks adopt a **post-falsificationist** stance. It is neither
+naive falsificationism (one contrary observation kills a hypothesis) nor
+naive verificationism (confirming instances prove one). Both fail in
+practice, and the stance is defined by taking those failures seriously.
 
-Three commitments shape the protocol:
+Naive falsificationism fails because no mechanism is tested in isolation
+(Duhem-Quine): a failed prediction implicates a whole web — the proposed
+mechanism, its auxiliaries, the correctness of any fix written to test it,
+and the diagnostic apparatus. The failure shows something in the web is
+wrong without showing which. You choose where to revise, and the choice is
+made explicit and defended rather than applied silently to protect a
+favored hypothesis. Naive verificationism fails because confirmation is
+cheap: a coherent story that fits the data is the default, not a signal of
+truth, and coherence is sharper as a warning for an LLM assistant trained
+toward plausible narratives. The framework borrows from Lakatos (hypotheses
+cluster into a hard core plus protective belt; a series of interventions is
+progressive when it makes novel corroborated predictions and degenerating
+when it only patches anomalies) and from Hacking (a cause you can manipulate
+to move an effect is one you have warrant to believe).
+
+The full procedure for using this stance while debugging — the
+hypothesize, intervene, predict, revise loop and its gates — lives in
+`docs/governance/debugging-protocol.md`. The commitments below are the
+notebook-facing summary.
 
 - **Distinguish source-grounded from behavior-inferred claims.** When
   you've read the code or spec and traced the path, that's
@@ -28,10 +44,24 @@ Three commitments shape the protocol:
   is bounded by the auxiliaries (test apparatus, environmental state,
   diagnostic correctness). Tag every claim with one or the other.
 
+- **Distinguish a condition that obtains from a condition that is
+  load-bearing.** "C obtains" (the source node runs at 44.1 kHz) can be
+  source-grounded directly. "C causes symptom S" is a separate claim that
+  confirming C does not establish — it rests on the usually-unstated
+  auxiliary that nothing else contributes to S. Only an intervention that
+  moves S establishes load-bearing-ness. Reserve the word "confirmed" for a
+  load-bearing claim that survived an intervention.
+
+- **Treat a fix as an experiment.** A fix targeting a hypothesized cause is
+  an intervention, and an intervention is the test of the hypothesis. It is
+  pre-registered like any experiment, with the discriminating prediction
+  written before the code. See the Intervention ledger below.
+
 - **Pre-register predictions before running an experiment.** Write down
-  what each possible outcome would mean *before* the run. Locked once
-  the experiment starts. This is the single most effective guard
-  against post-hoc story-retrofitting.
+  what each possible outcome would mean *before* the run, including the
+  risky branch — what a failed fix would force you to conclude. Locked once
+  the experiment starts. This is the single most effective guard against
+  post-hoc story-retrofitting.
 
 - **Watch for paradigm trouble, not just hypothesis trouble.** When the
   protective belt of a hypothesis fails 3+ times the same way, the
@@ -108,29 +138,40 @@ headings exact — they're the anchors a future reader scans for.
    - **Resurrection condition** (inactive / ruled out only): what
      evidence would bring this back into play.
 
-5. **Experiment log** — chronological, every experiment as one entry.
+5. **Intervention ledger** — one compact table row per fix attempted, so
+   a future session can scan "have we tried this?" without re-reading the
+   experiment log. Columns: `EXP-NNN` (links to the full entry), date,
+   target mechanism, mechanism type, landed? (did the fix take effect),
+   resolved? (did the symptom go away), and the revision taken if it did
+   not resolve. A fix is an intervention and an intervention is an
+   experiment, so every row also has a full pre-registered entry in the
+   experiment log. See `docs/governance/debugging-protocol.md` for the
+   intervention entry template and the obtains-versus-load-bearing
+   discipline that governs the "resolved?" column.
+
+6. **Experiment log** — chronological, every experiment as one entry.
    Use the template below. Number them `EXP-NNN` so cross-references work.
 
-6. **External references** — every source consulted, with the quote
+7. **External references** — every source consulted, with the quote
    relied on. URLs alone aren't enough; the quote is what survives if
    the URL link-rots.
 
-7. **Open questions** — `Q1`, `Q2`, ... — questions we don't have
+8. **Open questions** — `Q1`, `Q2`, ... — questions we don't have
    answers to yet. When a question is resolved, move it out of this
    section and add a "resolved by EXP-NNN" link to the experiment that
    resolved it.
 
-8. **Glossary** — domain-specific terms the reader needs. Spell out
+9. **Glossary** — domain-specific terms the reader needs. Spell out
    acronyms (HFP, A2DP, TCC, AUHAL, IOProc, CDHash, TID, etc.) the first
    time they appear in the notebook and again here for quick lookup.
 
-9. **Programme health checkpoints** — *Frame check* entries (`FC-NNN`)
-   triggered when the protective belt fails repeatedly. See "Programme
-   health triggers" below. Mandatory section header even if empty;
-   absence of frame checks should be a deliberate decision, not an
-   oversight.
+10. **Programme health checkpoints** — *Frame check* entries (`FC-NNN`)
+    triggered when the protective belt fails repeatedly. See "Programme
+    health triggers" below. Mandatory section header even if empty;
+    absence of frame checks should be a deliberate decision, not an
+    oversight.
 
-10. **Changelog** — major notebook updates, dated. "Added EXP-013",
+11. **Changelog** — major notebook updates, dated. "Added EXP-013",
     "Reorganized hypothesis ledger", etc. Not every word edit — just
     the moments worth flagging.
 
