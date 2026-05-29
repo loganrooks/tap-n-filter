@@ -172,22 +172,85 @@ public final class ReverbNode: EffectNode {
         let clampedMix = min(max(wetDryMix, 0.0), 1.0)
         let wetGain: Float = bypass ? 0.0 : clampedMix
         let dryGain: Float = bypass ? 1.0 : (1.0 - clampedMix)
+
+        // EXP-031 fix: always keep the internal mixers' master `.volume`
+        // at unity. The documented way to control wet/dry mix in
+        // AVAudioMixing is via `AVAudioMixingDestination.volume` on the
+        // downstream mixer's per-input-bus destination, NOT via the
+        // upstream mixer's `.volume`. The previous fallback path
+        // (`mixer.volume = gain` when `destination(forMixer:bus:)`
+        // returned nil) could silently set `dryMixer.volume = 0` at
+        // attach time when the destination was transiently unavailable;
+        // once set, the master volume stayed at 0 and the dry path was
+        // muted forever, regardless of later destination.volume sets.
+        // Observed in EXP-031 run 2 with `dryMixerVol=0.0` while
+        // `dryDestVol=1.0` — bypass=true should have routed audio
+        // through the dry path but the upstream mixer was muted.
+        dryMixer.volume = 1.0
+        wetMixer.volume = 1.0
+
         if let dryDestination = dryMixer.destination(
             forMixer: outputBus,
             bus: Self.dryInputBusIndex
         ) {
             dryDestination.volume = dryGain
-        } else {
-            dryMixer.volume = dryGain
         }
+        // Intentionally no fallback if destination is nil — see comment
+        // above. Subsequent `applyMixGains()` calls (slider drag, bypass
+        // toggle) will set the destination volume correctly once the
+        // connection is fully realised.
         if let wetDestination = wetMixer.destination(
             forMixer: outputBus,
             bus: Self.wetInputBusIndex
         ) {
             wetDestination.volume = wetGain
-        } else {
-            wetMixer.volume = wetGain
         }
+    }
+
+    /// Re-apply mix gains once the engine is running. The mixer destinations
+    /// `applyMixGains()` writes to are nil while the engine is stopped, so the
+    /// gains set during `attach(to:)` (and any preset restored before
+    /// power-on) only land when this is called after `engine.start()`.
+    /// (Codex PR #10 review — saved bypass / wet-dry honored on power-on.)
+    public func refreshMixState() {
+        applyMixGains()
+    }
+
+    // MARK: - EXP-031 diagnostic
+
+    /// `[EXP-031.*]` instrumentation. Exposes the parallel-mixer state +
+    /// per-mixer output formats so we can detect format-negotiation
+    /// asymmetries between Reverb (which cuts audio on bypass) and EQ
+    /// (which doesn't).
+    public func debugStateDescription() -> String {
+        let dryDest = dryMixer.destination(
+            forMixer: outputBus,
+            bus: Self.dryInputBusIndex
+        )
+        let wetDest = wetMixer.destination(
+            forMixer: outputBus,
+            bus: Self.wetInputBusIndex
+        )
+        return "bypass=\(bypass) wetDryMix=\(wetDryMix) "
+            + "dryDestExists=\(dryDest != nil) "
+            + "dryDestVol=\(dryDest?.volume.description ?? "nil") "
+            + "dryMixerVol=\(dryMixer.volume) "
+            + "wetDestExists=\(wetDest != nil) "
+            + "wetDestVol=\(wetDest?.volume.description ?? "nil") "
+            + "wetMixerVol=\(wetMixer.volume) "
+            + "attached=\(attachedEngine != nil) "
+            + "inFmt=\(Self.fmt(inputBus.outputFormat(forBus: 0))) "
+            + "dryFmt=\(Self.fmt(dryMixer.outputFormat(forBus: 0))) "
+            + "reverbInFmt=\(Self.fmt(reverb.inputFormat(forBus: 0))) "
+            + "reverbOutFmt=\(Self.fmt(reverb.outputFormat(forBus: 0))) "
+            + "wetFmt=\(Self.fmt(wetMixer.outputFormat(forBus: 0))) "
+            + "outFmt=\(Self.fmt(outputBus.outputFormat(forBus: 0))) "
+            + "reverbAUBypass=\(reverb.bypass) "
+            + "reverbUnitWetDryMix=\(reverb.wetDryMix)"
+    }
+
+    private static func fmt(_ format: AVAudioFormat) -> String {
+        return "\(format.sampleRate)Hz×\(format.channelCount)ch"
     }
 
     // MARK: Snapshot / restore

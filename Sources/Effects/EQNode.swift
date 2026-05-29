@@ -257,29 +257,73 @@ public final class EQNode: EffectNode {
         let clampedMix = min(max(wetDryMix, 0.0), 1.0)
         let wetGain: Float = bypass ? 0.0 : clampedMix
         let dryGain: Float = bypass ? 1.0 : (1.0 - clampedMix)
-        // Per-input-bus volumes on `outputBus` are set through the upstream
-        // node's AVAudioMixingDestination — see AVAudioMixing.h. The
-        // destination is only available after the nodes are connected; this
-        // method is invoked from `attach` after wiring and from the
-        // `bypass`/`wetDryMix` didSets while attached. Setting `volume`
-        // before attach is a no-op; that's harmless because attach calls
-        // applyMixGains a second time after wiring.
+
+        // EXP-031 fix: always keep the internal mixers' master `.volume`
+        // at unity. See `ReverbNode.applyMixGains` for the rationale —
+        // the documented way to mix is via `AVAudioMixingDestination.volume`
+        // on the downstream mixer's per-input-bus destination, not via
+        // the upstream mixer's `.volume`. The prior fallback path could
+        // silently set `mixer.volume = 0` at attach time when the
+        // destination was transiently unavailable, and that mute then
+        // persisted across every subsequent call.
+        dryMixer.volume = 1.0
+        wetMixer.volume = 1.0
+
         if let dryDestination = dryMixer.destination(
             forMixer: outputBus,
             bus: Self.dryInputBusIndex
         ) {
             dryDestination.volume = dryGain
-        } else {
-            dryMixer.volume = dryGain
         }
         if let wetDestination = wetMixer.destination(
             forMixer: outputBus,
             bus: Self.wetInputBusIndex
         ) {
             wetDestination.volume = wetGain
-        } else {
-            wetMixer.volume = wetGain
         }
+    }
+
+    /// Re-apply mix gains once the engine is running. See
+    /// `ReverbNode.refreshMixState` — the mixer destinations are nil while the
+    /// engine is stopped, so gains set during `attach(to:)` only land when
+    /// this is called after `engine.start()`. (Codex PR #10 review.)
+    public func refreshMixState() {
+        applyMixGains()
+    }
+
+    // MARK: - EXP-031 diagnostic
+
+    /// `[EXP-031.*]` instrumentation. See `ReverbNode.debugStateDescription`
+    /// for the rationale; identical shape so we can side-by-side compare
+    /// Reverb (cuts audio on bypass) vs EQ (doesn't).
+    public func debugStateDescription() -> String {
+        let dryDest = dryMixer.destination(
+            forMixer: outputBus,
+            bus: Self.dryInputBusIndex
+        )
+        let wetDest = wetMixer.destination(
+            forMixer: outputBus,
+            bus: Self.wetInputBusIndex
+        )
+        return "bypass=\(bypass) wetDryMix=\(wetDryMix) "
+            + "dryDestExists=\(dryDest != nil) "
+            + "dryDestVol=\(dryDest?.volume.description ?? "nil") "
+            + "dryMixerVol=\(dryMixer.volume) "
+            + "wetDestExists=\(wetDest != nil) "
+            + "wetDestVol=\(wetDest?.volume.description ?? "nil") "
+            + "wetMixerVol=\(wetMixer.volume) "
+            + "attached=\(attachedEngine != nil) "
+            + "inFmt=\(Self.fmt(inputBus.outputFormat(forBus: 0))) "
+            + "dryFmt=\(Self.fmt(dryMixer.outputFormat(forBus: 0))) "
+            + "eqInFmt=\(Self.fmt(eq.inputFormat(forBus: 0))) "
+            + "eqOutFmt=\(Self.fmt(eq.outputFormat(forBus: 0))) "
+            + "wetFmt=\(Self.fmt(wetMixer.outputFormat(forBus: 0))) "
+            + "outFmt=\(Self.fmt(outputBus.outputFormat(forBus: 0))) "
+            + "eqAUBypass=\(eq.bypass)"
+    }
+
+    private static func fmt(_ format: AVAudioFormat) -> String {
+        return "\(format.sampleRate)Hz×\(format.channelCount)ch"
     }
 
     // MARK: Snapshot / restore

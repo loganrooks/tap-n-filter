@@ -19,6 +19,7 @@ public struct DebugPanel: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             header
+            readerTestRow
             Divider()
             entries
         }
@@ -27,6 +28,36 @@ public struct DebugPanel: View {
             RoundedRectangle(cornerRadius: 6)
                 .fill(Color.secondary.opacity(0.08))
         )
+    }
+
+    /// EXP-029 reader-test trigger. Runs `TapIOProcReader.start()` for 5
+    /// seconds with NO `engine.attach(sourceNode)` — i.e., the same
+    /// tap/aggregate/IOProc path as production minus any AVAudioEngine
+    /// involvement. Compare its `[EXP-029.*]` log block to the
+    /// production Start path's block to identify the first divergence.
+    /// Throwaway diagnostic; remove once the AudioDeviceStart 'nope'
+    /// regression is resolved.
+    private var readerTestRow: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "stethoscope")
+                .foregroundStyle(.indigo)
+            Text("Reader test")
+                .font(.caption)
+                .fontWeight(.semibold)
+            Spacer()
+            if viewModel.isReaderTestRunning {
+                Text("running…")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else {
+                Button("Run 5s") {
+                    viewModel.runReaderTest()
+                }
+                .font(.caption2)
+                .disabled(viewModel.currentSource == nil)
+                .accessibilityLabel("Run TapIOProcReader without engine for 5 seconds (EXP-029 control)")
+            }
+        }
     }
 
     private var header: some View {

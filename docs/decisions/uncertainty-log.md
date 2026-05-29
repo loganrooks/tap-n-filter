@@ -180,3 +180,17 @@ Entries that are resolved during build are updated in place (status changed, lin
 **Resolution path**: V0.2 promotes each variant to a typed payload mirroring `.capture(CaptureError)`'s pattern: `case graph(GraphError)`, `case preset(PresetError)`, `case parameter(ParameterError)`, `case engine(EngineError)`, `case persistence(PersistenceError)`. UI surfaces continue rendering through `userMessage` (which would dispatch over the typed payload), but any V0.2 UI that wants to discriminate (a "Retry preset migration" button, a "Pick a different source" hint) can pattern-match the typed values.
 
 **Revisit trigger**: V0.2 work that touches `AppViewModel`'s error surface — preset migration UI, or any user-facing affordance that branches on the kind of failure.
+
+---
+
+## U-012: Orphan-cleanup matches by UID prefix with no ownership/liveness check
+
+**Status**: Open — deferred to V0.2.
+**Triggered by**: Codex review on PR #10 (`Sources/Capture/CaptureController.swift` orphan-cleanup pass, EXP-030).
+**Question**: The defensive orphan cleanup that runs at `CaptureController` init enumerates aggregates/taps and destroys everything matching the global `tap-n-filter.aggregate.` / `tap-n-filter.tap.` UID prefix, with no check that the owning process is dead or that this controller owns the resource. If a second app instance, a helper, or a test controller is created while an existing capture is running, the new instance's cleanup would tear down the first instance's *active* aggregate/tap and interrupt capture.
+
+**Current best guess**: Acceptable for V0.1.0. tap-n-filter ships as a single-instance menubar app, so two live controllers contending for the same prefixed resources is not an expected runtime configuration. The `UserDefaults` `tap-n-filter.disableOrphanCleanup=true` escape hatch already exists for anyone who hits trouble (e.g., running the app alongside an integration-test harness). The cleanup's purpose — reclaiming aggregates/taps leaked by a *crashed prior run of this same app* — is served by prefix matching because a crashed run leaves no live owner.
+
+**Resolution path**: V0.2 adds an ownership/liveness marker so cleanup only reclaims genuinely-orphaned resources. Options: embed the owning PID in the aggregate UID (`tap-n-filter.aggregate.<pid>.<uuid>`) and skip destruction when that PID is still alive; or check `kAudioDevicePropertyDeviceIsRunning` on each match and never destroy a running device; or take a per-launch lock file the cleanup consults.
+
+**Revisit trigger**: any work that makes multiple concurrent capture controllers a real configuration (a helper process, a second window, automated tests that run capture against the live HAL), or a bug report of capture stopping when a second tap-n-filter-adjacent process launches.

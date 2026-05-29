@@ -89,6 +89,21 @@ public protocol EffectNode: AnyObject, Codable {
     /// clamped to range (forward-compat with later schema changes); unknown
     /// parameter identifiers are ignored.
     func restore(from state: EffectState) throws
+
+    /// Diagnostic snapshot of the node's current mixing state, used in
+    /// `[EXP-031.*]` log lines. Declared as a protocol requirement (with a
+    /// default impl in the extension) so concrete-type overrides on
+    /// `ReverbNode` and `EQNode` dispatch dynamically — calls on
+    /// `any EffectNode` will reach the override, not the default impl.
+    func debugStateDescription() -> String
+
+    /// Re-apply the wet/dry + bypass mix gains. Must be called after the
+    /// engine is running: the `AVAudioMixingDestination`s the node uses to
+    /// set per-bus gains are nil while the engine is stopped, so the gains
+    /// set during `attach(to:)` (and any preset restored before power-on) do
+    /// not land until the connections are realized. Idempotent. The default
+    /// impl is a no-op for nodes without the parallel wet/dry mixer pattern.
+    func refreshMixState()
 }
 
 extension EffectNode {
@@ -102,6 +117,25 @@ extension EffectNode {
     /// the categorical preset stored in `EffectState.extras`) keep this
     /// default. `EQNode` overrides with the concrete band reader.
     public func parameterValue(_ identifier: String) -> Float? { nil }
+
+    /// Default `refreshMixState` is a no-op. `ReverbNode` and `EQNode`
+    /// override it to re-apply their parallel wet/dry mixer gains once the
+    /// engine is running (the mixer destinations are nil while it is stopped,
+    /// so gains set during `attach` do not land until then).
+    public func refreshMixState() {}
+
+    /// Diagnostic snapshot of the node's current mixing state. Returned as
+    /// a `tag=value` string for inclusion in `[EXP-031.*]` log lines.
+    /// Default impl exposes the public `bypass` / `wetDryMix` properties
+    /// only; concrete nodes that use the parallel wet/dry mixer pattern
+    /// override to additionally expose the dry/wet destination volumes and
+    /// whether each destination lookup returned nil. The override is the
+    /// load-bearing signal for H16: distinguishing "gain set as intended"
+    /// from "destination lookup returned nil; fallback to mixer.volume" is
+    /// the discriminator between Outcome H16-A and H16-E in EXP-031.
+    public func debugStateDescription() -> String {
+        return "bypass=\(bypass) wetDryMix=\(wetDryMix)"
+    }
 
     /// Codable default for nodes that don't need a bespoke encoding path.
     /// Encoding goes through `snapshot()` so the on-disk shape exactly
