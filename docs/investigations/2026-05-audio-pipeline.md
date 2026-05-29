@@ -2,33 +2,35 @@
 
 ## Status
 
-**Last updated**: 2026-05-28 (post-EXP-034 verdict; Bug B RESOLVED on
-speaker route; debugging protocol formalized)
+**Last updated**: 2026-05-28 (post-EXP-035; Bug A and Bug B both
+RESOLVED — they were coupled; H15/HFP degradation is the one remaining
+capture-quality issue)
 
-**Current frame**: Two distinct bugs. **Bug B is resolved** — its cause
-was mis-attributed to a sample-rate mismatch (real but not load-bearing
-— EXP-033); the dominant cause was an interleaved-vs-planar
-channel-layout mismatch (H17b), fixed by de-interleaving at the IOProc
-boundary (EXP-034) and confirmed by the user's speaker-route verdict
-(pitch, imaging, crackle, duration all corrected; wet/dry slider
-correct). **Bug A** (BT-only reverb-bypass cutout) remains parked and
-now needs a BT retest — it may have been compounded by the Bug B
-frame-count error. See FC-005 and
-`docs/governance/debugging-protocol.md` for the methodology change this
-episode produced.
+**Current frame**: The two bugs were one. **Bug B** (capture
+corruption: pitched-down / crackle / left-shift) was caused by an
+interleaved-vs-planar channel-layout mismatch at the IOProc boundary,
+fixed by de-interleaving (EXP-034), confirmed on speakers. **Bug A**
+(BT-only reverb-bypass cutout) turned out to be the same root cause —
+EXP-035 showed the cutout is gone on BT after the de-interleave fix, so
+Bug A was coupled to Bug B, not a separate reverb/HFP mechanism. The
+long search for a reverb-specific cause was chasing a downstream symptom
+of the interleaving bug. The earlier rate-mismatch (EXP-033) was real
+but not load-bearing (FC-005). The one remaining capture-quality issue
+is **H15 / HFP degradation**: on a BT output, active capture forces the
+system into HFP 16 kHz mono, so effects are audible but quiet/narrow.
+That is the next item. See FC-005 and
+`docs/governance/debugging-protocol.md` for the methodology this episode
+produced.
 
-- **Bug A (was H16, now refined)**: Toggling reverb's bypass during
-  capture cuts audio entirely **only when the system output is BT
-  (HFP mode active)**. On built-in speakers, reverb bypass works
-  cleanly. EQ bypass does not cut on any route. Chain position is
-  not the discriminator (confirmed by chain-swap sub-experiment of
-  EXP-031). The parallel-fan-out topology is NOT the cause
-  (confirmed by EXP-B1 standalone repro: DOES_NOT_REPRODUCE).
-  Remaining hypothesis space: H-S3/H-S4 — the BT/HFP route +
-  `AVAudioEngineConfigurationChange` interaction with our parallel
-  mixer scaffold for AVAudioUnitReverb specifically. **Parked
-  pending Bug B fix** — Bug A may be partially explained by the
-  rate mismatch and warrants retesting after the H17 fix lands.
+- **Bug A (H16): RESOLVED, coupled to Bug B.** EXP-035 — the BT
+  reverb-bypass cutout disappeared after the EXP-034 de-interleave fix.
+  It was an artifact of the Bug B frame-count error, not a
+  reverb-specific or BT/HFP-specific mechanism. The many refuted Bug A
+  sub-hypotheses (graph mutation, configChange race, parallel mixer,
+  AU bypass, chain position, fan-out topology) were all correct
+  refutations; the real cause sat at the IOProc boundary, a layer the
+  Bug A hypothesis space never reached. Reinforces the FC-004 lesson:
+  test the lowest-layer correctness baseline first.
 
 - **Bug B (H17, now split)**: the persistent "pitched-down /
   voice-changer + crackle + left-shift" degradation on every capture.
@@ -65,21 +67,24 @@ episode produced.
   BT-only.
 
 **Operational state**:
-- Latest build includes the EXP-033 rate fix (`graph.attach`
-  `sourceFormat:` pins the chain to the tap rate; `captureFormat` on
-  the capture protocol) and the EXP-034 de-interleave (`TapIOProcReader`
-  detects interleaving and de-interleaves in the IOProc). Builds clean.
+- Committed: `47cee0c` (capture fixes + notebook), `9c0ae2c`
+  (debugging-protocol formalization), on branch
+  `investigation/exp-029-observability`. Builds clean. Bug A + Bug B
+  resolved and verified on their respective routes.
 - The proposed ReverbNode refactor (native `reverb.wetDryMix` +
-  `reverb.bypass`) has been **paused** — it would have addressed
-  Bug A by sidestepping the parallel mixer, but B1's verdict
-  shows the parallel mixer is not the cause. Refactor would
-  have been fixing the wrong thing.
-- **The next active step is the EXP-034 audio verdict.** The user runs
-  a capture on speakers and reports whether the four symptoms resolved
-  together (see EXP-034's locked prediction). On resolution: retest
-  Bug A on BT, add an interleaved-input unit test, then move on. On
-  non-resolution: take EXP-034's risky branch (read the raw IOProc
-  `AudioBufferList` arrangement).
+  `reverb.bypass`) is **abandoned** — Bug A is resolved without it, and
+  B1 already showed the parallel mixer was never the cause.
+- **The remaining capture-quality issue is H15 / HFP degradation on
+  BT.** Decision pending (the user has flagged this as the next item):
+  ship V0.1 with a documented caveat + UI hint (ADR-019), spike a
+  deeper app-side workaround (uncertain — `defaults write Disable HFP`
+  already failed on macOS 26.3), or defer a HAL-plugin virtual device
+  to V0.2. Source-grounded that active capture forces HFP on a BT
+  output.
+- Smaller follow-ups before closing the investigation: add an
+  interleaved-input regression test to `TapIOProcReaderTests`; consider
+  an ADR for the capture format contract (chain at tap rate +
+  de-interleave at the IOProc boundary).
 
 **Earlier frames (now revised)**:
 - Post-EXP-029, pre-EXP-030: H13 was the leading hypothesis for
@@ -417,14 +422,25 @@ audio quality during capture; only on speakers could H17's degradation
 become audible. After H17b is resolved, retest Bug A on BT — the
 frame-count error may have compounded it.
 
-#### H16 — Reverb bypass cuts audio on BT/HFP route specifically (source-grounded for the audible behaviour; mechanism unknown)
+#### H16 — Reverb bypass cuts audio on BT/HFP route (RESOLVED by EXP-035 — was coupled to Bug B)
 
-**Claim**: Toggling `setBypass(nodeID: ReverbNode.id, bypass: true)`
-during active capture cuts audio entirely **when system output is
-BT in HFP mode**. The same toggle on speakers (no BT) does not cut
-audio. EQ bypass does not cut audio on any route. Chain position is
-not the discriminator (chain-swap sub-experiment of EXP-031:
-Reverb-as-first and Reverb-as-second both cut on BT). The
+**Resolution (EXP-035)**: the cutout was an artifact of the Bug B
+frame-count error (interleaved-as-planar at 2× frames). After the
+EXP-034 de-interleave fix corrected the source-node buffer cadence,
+the BT retest showed **no cutout** on reverb-bypass toggle. Bug A and
+Bug B were coupled. The long search for a reverb-specific or
+BT/HFP-specific mechanism (below) was chasing a downstream symptom of
+the interleaving bug; the "mechanism unknown" framing never resolved
+because the real cause was upstream at the IOProc boundary, the same
+place as Bug B. The remaining BT difference (reverb feels slighter) is
+H15/HFP output degradation, not Bug A.
+
+**Claim (historical)**: Toggling `setBypass(nodeID: ReverbNode.id,
+bypass: true)` during active capture cuts audio entirely **when system
+output is BT in HFP mode**. The same toggle on speakers (no BT) does
+not cut audio. EQ bypass does not cut audio on any route. Chain
+position is not the discriminator (chain-swap sub-experiment of
+EXP-031: Reverb-as-first and Reverb-as-second both cut on BT). The
 parallel-fan-out topology is not the cause (EXP-B1 standalone repro
 DOES_NOT_REPRODUCE — every parallel-fan-out config produced
 audible signal in isolation).
@@ -2808,6 +2824,58 @@ tap rate; de-interleave at the IOProc boundary).
 
 ---
 
+### EXP-035 — Retest Bug A (reverb-bypass cutout) on BT after the Bug B fix
+
+**Date**: 2026-05-28 (**pre-registered; awaiting run**).
+**Type**: experiment (observation; no code change).
+**Question**: Does toggling reverb bypass during capture still cut audio
+entirely on a Bluetooth output route, now that Bug B (H17b interleaving)
+is fixed?
+**Hypothesis under test**: H16 / Bug A, and whether it was coupled to
+Bug B.
+
+**Prediction** (locked before the run):
+- **Outcome 1 — coupled / resolved**: the cutout is gone on BT → Bug A
+  was an artifact of the Bug B frame-count error (the de-interleave
+  changed the source-node buffer cadence). Bug A closes; the two were
+  coupled.
+- **Outcome 2 — independent / persists**: the cutout still happens on BT
+  (and still not on speakers) → Bug A is independent of Bug B and is the
+  BT/HFP routing pathology (H15-adjacent). Goes to ADR-019 (intrinsic OS
+  limitation + V0.1 ship policy).
+- **Outcome 3 — changed**: the cutout is shorter or recovers differently
+  → partial coupling; investigate the `AVAudioEngineConfigurationChange`
+  handler's interaction with the new format path.
+
+**Method**: connect a BT output; relaunch the app; start capture on
+Safari/YouTube; first confirm audio is cleanly pitched (the Bug B fix
+should hold on BT, modulo HFP 16 kHz quality); toggle reverb bypass off
+then on; toggle EQ bypass as the control (EQ never cut). Grep
+`[EXP-031.setBypass]`, `[EXP-031.configChange]`, `[EXP-032.format.*]`,
+`[EXP-034.layout]`.
+
+**Result / Conclusion**: **Outcome 1 — coupled / resolved.** User
+verdict on BT: the cutout is gone. Toggling reverb bypass no longer
+cuts audio. Bug A was an artifact of the Bug B frame-count error; the
+EXP-034 de-interleave (which corrected the source-node buffer cadence)
+resolved it. Bug A / H16 is **resolved, coupled to Bug B**.
+
+Secondary observation [behavior-inferred]: the reverb is now *audible*
+on BT (toggle and slider both produce a change — a state earlier
+experiments could not reach because the cutout and HFP masked it), but
+the effect feels "much slighter" than on the speaker route. This is
+consistent with H15 (HFP): the chain processes reverb at full quality
+(48 kHz), but the output is downsampled to HFP 16 kHz mono, which
+strips the high-frequency reverb tail (Nyquist 8 kHz) and collapses the
+stereo width the reverb depends on. Not a new bug and not attributable
+to the EXP-034 fix; it is the HFP output degradation (H15), which is
+the remaining capture-quality issue to address. Not independently
+confirmed here — confirming would require an A/B of reverb depth on a
+wired 48 kHz output versus BT HFP — but H15 is already source-grounded
+and the slightness is its expected corollary.
+
+---
+
 ### EXP-031 — Bypass toggle audio-cutout instrumentation (RAN, MULTIPLE SUB-EXPERIMENTS)
 
 **Status**: completed (multi-build, multi-sub-experiment).
@@ -4713,5 +4781,16 @@ instead of testing causal salience by intervention.
   crackle, and a correct wet/dry slider (wet=0 ≡ bypass). All four
   pre-registered consequences resolved together → H17b confirmed
   load-bearing. Updated the Intervention ledger, EXP-034 conclusion,
-  H17b status, and Status block. Bug A (BT-only) still parked; next
-  step is a BT retest now that Bug B is fixed.
+  H17b status, and Status block. Committed `9c0ae2c` (protocol) +
+  `47cee0c` (capture fixes + notebook).
+- 2026-05-28 — **EXP-035 verdict: Bug A RESOLVED, coupled to Bug B.**
+  BT retest — the reverb-bypass cutout is gone after the de-interleave
+  fix (Outcome 1). Bug A was a downstream symptom of the same
+  interleaving frame-count error, not a reverb- or BT/HFP-specific
+  mechanism; the long Bug A hypothesis search never reached the IOProc
+  layer where the cause sat. Reverb is now audible on BT but slighter
+  than on speakers — the expected H15/HFP 16 kHz mono degradation, not
+  a new bug. Marked H16 resolved, updated Status. **Remaining
+  capture-quality issue: H15 / HFP degradation on BT** (decision
+  pending per the user: ADR-019 caveat vs deeper workaround vs V0.2
+  HAL plugin).
