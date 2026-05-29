@@ -2,9 +2,11 @@
 
 ## Status
 
-**Last updated**: 2026-05-28 (post-EXP-035; Bug A and Bug B both
-RESOLVED — they were coupled; H15/HFP degradation is the one remaining
-capture-quality issue)
+**Last updated**: 2026-05-29 (post-EXP-036; H15/HFP mitigation found —
+an app-side default-input-device switch keeps Bluetooth on A2DP. Bug A
+and Bug B remain RESOLVED. The HFP item moves from "intrinsic limitation"
+to "mitigation decided (ADR-019), automation pending in the settings
+branch (EXP-037)".)
 
 **Current frame**: The two bugs were one. **Bug B** (capture
 corruption: pitched-down / crackle / left-shift) was caused by an
@@ -59,10 +61,13 @@ produced.
   0). EXP-027 / EXP-028 mechanism remains unexplained but inert
   (no recurrence across EXP-029 + EXP-030 + EXP-031 — 6+
   successful Starts).
-- **H15 (HFP forced by capture on BT)** → still active, source-
-  grounded. Decision still pending: ADR-019 / uncertainty entry +
-  V0.1 ship-policy decision. Confirmed by speaker test (no HFP
-  when BT disconnected; rate stays at native).
+- **H15 (HFP forced by capture on BT)** → **refined by EXP-036**,
+  source-grounded. The trigger is gated on the BT device being the
+  system default *input* while capturing; forcing default input to the
+  built-in mic keeps the output on A2DP (`outputOut 44100×2` vs
+  `16000×1`). An app-side mitigation exists (default-input switch);
+  disposition in ADR-019, automation in EXP-037. Still confirmed by the
+  speaker test (no HFP when BT disconnected).
 - **H16 (bypass toggle cuts audio)** → renamed Bug A; refined to
   BT-only.
 
@@ -74,13 +79,14 @@ produced.
 - The proposed ReverbNode refactor (native `reverb.wetDryMix` +
   `reverb.bypass`) is **abandoned** — Bug A is resolved without it, and
   B1 already showed the parallel mixer was never the cause.
-- **The remaining capture-quality issue is H15 / HFP degradation on
-  BT.** Decision pending (the user has flagged this as the next item):
-  ship V0.1 with a documented caveat + UI hint (ADR-019), spike a
-  deeper app-side workaround (uncertain — `defaults write Disable HFP`
-  already failed on macOS 26.3), or defer a HAL-plugin virtual device
-  to V0.2. Source-grounded that active capture forces HFP on a BT
-  output.
+- **H15 / HFP degradation on BT has a found mitigation (EXP-036).** The
+  app-side workaround spike paid off: switching the system default
+  *input* away from the BT device during capture keeps the output on
+  A2DP. ADR-019 records the disposition (default-on "Preserve Bluetooth
+  quality" toggle); EXP-037 will pre-register and implement the
+  automation on the settings branch. The HAL-plugin virtual device is
+  deferred to V0.2 as robustness, not a V0.1 prerequisite. (`defaults
+  write Disable HFP` remains a dead end on macOS 26.3.)
 - Smaller follow-ups before closing the investigation: add an
   interleaved-input regression test to `TapIOProcReaderTests`; consider
   an ADR for the capture format contract (chain at tap rate +
@@ -185,6 +191,16 @@ intended as a validation harness for one possible H2 fix.
 
 ## TL;DR
 
+- **Current state (2026-05-29)** — read this first; the bullets below are
+  the earlier chronological findings (H1/H2/H4 era), kept for the record.
+  Bug B (capture corruption) and Bug A (BT reverb-bypass cutout) are both
+  **RESOLVED**: they were one bug, an interleaved-vs-planar layout mismatch
+  at the IOProc boundary (EXP-034). The remaining BT-quality issue,
+  H15/HFP, now has an **app-side mitigation** (EXP-036): switching the
+  system default *input* off the BT device during capture keeps the output
+  on A2DP (44.1 kHz stereo) instead of HFP (16 kHz mono). Disposition in
+  ADR-019; automation queued as EXP-037. See the Status block for the
+  authoritative current frame.
 - **H1 fixed** (EXP-013): production `capture.start` was throwing
   **-10851** on every Start because `pinEngineOutputToDefault` set
   `kAudioOutputUnitProperty_CurrentDevice` on
@@ -305,6 +321,18 @@ entry in Inactive section.)
 
 #### H15 — Active process-tap IOProc forces BT into HFP routing (source-grounded)
 
+**Status (2026-05-29, refined by EXP-036)**: the trigger is more specific
+than first stated, and it is **manipulable from user space**. EXP-036
+showed that forcing the system default *input* device to the Mac built-in
+mic keeps the BT output on A2DP (44.1 kHz stereo). The HFP switch is gated
+on the BT device being the default *input* while a capture session is
+active — not on the tap being active per se. An app-side mitigation
+therefore exists (switch default input away from BT during capture), and
+the HAL-plugin path drops from "required" to "V0.2 robustness." Disposition
+in ADR-019; automation pre-registered as EXP-037. The original claim below
+stands as the *unmitigated* behavior; the sentence "below where any
+V0.1-scope code can intervene" is the part EXP-036 corrects.
+
 **Claim**: macOS 26.3's audio routing layer forces Bluetooth output
 into HFP voice mode (16 kHz × 1 ch) whenever any process tap's
 IOProc is active and the default output is a Bluetooth device. The
@@ -337,8 +365,17 @@ intervening engine reconfiguration on our side).
 - Wired output or non-BT output → no HFP (this isn't falsifying so
   much as confirming the trigger).
 
-**Decision pending**: ADR-019 (or uncertainty-log entry) to document
-the limitation. Options for V0.1:
+**Decision (2026-05-29, EXP-036 → ADR-019)**: option 3 paid off. The app
+switches the system default *input* device away from the Bluetooth device
+for the duration of capture and restores it on stop, behind a default-on
+toggle ("Preserve Bluetooth quality during capture"). This is the V0.1
+mitigation. The HAL-plugin virtual device (option 2) is deferred to V0.2
+as a robustness improvement, not a prerequisite. The README caveat
+(option 1) is retained as a fallback for the toggle-off case and for Macs
+with no usable non-BT input. See ADR-019 and EXP-037 (the automation,
+pre-registered before its code).
+
+Original options as recorded before EXP-036 (kept for the audit trail):
 1. Ship V0.1 with a README caveat: "for full quality, use a wired
    output or built-in speakers. BT output is HFP-degraded while
    filtering is active. V0.2 will investigate the HAL-plugin path."
@@ -1101,6 +1138,7 @@ load-bearing without ambiguity.
 
 | EXP | Date | Target mechanism | Type | Landed? | Resolved? | Revision on failure |
 |---|---|---|---|---|---|---|
+| EXP-036 | 05-29 | H15 refined: HFP trigger gated on BT being the system default *input*; manually set default input to built-in mic | behavior-inferred (causal); source-grounded (format readback) | yes (default input changed; input path 44.1 kHz) | **yes** — output stayed A2DP (`outputOut 44100×2` vs `16000×1`); reverb depth/width returned | — (lever confirmed load-bearing; app-side automation = EXP-037, settings branch) |
 | EXP-034 | 05-28 | Bug B: tap is interleaved, pipeline is planar; IOProc writes interleaved data as one planar channel at 2× frames | source-grounded (flags=9, bytesPerFrame=8) | yes (build; `[EXP-034.layout] interleaved=true`) | **yes** — pitch, imaging, crackle, duration all resolved together | — (mechanism confirmed load-bearing) |
 | EXP-033 | 05-28 | Bug B (H17a): chain runs at 44.1 kHz while tap is 48 kHz; pin chain to tap rate via `graph.attach(sourceFormat:)` | source-grounded (EXP-032 readback) | yes (`[EXP-032.format.source] rate=48000`) | **no** (still pitched low) | rate mismatch obtains but is **not load-bearing** for the audible artifact → look for a second mismatch at the same boundary → EXP-034 |
 | (H17 v1) | 05-28 | Bug B: `AVAudioConverter` from tap rate to engine rate in the render callback | behavior-inferred | no (converter was 48k→48k, a no-op; read pre-start outputNode format) | no | fix mis-implemented (read the wrong format, before `engine.start()`); superseded by EXP-033 |
@@ -4006,6 +4044,99 @@ is the only node still receiving samples. If EXP-025 confirms, the
 architectural fix Codex recommended originally (direct IOProc + AVAudio-
 SourceNode, output bound to default output device) is the right path.
 
+---
+
+### EXP-036 — Force default input ≠ Bluetooth, observe BT output stays A2DP
+
+**Date**: 2026-05-29 (manual user intervention; ran)
+**Type**: intervention (manual, not app code) — the test of whether the
+system default *input* device is a load-bearing lever for the HFP trigger.
+
+**Pre-registration note**: this entry documents a manual test the user
+ran on 2026-05-29 and reported. The Prediction block is reconstructed
+from what we would have predicted; the load-bearing conclusion rests on
+the objective format readback in the artifacts, not on a timestamped
+pre-registration. The *app-side automation* of this lever (EXP-037) is a
+separate intervention and **will** be pre-registered before its code, per
+`docs/governance/debugging-protocol.md`.
+
+**Target mechanism**: H15, refined — the HFP route switch is gated on the
+Bluetooth device being the system default *input* while a capture session
+is active, not on a tap being active per se. Forcing the default input to
+a non-BT device should keep the BT output on A2DP.
+**Mechanism type**: behavior-inferred (the causal link); the format
+readback is source-grounded.
+
+**Question**: with an active process-tap capture and a Bluetooth output,
+does forcing the system default *input* to the Mac built-in microphone
+keep the BT output on A2DP (44.1 kHz stereo) rather than HFP (16 kHz mono)?
+
+**Prediction** (reconstructed):
+- **If load-bearing**: with default input on the built-in mic, the output
+  diagnostic shows A2DP (`outputOut rate=44100 ch=2`) not HFP
+  (`16000 ch=1`), and the reverb tail / stereo width audibly return.
+- **Risky branch**: if the output still drops to HFP (`16000 ch=1`) with
+  the default input on the built-in mic, the input-device lever is NOT
+  load-bearing — the trigger is the active tap regardless of default
+  input, H15's original "OS forces HFP for any active tap on BT output"
+  stands, and the HAL-plugin virtual device (V0.2) is the only path. The
+  app-side auto-switch idea would be dead.
+- **Did-not-land branch**: if the default input did not actually change
+  (verify in System Settings ▸ Sound ▸ Input), the test is void; re-run.
+
+**Variables changed**:
+- System default input device: Bluetooth headset → Mac built-in mic.
+
+**Variables held constant**:
+- Output device: same Bluetooth headphones.
+- Source: Safari/YouTube; same effect chain; same build (post-EXP-034).
+
+**Method**: connect BT headphones as default output. In System Settings ▸
+Sound ▸ Input, set input to the Mac built-in microphone. Relaunch the app;
+start capture on Safari/YouTube. Grep `[EXP-029.engine.preattach]` and
+`[EXP-032.format.outputOut]`.
+
+**Artifacts** — `~/Library/Logs/tap-n-filter/app.log`:
+- 01:30:58 run (default input = BT): `[EXP-029.engine.preattach] …
+  outputFormat=16000.0Hz×1ch`; `[EXP-032.format.outputOut …]
+  rate=16000.0 ch=1` — HFP.
+- 03:42:53 run (default input = built-in mic): `[EXP-029.engine.preattach]
+  … outputFormat=44100.0Hz×2ch`; `[EXP-032.format.outputOut …]
+  rate=44100.0 ch=2` — A2DP retained.
+
+**Observations**:
+- [source-grounded] The output route format went from 16 kHz × 1 ch (HFP)
+  to 44.1 kHz × 2 ch (A2DP) between the two runs (readback above).
+- [behavior-inferred] The default input device was the responsible
+  change: it was the manipulated variable while output device, source,
+  chain, and build were held constant. The user reported reverb depth and
+  stereo width audibly returned.
+
+**Landed?**: yes — default input changed to the built-in mic (confirmed in
+System Settings; the run shows the input path at 44.1 kHz).
+**Resolved?**: **yes** — the symptom moved: the output stayed on A2DP and
+the reverb depth/width returned. The default-input device is a
+**load-bearing, user-space-manipulable** lever for the HFP trigger.
+
+**Conclusion**: outcome matched the load-bearing branch. H15 is refined —
+the HFP switch is gated on the BT device being the *default input* during
+capture, not merely on a tap being active. Because that lever is reachable
+from user space (no entitlement, no kext), an **app-side mitigation
+exists**: switch the default input away from the BT device for the
+duration of capture, then restore it. This overturns the earlier H15
+disposition ("intrinsic OS limitation; only a HAL plugin can fix it"). The
+HAL-plugin path drops from "required fix" to "V0.2 robustness."
+
+The app-side automation is a *separate* intervention (EXP-037), because it
+adds failure modes this manual test did not exercise: save/restore
+correctness, crash recovery (restore the original input if the app dies
+mid-capture), Macs with no built-in or non-BT input, and races with the
+user's own microphone usage.
+
+**Follow-ups**: EXP-037 (app-side auto-switch — pre-register before code);
+ADR-019 reframed from "intrinsic limitation" to "app-side mitigation +
+deferred HAL path"; resolves Q4.
+
 ## External references
 
 ### Codex investigation report (this session)
@@ -4173,10 +4304,14 @@ disables HFP for ALL apps not just ours).
   the embedded-vs-post-set tap list difference between our aggregate
   creation and audiotee's. Less likely: a leaked aggregate from prior
   failed production runs interfering. Not yet pinned.
-- **Q4** (open): once H1 is fixed, will production work on BT? The
-  Codex thesis says no — `configureEngineInput` will still trigger HFP
-  on BT. For built-in speakers it should work fully. → next experiment
-  after EXP-013.
+- **Q4** (resolved by EXP-036): once capture works, will it work on BT?
+  **Yes, with the mitigation.** Unmitigated, active capture forces HFP
+  (16 kHz mono) on a BT output (H15). But forcing the system default
+  *input* away from the BT device keeps the output on A2DP (44.1 kHz
+  stereo). The app automates this behind a default-on toggle (ADR-019,
+  EXP-037). The original Codex thesis ("`configureEngineInput` will
+  trigger HFP on BT") was right about the unmitigated path and is
+  superseded for the architecture by ADR-018 (direct IOProc).
 - **Q5** (open): are the existing Phase 1 / Phase 2 / Phase 3
   verifications still valid given that production capture has been
   silently broken on this branch? Probably need a phase-3 re-verify
@@ -4794,3 +4929,14 @@ instead of testing causal salience by intervention.
   capture-quality issue: H15 / HFP degradation on BT** (decision
   pending per the user: ADR-019 caveat vs deeper workaround vs V0.2
   HAL plugin).
+- 2026-05-29 — **EXP-036: H15 mitigation found.** A manual test
+  (default input switched to the Mac built-in mic) kept the BT output on
+  A2DP (`outputOut 44100×2`) instead of HFP (`16000×1`) — confirmed in
+  the app.log across two runs (01:30:58 HFP vs 03:42:53 A2DP). H15
+  refined: the HFP switch is gated on the BT device being the system
+  default *input* during capture, which is manipulable from user space.
+  Disposition decided in **ADR-019** (default-on "Preserve Bluetooth
+  quality" toggle; HAL plugin deferred to V0.2). Updated H15, Status,
+  TL;DR, the Intervention ledger, and resolved Q4. The app-side
+  automation is queued as **EXP-037**, to be pre-registered before its
+  code on the settings branch per the debugging protocol.
