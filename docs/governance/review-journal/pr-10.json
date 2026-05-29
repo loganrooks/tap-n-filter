@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "pr_number": 10,
   "repo": "loganrooks/tap-n-filter",
-  "last_synced_at": "2026-05-29T05:17:52.891010+00:00",
+  "last_synced_at": "2026-05-29T05:38:30.830626+00:00",
   "threads": [
     {
       "id": "PRRT_kwDOSjmLjM6Flbqm",
@@ -134,7 +134,14 @@
       "verdict_notes": "Added graph.refreshNodeMixState() to the AVAudioEngineConfigurationChange restart path \u2014 the third engine-restart path alongside powerOn and reattach. Completes the first-round refreshMixState fix.",
       "verdict_source": "block",
       "reconsidered_verdict": null,
-      "verdict_history": [],
+      "verdict_history": [
+        {
+          "at": "2026-05-29T05:38:30.830208+00:00",
+          "source": "block",
+          "verdict": "ACCEPTED_MODIFIED",
+          "by": "tool"
+        }
+      ],
       "extras": {}
     },
     {
@@ -155,7 +162,14 @@
       "verdict_notes": "Same finding/line as thread PRRT_kwDOSjmLjM6Flq50 (refresh mix state after the config-change engine restart). Fixed in 4a4f12e.",
       "verdict_source": "block",
       "reconsidered_verdict": null,
-      "verdict_history": [],
+      "verdict_history": [
+        {
+          "at": "2026-05-29T05:38:30.830597+00:00",
+          "source": "block",
+          "verdict": "DUPLICATE",
+          "by": "tool"
+        }
+      ],
       "extras": {}
     },
     {
@@ -174,6 +188,76 @@
       "verdict_commit": "4a4f12e",
       "verdict_refs": [],
       "verdict_notes": "powerOn() now guards on !isReaderTestRunning (sets a user-visible lastError and returns), symmetric with the runReaderTest captureState == .idle guard. Chose refuse-with-message over await/cancel since the reader test is debug-only and <= 5 s.",
+      "verdict_source": "block",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-05-29T05:38:30.830604+00:00",
+          "source": "block",
+          "verdict": "ACCEPTED_MODIFIED",
+          "by": "tool"
+        }
+      ],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6Fl2_q",
+      "path": "Sources/Capture/TapIOProcReader.swift",
+      "line": 407,
+      "reviewer": "chatgpt-codex-connector",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "P1",
+      "category": "missing-regression-coverage",
+      "finding_excerpt": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Add regression coverage for interleaved taps**\n\nThis new branch is the load-bearing fix for the user-facing capture corruption, but the existing IOProc unit coverage still only builds a non-interleaved two-buffer",
+      "created_at": "2026-05-29T05:26:28Z",
+      "resolved": true,
+      "outdated": false,
+      "verdict": "ACCEPTED_MODIFIED",
+      "verdict_commit": "9c20c45",
+      "verdict_refs": [],
+      "verdict_notes": "Added T2.9 (test_ioproc_callback_deinterleaves_interleaved_tap) to TapIOProcReaderTests. Feeds one interleaved [L,R,L,R,...] buffer (Float|Packed, bytesPerFrame=8) through the file-scope IOProc and asserts ring.fillCount == frames (not 2x) with L in ch0 / R in ch1, using distinct per-frame values. Cannot run in this sandbox (no XCTest module); CI validates.",
+      "verdict_source": "block",
+      "reconsidered_verdict": null,
+      "verdict_history": [],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6Fl2_0",
+      "path": "docs/decisions/ADR-019-hfp-bluetooth-mitigation.md",
+      "line": 23,
+      "reviewer": "chatgpt-codex-connector",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "P2",
+      "category": "adr-doc-consistency",
+      "finding_excerpt": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Amend ADR-018 where the HFP consequence is superseded**\n\nThis documents that ADR-018's \u201cNo HFP trigger on Bluetooth\u201d consequence is incomplete, but ADR-018's Consequences section still states that Bluetooth stays",
+      "created_at": "2026-05-29T05:26:29Z",
+      "resolved": true,
+      "outdated": false,
+      "verdict": "ACCEPTED_MODIFIED",
+      "verdict_commit": "9c20c45",
+      "verdict_refs": [],
+      "verdict_notes": "Added an inline supersession note to ADR-018's \"No HFP trigger on Bluetooth\" Enabled bullet, rather than only flagging it from ADR-019. It now states the engine-output-rebinding fix is necessary-but-not-sufficient, that a second tap-driven trigger survives, and that ADR-019's default-input switch is what keeps A2DP.",
+      "verdict_source": "block",
+      "reconsidered_verdict": null,
+      "verdict_history": [],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6Fl2_w",
+      "path": "docs/decisions/ADR-019-hfp-bluetooth-mitigation.md",
+      "line": null,
+      "reviewer": "chatgpt-codex-connector",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "P2",
+      "category": "doc-accuracy",
+      "finding_excerpt": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Do not claim EXP-037 is already pre-registered**\n\nThis ADR says the implementation is already pre-registered as `EXP-037` and that `EXP-037` records the intervention, but this commit has no `### EXP-037` entry in",
+      "created_at": "2026-05-29T05:26:29Z",
+      "resolved": true,
+      "outdated": true,
+      "verdict": "ACCEPTED_MODIFIED",
+      "verdict_commit": "9c20c45",
+      "verdict_refs": [],
+      "verdict_notes": "Reworded ADR-019 to future tense \u2014 EXP-037 does not exist yet; pre-registration is the gate before the device-switch code. Fixed both the Decision paragraph and the References entry; added an explicit \"no ### EXP-037 entry yet\" note.",
       "verdict_source": "block",
       "reconsidered_verdict": null,
       "verdict_history": [],
