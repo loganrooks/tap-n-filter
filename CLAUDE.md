@@ -26,6 +26,12 @@ Long-running technical investigations that span multiple sessions are tracked as
 
 If you're about to touch code in an area covered by an open investigation, read the notebook first. The point is to avoid repeating experiments or re-believing hypotheses that have already been ruled out.
 
+## Debugging hard problems
+
+When you are debugging a hard problem — an unknown cause in an opaque system, the kind of work an open investigation tracks — follow `docs/governance/debugging-protocol.md`. The load-bearing rule: **a fix that targets a hypothesized cause is an intervention, and an intervention is an experiment.** Pre-register it in the notebook's Intervention ledger *before* writing the code, with a discriminating prediction that includes the risky branch (what a landed-but-symptom-persists result would force you to conclude) and that separates the diagnostic proving the fix landed from the one proving the symptom resolved. Do not write the fix first and document after.
+
+Confirming that a condition *obtains* (source-grounded) is not confirming it is *load-bearing* (the cause of the symptom). Only an intervention that moves the symptom earns the word "confirmed." Conflating the two is the failure this protocol exists to prevent.
+
 ## Phases and gates
 
 Every phase has a spec under `docs/orchestration/phases/`. Every phase has gate criteria documented in that spec. **Do not advance a phase to `passed` in `state.json` until verification has returned PASS per `docs/governance/verification-protocol.md`.**
@@ -92,6 +98,7 @@ See `docs/governance/review-protocol.md` for the full review flow.
 - Do not advance `state.json` past `pending` without a passing verification.
 - Do not commit `Package.resolved` updates that introduce new top-level dependencies without an ADR.
 - Do not push directly to `main`. Every change goes through a PR.
+- Do not land a fix targeting a hypothesized cause in an area under active investigation without a pre-registered Intervention entry in the notebook (per `docs/governance/debugging-protocol.md`).
 
 ## Halt markers
 
