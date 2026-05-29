@@ -86,6 +86,16 @@ Picker("Source", selection: $viewModel.currentSource) {
 
 `SourceRow` shows the app icon (from `NSWorkspace.shared.icon(forFile:)` or `NSRunningApplication.icon`) and the display name. The picker is disabled while `captureState` is `.starting` or `.stopping`. Changing source while `.running` triggers `viewModel.powerOff()` followed by re-setting the source, with the user invited to power on again — V1 does not auto-restart on source change, to avoid surprise.
 
+### Targeting granularity and the no-tabs explainer
+
+The picker lists sources at **process granularity** — one capturable OS process per row, which is the finest unit Core Audio process taps address (ADR-020). V0.2 groups these into tiers (System audio / app-group with a process count / single process); V1 shows the flat per-process list.
+
+The picker must not imply a granularity the OS cannot deliver. Where a user looks for per-tab or per-window targeting, the picker surfaces an explainer rather than a control:
+
+> macOS captures audio per app. Browser tabs share one process, so they can't be separated. To filter one site on its own, use Safari's **File → Add to Dock** (or launch it as a separate Chrome/Firefox instance) — it then appears here as its own source.
+
+This is the only honest answer to the reframed "filter one tab" goal: the whole app is filterable, and a site can be carved into its own process by the user, but one tab among many cannot be isolated.
+
 ## ChainEditorView
 
 Vertical `LazyVStack` (or `List` if drag-and-drop reordering is desired and `LazyVStack` proves awkward) of `EffectRow` views. Each row's expand state is governed by `viewModel.expandedEffectID` — only one effect is expanded at a time, to keep the panel height bounded.
