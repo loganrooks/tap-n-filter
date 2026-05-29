@@ -50,7 +50,11 @@ func runDump() {
 
     let root = ControlPanelView().environmentObject(model)
     let hosting = NSHostingView(rootView: root)
-    hosting.frame = NSRect(x: 0, y: 0, width: 320, height: 600)
+    // Match the real panel size (ControlPanelView + docs/specs/ui.md) so the
+    // regenerated accessibility tree reflects the dimensions users actually
+    // get. Kept in sync with the snapshot helper's render size.
+    // (Codex PR #11 review.)
+    hosting.frame = NSRect(x: 0, y: 0, width: 380, height: 700)
 
     // The accessibility tree only populates when the view is hosted inside a
     // real NSWindow that has been ordered front. We park a borderless,
