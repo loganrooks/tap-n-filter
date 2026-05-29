@@ -374,6 +374,13 @@ public final class AppViewModel: ObservableObject {
                     )
                     do {
                         try self.engine.start()
+                        // Re-apply node mix gains: the engine just restarted,
+                        // and the mixer destinations were nil while it was
+                        // stopped, so a route / sample-rate change must not
+                        // leave bypass or wet/dry at default until the user
+                        // touches a control. Third restart path alongside
+                        // powerOn + reattach. (Codex PR #10 re-review.)
+                        self.graph.refreshNodeMixState()
                         self.logger.info(
                             "[EXP-031.engineRestart] OK — engine.isRunning=\(self.engine.isRunning)"
                         )
@@ -481,6 +488,20 @@ public final class AppViewModel: ObservableObject {
             return
         }
         guard captureState == .idle || isFailedState(captureState) else {
+            return
+        }
+        // The debug reader test owns a tap on this same process for ~5 s, and
+        // it leaves captureState at .idle, so the guard above does not catch
+        // it. Starting production capture concurrently would create a second
+        // tap/aggregate on the process (the overlap runReaderTest's own guard
+        // prevents in the other direction), risking a HAL configuration change
+        // or start failure. Refuse until the test finishes. (Codex PR #10
+        // re-review — symmetric with the runReaderTest idle guard.)
+        guard !isReaderTestRunning else {
+            lastError = .engine(
+                "A diagnostic reader test is running. Wait a few seconds for it "
+                + "to finish, then press Start again."
+            )
             return
         }
         lastError = nil
