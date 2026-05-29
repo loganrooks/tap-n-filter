@@ -34,7 +34,7 @@ enum SnapshotHelper {
     static func assertSnapshot<V: View>(
         _ view: V,
         named name: String,
-        size: CGSize = CGSize(width: 320, height: 600),
+        size: CGSize = CGSize(width: 380, height: 700),
         sourceFile: StaticString = #filePath,
         file: StaticString = #file,
         line: UInt = #line
