@@ -2,11 +2,20 @@
 
 ## Status
 
-**Last updated**: 2026-05-28 (post-EXP-030 + EXP-031 + EXP-B1 +
-speaker test; major reframing — see FC-004 below)
+**Last updated**: 2026-05-28 (post-EXP-034 verdict; Bug B RESOLVED on
+speaker route; debugging protocol formalized)
 
-**Current frame**: Two distinct bugs identified, the second only
-exposed because the first was partially refuted.
+**Current frame**: Two distinct bugs. **Bug B is resolved** — its cause
+was mis-attributed to a sample-rate mismatch (real but not load-bearing
+— EXP-033); the dominant cause was an interleaved-vs-planar
+channel-layout mismatch (H17b), fixed by de-interleaving at the IOProc
+boundary (EXP-034) and confirmed by the user's speaker-route verdict
+(pitch, imaging, crackle, duration all corrected; wet/dry slider
+correct). **Bug A** (BT-only reverb-bypass cutout) remains parked and
+now needs a BT retest — it may have been compounded by the Bug B
+frame-count error. See FC-005 and
+`docs/governance/debugging-protocol.md` for the methodology change this
+episode produced.
 
 - **Bug A (was H16, now refined)**: Toggling reverb's bypass during
   capture cuts audio entirely **only when the system output is BT
@@ -17,24 +26,29 @@ exposed because the first was partially refuted.
   (confirmed by EXP-B1 standalone repro: DOES_NOT_REPRODUCE).
   Remaining hypothesis space: H-S3/H-S4 — the BT/HFP route +
   `AVAudioEngineConfigurationChange` interaction with our parallel
-  mixer scaffold for AVAudioUnitReverb specifically. Mechanism
-  untested.
+  mixer scaffold for AVAudioUnitReverb specifically. **Parked
+  pending Bug B fix** — Bug A may be partially explained by the
+  rate mismatch and warrants retesting after the H17 fix lands.
 
-- **Bug B (new — H17)**: A **sample-rate / channel-layout mismatch
-  at the `AVAudioSourceNode` boundary** corrupts every capture,
-  producing audio that is "pitched-down, voice-changer-anonymize"
-  in character with "static crackling" and a left-channel-shift,
-  observable on speakers (was masked by HFP downsampling on BT and
-  by the Bug A cutout). The tap delivers 48 kHz × 2ch
-  non-interleaved Float32; the engine chain reports
-  44100.0 Hz × 2 ch at every internal node; the
-  `AVAudioSourceNode` was declared with the tap's format. Either
-  AVAudioEngine silently demoted the source to 44.1 kHz (playing
-  48 kHz samples at the wrong rate → pitched down by 0.919x), or
-  the channel-layout / interleaving expectation at the source-node
-  render callback boundary doesn't match the engine's expectation
-  (left-shift artifact). The exact mechanism requires source-node
-  format readback we have not yet logged.
+- **Bug B (H17, now split)**: the persistent "pitched-down /
+  voice-changer + crackle + left-shift" degradation on every capture.
+  - **H17a (rate mismatch)**: real but **not load-bearing**. EXP-032
+    source-grounded that the chain ran at 44.1 kHz while the tap is
+    48 kHz; EXP-033 pinned the chain to 48 kHz (fix landed,
+    `[EXP-032.format.source] rate=48000.0`) and the artifact did not
+    move. Confirming the mismatch obtained was mistaken for confirming
+    it as the cause (FC-005). Rate fix kept; it is correct but not the
+    cure.
+  - **H17b (channel-layout mismatch) — current dominant hypothesis**:
+    the tap delivers *interleaved* stereo (`formatFlags=9`,
+    `bytesPerFrame=8`) but the ring/render pipeline is *planar*. The
+    IOProc wrote the interleaved buffer as one planar channel at 2× the
+    real frame count → octave-down + left-shift + crackle, all four
+    symptoms from one mechanism. Fixed by de-interleaving at the IOProc
+    boundary (EXP-034); **confirmed load-bearing** by the user's
+    speaker-route verdict — all four symptoms resolved together. The
+    interleaving evidence was in the `[EXP-029.tap.format]` log from the
+    first instrumented run and went undecoded until the rate fix failed.
 
 **Previous active hypotheses, current status**:
 - **H13 (leaked HAL state)** → moved to **Inactive — REFUTED by
@@ -51,22 +65,21 @@ exposed because the first was partially refuted.
   BT-only.
 
 **Operational state**:
-- Build CDHash v3 currently shipped:
-  `78daded470d4d1aaa9660826de8f39990423d7a8`. Includes
-  `applyMixGains` fallback fix + format diagnostics + EXP-030
-  orphan cleanup + EXP-031 instrumentation. Production code is
-  otherwise unchanged.
+- Latest build includes the EXP-033 rate fix (`graph.attach`
+  `sourceFormat:` pins the chain to the tap rate; `captureFormat` on
+  the capture protocol) and the EXP-034 de-interleave (`TapIOProcReader`
+  detects interleaving and de-interleaves in the IOProc). Builds clean.
 - The proposed ReverbNode refactor (native `reverb.wetDryMix` +
   `reverb.bypass`) has been **paused** — it would have addressed
   Bug A by sidestepping the parallel mixer, but B1's verdict
   shows the parallel mixer is not the cause. Refactor would
   have been fixing the wrong thing.
-- The next active investigation is **Bug B (H17)** — verify the
-  source-node format / channel-layout hypothesis with a small
-  amount of additional logging at the source-node and chain
-  boundary. Bug A is parked on the BT/HFP discriminator and may
-  ultimately be ADR-19-territory (intrinsic OS routing
-  limitation) rather than a code-level bug.
+- **The next active step is the EXP-034 audio verdict.** The user runs
+  a capture on speakers and reports whether the four symptoms resolved
+  together (see EXP-034's locked prediction). On resolution: retest
+  Bug A on BT, add an interleaved-input unit test, then move on. On
+  non-resolution: take EXP-034's risky branch (read the raw IOProc
+  `AudioBufferList` arrangement).
 
 **Earlier frames (now revised)**:
 - Post-EXP-029, pre-EXP-030: H13 was the leading hypothesis for
@@ -328,81 +341,81 @@ the limitation. Options for V0.1:
 3. Investigate a less-invasive workaround (e.g., AudioServerPlugin,
    route override, etc.) — uncertain payoff.
 
-#### H17 — Sample rate / channel-layout mismatch at AVAudioSourceNode boundary corrupts capture audio (NEW, source-grounded for symptoms, mechanism untested)
+#### H17 — Format mismatch at the AVAudioSourceNode / IOProc boundary corrupts capture audio (split into H17a + H17b after EXP-033)
 
-**Claim**: The capture path's `AVAudioSourceNode` was declared
-with the tap's stream format (48 kHz × 2 ch Float32 non-interleaved)
-but the engine chain runs at 44.1 kHz × 2 ch (every internal mixer
-reports `44100.0Hz×2ch` per EXP-031 v3 logs). Either AVAudioEngine
-silently demoted the source's effective rate (so 48 kHz ring-buffer
-samples are played at 44.1 kHz → pitch shift of 44.1/48 = 0.919x ≈
-1.5 semitones down) or the render callback's channel-layout
-expectation mismatches the engine's per-render-call buffer layout
-(producing left-shift artifact + crackling at buffer boundaries).
-The symptom is **present on every capture regardless of BT/speaker
-route**, was masked on BT by HFP downsampling and the Bug A
-cutout, and is now audible on speakers as "pitched-down,
-voice-changer-anonymize + static crackling + left-shifted" sound.
+H17 originally bundled two candidate sub-mechanisms for one symptom
+("pitched-down, voice-changer-anonymize + crackling + left-shift,
+present on every capture"). Treating the bundle as a single confirmed
+cause was the error FC-005 records. The sub-mechanisms are now tracked
+separately because the EXP-033 intervention discriminated them.
 
-**Type**: Source-grounded for the symptoms (user-attested,
-consistent characterization across multiple toggles, persists even
-with both effects bypassed → must be upstream of every effect →
-implies source-node boundary). Behavior-inferred for the
-mechanism — we have not yet logged the `AVAudioSourceNode`'s
-effective format vs declared format, nor the connection format
-passed at `engine.connect(source, to: first.inputBus, format: ?)`.
+**Symptom (shared)**: capture audio is pitched well below normal,
+imaging shifted left, with periodic crackle, present regardless of
+BT/speaker route. Masked on BT earlier by HFP downsampling and the
+Bug A cutout; audible on speakers.
 
-**Auxiliaries** (must be true for H17 to be the cause):
-- `AVAudioSourceNode(format: reader.format)` with `reader.format` =
-  48 kHz × 2 ch (per `TapIOProcReader.init` setting
-  `self.format = AVAudioFormat(standardFormatWithSampleRate:
-  asbd.mSampleRate, channels: ...)` from the tap's ASBD).
-- AVAudioEngine's internal sample-rate-conversion at the
-  source-node-to-chain boundary either is not happening, or is
-  happening at the wrong rate, or is being bypassed.
-- The render callback (`CaptureController.renderFromRing`) fills
-  the `AudioBufferList` assuming non-interleaved Float layout,
-  while the engine may expect interleaved.
-- The "voice-changer-anonymize + crackling + left-shift" character
-  is the audible signature of a format mismatch at this boundary,
-  not coloration from a different cause (e.g., mixer chain).
+---
 
-**Would falsify H17**:
-- Source-node `outputFormat(forBus: 0)` reports 48 kHz × 2 ch
-  matching the declaration, AND the chain reports 44.1 kHz, AND a
-  WAV capture of `mainMixer.installTap` shows pitch-accurate audio
-  → AVAudioEngine is properly SRC'ing and the artifact is from
-  something else.
-- Symptom disappears with no code change (e.g., on a different
-  macOS version, after a reboot, with a different source app).
-- Symptom persists after fixing the source-node format declaration
-  to match the engine's rate.
+**H17a — sample-rate mismatch (chain at 44.1 kHz, tap at 48 kHz).**
 
-**How to confirm H17**:
-- Add three log entries: `captureSourceNode.outputFormat(forBus:
-  0)`, `engine.mainMixerNode.outputFormat(forBus: 0)`,
-  `engine.outputNode.outputFormat(forBus: 0)`. If source's format
-  differs from declared (48 kHz) → engine demoted it → mechanism
-  confirmed for the pitch part.
-- Capture mainMixer tap to WAV during a both-bypassed window. Play
-  back at varying sample rates and compare to a reference Safari
-  recording. If the WAV at 44.1 kHz sounds pitched-down, but at
-  48 kHz sounds clean → confirms the rate-mismatch mechanism
-  (samples were 48 kHz content interpreted as 44.1 kHz).
-- Inspect the render callback's `audioBufferList` arrangement vs
-  the engine's expected layout to source-ground the channel /
-  left-shift part.
+- **Claim**: the chain ran at 44.1 kHz while the tap delivers 48 kHz,
+  so 48 kHz samples played at 44.1 kHz (0.919× ≈ 1.5 semitones down).
+- **Type**: the mismatch *obtaining* is source-grounded (EXP-032:
+  `[EXP-032.format.source] rate=44100.0` vs tap 48 kHz). Whether it is
+  the *cause* of the audible artifact was a separate, behavior-inferred
+  claim.
+- **Load-bearing status**: **REFUTED as the (dominant) cause by
+  EXP-033.** Pinning the chain to the tap rate (`graph.attach`
+  `sourceFormat:`) changed the readback to `rate=48000.0` — the fix
+  landed — but the artifact did not move. A confirmed condition that
+  obtains was mistaken for the cause. The rate fix is kept (it is
+  correct on its own terms and avoids implicit SRC at the source-node
+  boundary), but it does not explain the symptom.
+- **Resurrection condition**: if, after H17b is fixed, a residual
+  pitch error of ~0.919× remains, rate handling is back in play.
 
-**Time budget**: 15 min to add the format logging + rebuild;
-~3 min user retest; then either confirmed and we can plan a fix,
-or the data points elsewhere.
+---
 
-**Relation to Bug A**: H17 and Bug A are independent. H17 explains
-the persistent "strange effect" present across all routes; Bug A
-(H16, below) explains the dramatic cutout that is BT-specific. The
-two were entangled because Bug A's cutout on BT made it impossible
-to evaluate audio quality during capture; only on speakers could
-H17's underlying degradation become audible.
+**H17b — channel-layout mismatch (interleaved tap, planar pipeline). ACTIVE; under test in EXP-034.**
+
+- **Claim**: the tap delivers *interleaved* stereo (`[L, R, L, R, …]`,
+  one buffer) but the ring buffer and render path are *planar* (one
+  buffer per channel). `pushIOProcSamples` wrote the interleaved buffer
+  as a single planar channel at `mDataByteSize / 4` = 2× the real
+  frame count. Read back planar, that plays at half speed (one octave
+  down → "super low"), strands content in channel 0 (left-shift), and
+  alternates L/R within a channel (crackle). One mechanism, all four
+  symptoms.
+- **Type**: source-grounded. Tap ASBD `formatFlags=9` (Float|Packed,
+  no non-interleaved bit) + `bytesPerFrame=8` (2 ch × 4 bytes) →
+  interleaved. The planar assumption is in `AudioRingBuffer` and in
+  `AVAudioFormat(standardFormatWithSampleRate:channels:)`. The evidence
+  (`formatFlags=9`, `bytesPerFrame=8`) was in the `[EXP-029.tap.format]`
+  log from the first instrumented run; it went undecoded until the
+  rate fix failed.
+- **Auxiliaries**: interleaving is the dominant remaining cause (no
+  third mismatch at this boundary); the de-interleave index ordering
+  matches the tap's L/R layout; the EXP-033 rate fix stays in place.
+- **Would shift confidence down**: `[EXP-034.layout] interleaved=true`
+  (fix landed) but the artifact persists → interleaving is not the
+  dominant cause; revise toward the IOProc `AudioBufferList` byte
+  arrangement or a channel-ordering bug. (See EXP-034's risky branch.)
+- **Load-bearing status**: **CONFIRMED by EXP-034.** The de-interleave
+  intervention moved the symptom — pitch, imaging, crackle, and
+  perceived duration all corrected together, the "if load-bearing"
+  branch of the locked prediction. This is the word "confirmed" used
+  correctly: an intervention moved the symptom, not merely a condition
+  shown to obtain.
+
+---
+
+**Relation to Bug A**: H17 and Bug A are independent. H17 explains the
+persistent degradation present across all routes; Bug A (H16, below)
+explains the dramatic cutout that is BT-specific. The two were
+entangled because Bug A's cutout on BT made it impossible to evaluate
+audio quality during capture; only on speakers could H17's degradation
+become audible. After H17b is resolved, retest Bug A on BT — the
+frame-count error may have compounded it.
 
 #### H16 — Reverb bypass cuts audio on BT/HFP route specifically (source-grounded for the audible behaviour; mechanism unknown)
 
@@ -1058,6 +1071,24 @@ state, not a positive signal about the architecture.
 not a behavioral inference.
 **Resurrection condition**: none. Recorded so future readers don't
 re-believe the spike's optimistic logging.
+
+## Intervention ledger
+
+Every fix that targeted a hypothesized cause, newest first. A fix is an
+intervention and an intervention is an experiment (see
+`docs/governance/debugging-protocol.md`); each row links to its full
+pre-registered entry in the experiment log. **Landed?** = did the change
+take effect (proven by a diagnostic). **Resolved?** = did the symptom go
+away (the load-bearing test). A "yes / no" row — landed but did not
+resolve — is the most informative kind: it refutes the target mechanism as
+load-bearing without ambiguity.
+
+| EXP | Date | Target mechanism | Type | Landed? | Resolved? | Revision on failure |
+|---|---|---|---|---|---|---|
+| EXP-034 | 05-28 | Bug B: tap is interleaved, pipeline is planar; IOProc writes interleaved data as one planar channel at 2× frames | source-grounded (flags=9, bytesPerFrame=8) | yes (build; `[EXP-034.layout] interleaved=true`) | **yes** — pitch, imaging, crackle, duration all resolved together | — (mechanism confirmed load-bearing) |
+| EXP-033 | 05-28 | Bug B (H17a): chain runs at 44.1 kHz while tap is 48 kHz; pin chain to tap rate via `graph.attach(sourceFormat:)` | source-grounded (EXP-032 readback) | yes (`[EXP-032.format.source] rate=48000`) | **no** (still pitched low) | rate mismatch obtains but is **not load-bearing** for the audible artifact → look for a second mismatch at the same boundary → EXP-034 |
+| (H17 v1) | 05-28 | Bug B: `AVAudioConverter` from tap rate to engine rate in the render callback | behavior-inferred | no (converter was 48k→48k, a no-op; read pre-start outputNode format) | no | fix mis-implemented (read the wrong format, before `engine.start()`); superseded by EXP-033 |
+| EXP-031 | 05-28 | Bug A (H16): `applyMixGains` fallback wrote `mixer.volume`, possibly silencing master | source-grounded | yes (master volumes read 1.0) | **no** (audio still cuts on reverb bypass on BT) | fallback bug was real but not the cause of the BT cutout → Bug A narrowed to BT/HFP route, parked |
 
 ## Experiment log
 
@@ -2521,6 +2552,261 @@ disambiguate "engine output is silent" vs "engine output is
 discarded by the OS"). H6's "deferred-active" status escalates to
 **active blocker** because Outcome D is its user-level
 manifestation.
+
+### EXP-032 — Source-node + chain format readback for H17 (rate mismatch confirmed to OBTAIN; load-bearing-ness NOT tested here — see EXP-033)
+
+**Status**: completed (single run, speaker route).
+**Date**: 2026-05-28 (15:44 EDT).
+**Author**: current session.
+
+**Question**: Does `AVAudioEngine` honor the format we pass to
+`AVAudioSourceNode(format: reader.format)`, or does it silently
+renegotiate the source-node's effective sample rate to match the
+engine's running rate (set by the output device)?
+
+**Hypothesis under test**: H17 — rate-mismatch portion. We declared
+the source node at the tap's 48 kHz × 2 ch Float32 non-interleaved
+format. If the engine reports a different `outputFormat(forBus: 0)`
+on the source node at runtime, the IOProc's 48 kHz writes into the
+ring buffer are being played back as if they were 44.1 kHz samples
+(or whatever the engine has decided to run at). That's the
+mechanism for the "voice-changer / pitched-down" symptom.
+
+**Pre-registered outcomes**:
+- H17-α (CONFIRMING for pitch portion): source-node reports a rate
+  that differs from `reader.format`'s 48 kHz → engine has
+  renegotiated. Mechanism source-grounded.
+- H17-β (CONFIRMING for layout portion): source-node reports the
+  declared rate but `commonFormat` or `isInterleaved` flips somewhere
+  in the chain → channel-layout mismatch is the mechanism.
+- H17-γ (REFUTING): all five readback points match the tap's declared
+  format → H17 is wrong about the source-node boundary and the
+  artifact must live elsewhere (e.g., in the IOProc's `AudioBufferList`
+  arrangement, or downstream of the source node entirely).
+
+**Variables held constant**: build CDHash v4 (post-EXP-031, no
+behavioural changes — only added `logChainFormats` static helper in
+`AppViewModel`), Safari source, speaker route (BT disconnected),
+single instance launched fresh.
+
+**Variables changed**: added `[EXP-032.format.*]` readback at end of
+`powerOn` (after `engine.start()` succeeds) and end of
+`reattachAfterMutation`. Five log lines per stage:
+`source` (source node's `outputFormat`), `mainMixerIn`,
+`mainMixerOut`, `outputIn`, `outputOut`.
+
+**Artifacts**: production log `~/Library/Logs/tap-n-filter/app.log`,
+specifically the 15:44:57 EDT block (two consecutive `powerOn`
+firings, identical readback in both).
+
+**Result** (verbatim from app.log):
+
+```
+Capture:      [EXP-029.tap.format]          sampleRate=48000.0 channels=2
+AppViewModel: [EXP-032.format.source]       rate=44100.0 ch=2 common=Float32 interleaved=false
+AppViewModel: [EXP-032.format.mainMixerIn]  rate=44100.0 ch=2 common=Float32 interleaved=false
+AppViewModel: [EXP-032.format.mainMixerOut] rate=48000.0 ch=2 common=Float32 interleaved=false
+AppViewModel: [EXP-032.format.outputIn]     rate=48000.0 ch=2 common=Float32 interleaved=false
+AppViewModel: [EXP-032.format.outputOut]    rate=48000.0 ch=2 common=Float32 interleaved=false
+```
+
+Two consecutive `powerOn`s 12 s apart produced identical readback —
+not a transient.
+
+**Conclusion**: **Outcome H17-α — rate-mismatch mechanism
+CONFIRMED.** The tap delivers 48 kHz Float32 non-interleaved. The
+engine silently overrode the source node's declared format to
+44.1 kHz to match its running rate. The mainMixer runs the entire
+chain at 44.1 kHz, then SRCs to 48 kHz before the output device.
+Two consequences:
+1. The render callback writes 48 kHz samples per `frameCount`-worth
+   of buffer time, but the engine pulls at 44.1 kHz cadence and
+   interprets those samples as 44.1 kHz audio. Effective playback
+   speed = 44100/48000 = 0.919x → pitched down ~1.4 semitones. This
+   is the "voice-changer / anonymize" character.
+2. The 44.1 → 48 SRC pass at `mainMixerNode` operates on
+   already-misinterpreted samples and adds reconstruction artifacts
+   ("static crackling").
+
+**Outcome NOT covered**: the user-reported left-shift / imaging
+shift. Channel layout is byte-clean (`ch=2 interleaved=false` at
+every chain boundary). The left-shift either:
+- is a perceptual artifact of the broken SRC that will disappear
+  with the fix (most likely);
+- lives in the IOProc's `AudioBufferList` arrangement, downstream
+  of the format-declaration boundary;
+- is a separate channel-ordering bug in the tap stream.
+
+Parked as a residual — re-evaluate after the fix lands. If it
+persists, that's its own sub-investigation (candidate: read the
+IOProc's `AudioBufferList` arrangement byte-by-byte at one fire,
+log channel pointers).
+
+**Why the engine overrode our format**: `AVAudioEngine` constrains
+its internal running rate to the output device's native rate (in
+this run, the speaker is set to 44.1 kHz in Audio MIDI Setup). The
+source-node format we pass to `AVAudioSourceNode(format:)` is
+informational from the engine's perspective — the engine will
+treat the node as if it produces audio at the engine rate
+regardless. This is documented behaviour but not obvious. The
+canonical fix is to do explicit sample-rate conversion ourselves
+via `AVAudioConverter`, declaring the source node at the engine
+rate and feeding it converted samples from our ring buffer.
+
+**Follow-ups**:
+- → H17 fix (in flight): `AVAudioConverter` between ring buffer
+  and source node, declared source-node format = engine's running
+  rate. Pre-allocate everything at start; render callback runs on
+  the realtime audio thread.
+- → Retest Bug A on BT after the H17 fix. The current hypothesis
+  is that Bug A may have been partially explained by the rate
+  mismatch (reverb's internal state diverging at the wrong rate,
+  worsened by HFP downsampling). If Bug A persists post-H17,
+  it's a separate animal.
+- → Update notebook Status block and changelog (done in same
+  edit).
+
+---
+
+### EXP-033 — Pin chain to tap rate (rate-mismatch intervention)
+
+**Date**: 2026-05-28 (~15:45 EDT, rate fix; superseded a no-op
+converter attempt earlier the same evening).
+**Type**: intervention (fix attempt).
+**Target mechanism**: H17a — the chain runs at 44.1 kHz while the tap
+delivers 48 kHz, so 48 kHz samples are played at 44.1 kHz, and this
+rate mismatch is the cause of the "pitched-down / voice-changer"
+artifact.
+**Mechanism type**: the mismatch *obtaining* is source-grounded
+(EXP-032 readback). The claim that it is the *cause of the audible
+artifact* is behavior-inferred — and the conflation of those two is the
+error this entry records.
+
+**Prediction** — RECONSTRUCTED post-hoc; **not pre-registered at run
+time**. The absence of a locked prediction here is the process failure
+documented in FC-005. Had it been written before the code, it would
+have read:
+- **If load-bearing**: the chain rate changes to 48 kHz
+  (`[EXP-032.format.source]` shows 48000) AND the artifact resolves.
+- **Risky branch**: if the rate changes to 48 kHz but the artifact
+  persists, the rate mismatch is not load-bearing, and the revision
+  goes to a second mismatch at the source-node boundary (channel
+  layout / interleaving).
+
+**Change**: added optional `sourceFormat:` to `Graph.attach`; the
+capture path passes `reader.format` so every chain link is pinned to
+the tap rate instead of the source node's 44.1 kHz default. Reverted
+the no-op `AVAudioConverter` (the v1 attempt read the pre-start
+`outputNode` format = 48 kHz and so converted 48→48). Added
+`captureFormat` to `CaptureControllerProtocol`.
+
+**Landed?**: yes. `[EXP-032.format.source stage=powerOn] rate=48000.0`
+(was 44100.0), confirmed on two consecutive powerOns. The chain now
+runs at the tap rate; `mainMixerNode` does a 48→48 (no-op) pass to the
+output device.
+
+**Resolved?**: no. User: "still pitched super low." The rate change
+took effect; the artifact was unchanged.
+
+**Conclusion**: the rate mismatch was real and is now eliminated, but
+it is **not load-bearing** for the audible artifact. This refutes the
+causal leap made after EXP-032 (that confirming the mismatch obtains
+had confirmed it as the cause). The "did it land" diagnostic
+(`[EXP-032.format.source]`) discriminated cleanly: the fix took effect,
+so the failure could not be blamed on a mis-implementation or a lying
+apparatus, and the revision had to land on the mechanism's salience.
+The rate fix is **kept** — running the chain at the tap rate is correct
+and avoids any implicit SRC at the source-node boundary — but it is not
+the fix for Bug B.
+
+**Follow-ups**: re-examine the tap format. `formatFlags=9` and
+`bytesPerFrame=8` had been in the `[EXP-029.tap.format]` log since the
+first instrumented run; they decode to *interleaved* stereo, while the
+ring/render pipeline is planar → EXP-034.
+
+---
+
+### EXP-034 — De-interleave interleaved tap input (channel-layout intervention)
+
+**Date**: 2026-05-28 (evening EDT).
+**Type**: intervention (fix attempt).
+**Status**: implemented + built clean; **pre-registered**; awaiting
+audio verification from the user.
+**Target mechanism**: H17b — the tap delivers interleaved stereo
+(`[L, R, L, R, …]`, one buffer) but the ring buffer and render path are
+planar (one buffer per channel). `pushIOProcSamples` wrote the
+interleaved buffer as a single planar channel at `mDataByteSize / 4` =
+2× the real frame count. Read back planar, that plays the content at
+half speed (one octave down → "super low"), strands it in channel 0
+(left-shift), and alternates L/R within a channel (crackle).
+**Mechanism type**: source-grounded. Tap ASBD `formatFlags=9`
+(Float|Packed, no non-interleaved bit) and `bytesPerFrame=8` (2 ch ×
+4 bytes) → interleaved. The pipeline's planar assumption lives in
+`AudioRingBuffer` (one buffer per channel) and
+`AVAudioFormat(standardFormatWithSampleRate:channels:)`
+(non-interleaved). Both read directly.
+
+**Auxiliaries** (must hold for this fix to resolve the symptom):
+- Interleaving is the dominant remaining cause of the artifact (no
+  third mismatch at this boundary).
+- The de-interleave indexing (`interleaved[f * channelCount + ch]`)
+  matches the tap's actual L/R ordering.
+- The EXP-033 rate fix stays in place, so the de-interleaved planar
+  frames are played at the tap rate.
+
+**Prediction** (locked before the audio verdict):
+- **If load-bearing**: the fix lands (`[EXP-034.layout]
+  interleaved=true`, de-interleave path runs) AND all four symptoms
+  resolve together — pitch correct, imaging centered, no crackle, and
+  perceived duration matches real time. Four consequences of one
+  mechanism: the progressive, risky prediction.
+- **Risky branch**: if the layout log shows `interleaved=true` (fix
+  landed) but the artifact persists, interleaving is not the dominant
+  cause either, and the revision goes to a third candidate at the
+  boundary (the IOProc `AudioBufferList` byte arrangement, or a
+  channel-ordering bug in the tap stream). Next diagnostic: read the
+  raw ABL channel pointers at one IOProc fire.
+- **Partial branch**: if pitch and crackle resolve but the left-shift
+  remains, the frame-count error was load-bearing for pitch and the
+  residual left-shift is a separate, narrower channel-routing issue —
+  split it into its own hypothesis.
+
+**Change**: `TapIOProcReader` detects interleaving from the ASBD flag at
+init and allocates a realtime-safe de-interleave scratch buffer;
+`pushIOProcSamples` branches. `pushInterleaved` de-interleaves
+`[L, R, …]` into planar channels at the correct frame count
+(`totalFloats / channelCount`) before the ring write; `pushPlanar`
+keeps the prior per-channel-buffer path for non-interleaved taps.
+
+**Landed?**: yes. `[EXP-034.layout] interleaved=true` on run; the
+de-interleave path executed.
+
+**Resolved?**: **yes.** User verdict on the speaker route: no pitch-down,
+no left-spatial-shift, no crackle, and the wet/dry slider behaves
+correctly (wet=0 is identical to bypass). All four pre-registered
+consequences resolved together.
+
+**Conclusion**: the "if load-bearing" branch of the locked prediction
+matched in full. One mechanism (interleaved-as-planar at 2× frame
+count) predicted four independent consequences — pitch, imaging,
+crackle, duration — and fixing it corrected all four at once. That
+joint resolution is the progressive, risky corroboration the prediction
+was designed to demand; a coincidental fix would not have moved all
+four. H17b is confirmed load-bearing; Bug B (capture corruption) is
+resolved on the speaker route. The bonus observation (wet=0 ≡ bypass)
+independently corroborates that the parallel wet/dry mixer is sound,
+consistent with EXP-B1.
+
+**Follow-ups**: (1) retest Bug A on BT — the BT-only reverb-bypass
+cutout was parked pending this fix; the frame-count error may have
+compounded it. (2) Add an interleaved-input unit test to
+`TapIOProcReaderTests` — the bug survived because only a
+non-interleaved fake was tested
+(`test_ioproc_callback_pushes_samples_into_ring` uses `mNumberBuffers=2`).
+(3) Consider an ADR for the capture format contract (chain runs at the
+tap rate; de-interleave at the IOProc boundary).
+
+---
 
 ### EXP-031 — Bypass toggle audio-cutout instrumentation (RAN, MULTIPLE SUB-EXPERIMENTS)
 
@@ -4147,6 +4433,61 @@ investigation arc is unnecessarily long.
 > investigation. It is allowed to be a single early experiment;
 > it is not allowed to be omitted.
 
+### FC-005 — Frame check after EXP-033: a confirmed condition was mistaken for the cause
+
+**Date**: 2026-05-28 (evening, local)
+**Trigger**: a result that felt suspiciously coherent (the EXP-032
+rate readback "explained everything" and was called a "smoking gun"),
+followed by the EXP-033 intervention failing to move the symptom.
+
+**Current frame** (the reasoning that produced the error):
+- EXP-032 source-grounded that a sample-rate mismatch *obtains* (source
+  node 44.1 kHz, tap 48 kHz). That observation was then treated as
+  having established the rate mismatch as the *cause* of the audible
+  artifact, and a fix was proposed and shipped on that basis without a
+  pre-registered prediction.
+- The leap was from "condition C obtains" (source-grounded, cheap) to
+  "C is the cause of symptom S" (a load-bearing claim that confirming C
+  does not establish). The unstated auxiliary — "no other mismatch at
+  this boundary contributes to S" — was false: the tap is interleaved
+  and the pipeline is planar, a second mismatch whose evidence
+  (`formatFlags=9`, `bytesPerFrame=8`) had been in the
+  `[EXP-029.tap.format]` log since the first instrumented run.
+
+**Alternative frame** (adopted): a fix is an intervention and an
+intervention is the test of a hypothesis. Confirming a condition
+obtains warrants nothing about its salience; only an intervention that
+moves the symptom does. EXP-033 was exactly that test, and its
+"yes-landed / no-resolved" outcome was an informative refutation of
+H17a-as-cause, not a disappointment.
+
+**Distinguishing observations**: the `[EXP-032.format.source]` readback
+after the fix showed the rate genuinely changed to 48 kHz. That
+collapsed the "fix didn't land" and "apparatus lying" revision
+candidates and forced the revision onto "rate is not load-bearing."
+The routing was available from the data the moment EXP-033 ran; it
+should not have needed an external prompt.
+
+**Decision**: keep the rate fix (it is correct on its own terms), split
+H17 into H17a (rate, refuted as cause) and H17b (interleaving, the new
+dominant-cause hypothesis under test in EXP-034), and adopt the
+intervention discipline going forward.
+
+**Lesson** (retroactive, and the reason for the new protocol): three
+things should have happened and did not. (1) Rivals enumerated before
+committing — "pitched down" at a format boundary has at least two
+candidate causes (rate, channel layout), and only one was checked.
+(2) The intervention pre-registered with a discriminating prediction
+including the risky branch ("if the rate changes but the artifact
+persists, rate is not load-bearing"). (3) The word "confirmed" withheld
+until an intervention moved the symptom. These are now codified in
+`docs/governance/debugging-protocol.md`, enforced via `CLAUDE.md`, and
+recorded per-fix in the Intervention ledger above. FC-004's
+"correctness baseline" lesson and this entry's "obtains vs
+load-bearing" lesson are the same failure seen from two angles: the
+investigation chased the loud symptom with coherent-sounding stories
+instead of testing causal salience by intervention.
+
 ## Changelog
 
 - 2026-05-25 06:35 EDT — initial notebook created (this session).
@@ -4326,3 +4667,51 @@ investigation arc is unnecessarily long.
   user reported silence, not corruption. Proposed protocol
   update: require a correctness-baseline experiment for any
   capture/render investigation.
+- 2026-05-28 15:44 EDT — ran EXP-032 (source-node + chain format
+  readback). Build v4 (added `logChainFormats` helper in
+  `AppViewModel`, called from `powerOn` and
+  `reattachAfterMutation`). Speaker route. **Outcome H17-α —
+  rate-mismatch mechanism CONFIRMED.** Tap delivers 48 kHz, but
+  `[EXP-032.format.source]` reports `rate=44100.0`. AVAudioEngine
+  silently overrode the format we passed to
+  `AVAudioSourceNode(format: reader.format)`. Mainmixer chain
+  runs at 44.1 kHz; SRCs to 48 kHz for the output device.
+  Channel-layout byte-clean (`ch=2 interleaved=false` at every
+  boundary) — left-shift portion is unexplained by this readback
+  and parked as a residual to re-evaluate post-fix. Updated H17
+  in ledger (mechanism confirmed for rate portion), Status block,
+  added EXP-032 entry. Fix in flight: `AVAudioConverter` between
+  ring buffer and source node, source node declared at engine
+  rate, converter rebuilt on configChange.
+- 2026-05-28 ~15:45 EDT — ran EXP-033 (rate-mismatch intervention).
+  Pinned the chain to the tap rate via `graph.attach(sourceFormat:)`
+  + `captureFormat` on the capture protocol; reverted the no-op
+  converter. **Landed but did not resolve**: `[EXP-032.format.source]`
+  changed to `rate=48000.0`, the artifact persisted ("still pitched
+  super low"). The rate mismatch obtains but is **not load-bearing**
+  for the audible artifact — refuting the post-EXP-032 causal leap.
+  Rate fix kept (correct on its own terms).
+- 2026-05-28 — re-examined the tap format. `formatFlags=9` +
+  `bytesPerFrame=8` (in the `[EXP-029.tap.format]` log since the first
+  instrumented run) decode to *interleaved* stereo; the ring/render
+  pipeline is planar. Ran EXP-034 (de-interleave intervention):
+  `TapIOProcReader` detects interleaving and de-interleaves in the
+  IOProc at the correct frame count. Pre-registered with a four-symptom
+  discriminating prediction + risky branch; built clean; **awaiting the
+  user's audio verdict**. Split H17 into H17a (rate, refuted as cause)
+  + H17b (interleaving, under test). Added EXP-033, EXP-034, the
+  Intervention ledger, and FC-005.
+- 2026-05-28 — added FC-005 frame check (a confirmed condition mistaken
+  for the cause) and formalized the debugging methodology:
+  `docs/governance/debugging-protocol.md` (fixes are interventions;
+  obtains vs load-bearing; pre-register the discriminating prediction
+  before code; revise the web holistically on a failed prediction),
+  with the binding rule in `CLAUDE.md` and the searchable Intervention
+  ledger added to the notebook + README structure.
+- 2026-05-28 — **EXP-034 verdict: Bug B RESOLVED** on the speaker
+  route. User confirmed no pitch-down, no left-spatial-shift, no
+  crackle, and a correct wet/dry slider (wet=0 ≡ bypass). All four
+  pre-registered consequences resolved together → H17b confirmed
+  load-bearing. Updated the Intervention ledger, EXP-034 conclusion,
+  H17b status, and Status block. Bug A (BT-only) still parked; next
+  step is a BT retest now that Bug B is fixed.

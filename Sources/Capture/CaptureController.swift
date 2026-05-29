@@ -45,6 +45,12 @@ public final class CaptureController: CaptureControllerProtocol, @unchecked Send
         return active?.sourceNode
     }
 
+    public var captureFormat: AVAudioFormat? {
+        lock.lock()
+        defer { lock.unlock() }
+        return active?.reader.format
+    }
+
     // MARK: Collaborators
 
     private let coreAudio: CoreAudioInterface
@@ -276,6 +282,19 @@ public final class CaptureController: CaptureControllerProtocol, @unchecked Send
                 }
             }
 
+            // [EXP-033 / H17 fix] Declare the source node at the tap's
+            // native format. The render callback delivers raw tap frames
+            // from the ring at this rate (no resampling here). The chain
+            // is then wired at this same rate by `graph.attach(...,
+            // sourceFormat:)` so the whole engine runs at the capture
+            // rate and the engine's `mainMixerNode` performs the single
+            // SRC to the output device. Declaring the node here is not
+            // enough on its own — an attached-but-unconnected source node
+            // reports the engine's 44.1 kHz default from
+            // `outputFormat(forBus:)`, which is why `graph.attach` must be
+            // told the real format rather than reading it back. See
+            // EXP-032 / H17 in
+            // `docs/investigations/2026-05-audio-pipeline.md`.
             let sourceNode = AVAudioSourceNode(format: reader.format) {
                 [weak ring = reader.ring] isSilence, _, frameCount, audioBufferList in
                 return Self.renderFromRing(
@@ -294,6 +313,17 @@ public final class CaptureController: CaptureControllerProtocol, @unchecked Send
             log(
                 "[EXP-029.engine.postattach] engine.isRunning=\(engine.isRunning) "
                 + "(attach is supposed to be lightweight; H10 hypothesis says this triggers lazy IO-AU init)"
+            )
+            // [EXP-033 / H17] The source node's output bus reports the
+            // engine's 44.1 kHz default here (it is attached but not yet
+            // connected). The chain rate is established when `graph.attach`
+            // connects it at `reader.format`; the real confirmation is the
+            // `[EXP-032.format.source]` readback after `engine.start()`,
+            // which should now show the tap rate.
+            log(
+                "[EXP-033.h17.tapFormat] tap=\(reader.format.sampleRate)Hz×\(reader.format.channelCount)ch "
+                + "sourceNodePreConnect=\(sourceNode.outputFormat(forBus: 0).sampleRate)Hz "
+                + "(chain will be pinned to tap rate by graph.attach)"
             )
             var didAttachSourceNode = true
             defer {
@@ -403,6 +433,12 @@ public final class CaptureController: CaptureControllerProtocol, @unchecked Send
     /// source node was handed. On underrun, zero-fill the remainder of
     /// the destination buffers and report `isSilence`. Static so the
     /// render callback can be a non-capturing C-compatible block.
+    ///
+    /// No sample-rate conversion happens here — the source node is
+    /// declared at the tap's format and the chain is wired at the same
+    /// rate (see the H17 fix), so the ring's frames map 1:1 to the
+    /// frames the engine requests. The engine's `mainMixerNode` performs
+    /// the single SRC to the output device.
     ///
     /// `isSilence` is set on every call (not just the silent path) so a
     /// stale `true` from a prior underrun doesn't survive into a later

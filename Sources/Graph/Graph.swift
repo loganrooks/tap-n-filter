@@ -59,10 +59,28 @@ public final class Graph {
     /// Throws `GraphError.engineMustBeStopped` if the engine is running when
     /// called, enforcing the ADR-006 lifecycle invariant in both debug and
     /// release builds. (An `assert` would have been a no-op in release.)
+    /// - Parameter sourceFormat: When non-nil, every connection in the
+    ///   chain is pinned to this format instead of being read per-node
+    ///   from `outputFormat(forBus:)`. The capture path passes the tap's
+    ///   format (e.g. 48 kHz) here. This is load-bearing: an unconnected
+    ///   `AVAudioSourceNode` — and an attached-but-unconnected effect
+    ///   mixer — reports the engine's 44.1 kHz default from
+    ///   `outputFormat(forBus:)`, not the format its render block actually
+    ///   produces. Reading those defaults (the pre-fix behaviour) pinned
+    ///   the whole chain to 44.1 kHz while the source produced 48 kHz
+    ///   samples, so playback ran 0.919× slow — the H17 "pitched-down /
+    ///   voice-changer" bug (see EXP-032 /
+    ///   `docs/investigations/2026-05-audio-pipeline.md`). Pinning every
+    ///   link to the capture rate makes the chain run at the source rate;
+    ///   the engine's `mainMixerNode` performs the single SRC to the
+    ///   output device. When nil (tests, ear-test `AVAudioPlayerNode`
+    ///   whose `outputFormat` is reliable post-attach), the per-node
+    ///   behaviour is preserved.
     public func attach(
         to engine: AVAudioEngine,
         source: AVAudioNode,
-        destination: AVAudioNode
+        destination: AVAudioNode,
+        sourceFormat: AVAudioFormat? = nil
     ) throws {
         guard !engine.isRunning else {
             throw GraphError.engineMustBeStopped
@@ -94,9 +112,13 @@ public final class Graph {
         // trim mixer (which then feeds destination). With one or more nodes,
         // each adjacent pair is connected and the last node's output goes
         // into the trim mixer.
-        let sourceFormat = source.outputFormat(forBus: 0)
+        // When the caller pins an explicit format, use it for every link
+        // (the chain runs uniformly at the capture rate). Otherwise fall
+        // back to reading each node's negotiated output format.
+        let resolvedSourceFormat = sourceFormat ?? source.outputFormat(forBus: 0)
+        let pinFormat = sourceFormat != nil
         if let first = nodes.first {
-            engine.connect(source, to: first.inputBus, fromBus: 0, toBus: 0, format: sourceFormat)
+            engine.connect(source, to: first.inputBus, fromBus: 0, toBus: 0, format: resolvedSourceFormat)
             for index in 0 ..< (nodes.count - 1) {
                 let upstream = nodes[index]
                 let downstream = nodes[index + 1]
@@ -105,7 +127,7 @@ public final class Graph {
                     to: downstream.inputBus,
                     fromBus: 0,
                     toBus: 0,
-                    format: upstream.outputBus.outputFormat(forBus: 0)
+                    format: pinFormat ? resolvedSourceFormat : upstream.outputBus.outputFormat(forBus: 0)
                 )
             }
             let tail = nodes.last!
@@ -114,17 +136,17 @@ public final class Graph {
                 to: trimMixer,
                 fromBus: 0,
                 toBus: 0,
-                format: tail.outputBus.outputFormat(forBus: 0)
+                format: pinFormat ? resolvedSourceFormat : tail.outputBus.outputFormat(forBus: 0)
             )
         } else {
-            engine.connect(source, to: trimMixer, fromBus: 0, toBus: 0, format: sourceFormat)
+            engine.connect(source, to: trimMixer, fromBus: 0, toBus: 0, format: resolvedSourceFormat)
         }
         engine.connect(
             trimMixer,
             to: destination,
             fromBus: 0,
             toBus: 0,
-            format: trimMixer.outputFormat(forBus: 0)
+            format: pinFormat ? resolvedSourceFormat : trimMixer.outputFormat(forBus: 0)
         )
 
         attachedEngine = engine

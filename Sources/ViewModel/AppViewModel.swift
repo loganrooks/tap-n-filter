@@ -522,7 +522,8 @@ public final class AppViewModel: ObservableObject {
             try graph.attach(
                 to: engine,
                 source: sourceNode,
-                destination: engine.mainMixerNode
+                destination: engine.mainMixerNode,
+                sourceFormat: capture.captureFormat
             )
         } catch {
             stopCaptureLoggingRollbackError(primaryStage: "graph attach")
@@ -540,6 +541,12 @@ public final class AppViewModel: ObservableObject {
                 ? "EMPTY (audio passes through unprocessed; add effects to hear filtering)"
                 : graph.nodes.map { type(of: $0).typeIdentifier }.joined(separator: " -> ")
             logger.info("powerOn complete: engine started, capture running on \(resolvedSource.displayName), chain: \(chainSummary)")
+            Self.logChainFormats(
+                stage: "powerOn",
+                sourceNode: sourceNode,
+                engine: engine,
+                logger: logger
+            )
         } catch {
             graph.detach()
             stopCaptureLoggingRollbackError(primaryStage: "engine start")
@@ -774,7 +781,8 @@ public final class AppViewModel: ObservableObject {
             try graph.attach(
                 to: engine,
                 source: sourceNode,
-                destination: engine.mainMixerNode
+                destination: engine.mainMixerNode,
+                sourceFormat: capture.captureFormat
             )
             logger.info("[EXP-031.reattach.graphAttached] graph.attach OK")
         } catch {
@@ -789,6 +797,12 @@ public final class AppViewModel: ObservableObject {
             engineIsRunning = true
             logger.info(
                 "[EXP-031.reattach.engineStarted] engine.isRunning=\(engine.isRunning)"
+            )
+            Self.logChainFormats(
+                stage: "reattach",
+                sourceNode: sourceNode,
+                engine: engine,
+                logger: logger
             )
         } catch {
             logger.error(
@@ -851,6 +865,49 @@ public final class AppViewModel: ObservableObject {
     }
 
     // MARK: Persistence
+
+    /// [EXP-032] H17 source-grounding. Logs the negotiated audio format
+    /// at the engine boundaries the user-audible
+    /// "voice-changer / pitched-down / crackling / left-shift" artifact
+    /// could originate from: the `AVAudioSourceNode` we declared with the
+    /// tap's `reader.format`, the mainMixer node (after the effect chain),
+    /// and the engine's output node. If the source-node's reported
+    /// outputFormat differs from the tap's 48 kHz × 2 ch — or if
+    /// `commonFormat` / `isInterleaved` flips somewhere in the chain — the
+    /// engine has silently renegotiated the format and H17 is confirmed.
+    /// See `docs/investigations/2026-05-audio-pipeline.md` (H17,
+    /// "How to confirm").
+    @MainActor
+    private static func logChainFormats(
+        stage: String,
+        sourceNode: AVAudioSourceNode,
+        engine: AVAudioEngine,
+        logger: TnfLogger
+    ) {
+        let sourceFmt = sourceNode.outputFormat(forBus: 0)
+        let mainMixerIn = engine.mainMixerNode.inputFormat(forBus: 0)
+        let mainMixerOut = engine.mainMixerNode.outputFormat(forBus: 0)
+        let outputIn = engine.outputNode.inputFormat(forBus: 0)
+        let outputOut = engine.outputNode.outputFormat(forBus: 0)
+        logger.info("[EXP-032.format.source stage=\(stage)] \(describeFormat(sourceFmt))")
+        logger.info("[EXP-032.format.mainMixerIn stage=\(stage)] \(describeFormat(mainMixerIn))")
+        logger.info("[EXP-032.format.mainMixerOut stage=\(stage)] \(describeFormat(mainMixerOut))")
+        logger.info("[EXP-032.format.outputIn stage=\(stage)] \(describeFormat(outputIn))")
+        logger.info("[EXP-032.format.outputOut stage=\(stage)] \(describeFormat(outputOut))")
+    }
+
+    private static func describeFormat(_ format: AVAudioFormat) -> String {
+        let common: String
+        switch format.commonFormat {
+        case .pcmFormatFloat32: common = "Float32"
+        case .pcmFormatFloat64: common = "Float64"
+        case .pcmFormatInt16: common = "Int16"
+        case .pcmFormatInt32: common = "Int32"
+        case .otherFormat: common = "other"
+        @unknown default: common = "unknown"
+        }
+        return "rate=\(format.sampleRate) ch=\(format.channelCount) common=\(common) interleaved=\(format.isInterleaved)"
+    }
 
     private static func restoreGraph(
         from defaults: UserDefaults,
