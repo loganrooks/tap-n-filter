@@ -304,10 +304,15 @@ public final class CaptureController: CaptureControllerProtocol, @unchecked Send
                     audioBufferList: audioBufferList
                 )
             }
+            // NOTE: deliberately does NOT read `engine.inputNode`. Per
+            // ADR-018 / EXP-023, inputNode and outputNode share one unified IO
+            // audio unit on macOS 26.x, so touching inputNode can initialize
+            // the input side the direct-IOProc architecture exists to avoid
+            // (it never uses inputNode). Diagnostics stay on outputNode and the
+            // source node. (Codex + CodeRabbit PR #10 review.)
             log(
                 "[EXP-029.engine.preattach] engine.isRunning=\(engine.isRunning) "
-                + "outputFormat=\(engine.outputNode.outputFormat(forBus: 0).sampleRate)Hz×\(engine.outputNode.outputFormat(forBus: 0).channelCount)ch "
-                + "inputFormat=\(engine.inputNode.outputFormat(forBus: 0).sampleRate)Hz×\(engine.inputNode.outputFormat(forBus: 0).channelCount)ch"
+                + "outputFormat=\(engine.outputNode.outputFormat(forBus: 0).sampleRate)Hz×\(engine.outputNode.outputFormat(forBus: 0).channelCount)ch"
             )
             engine.attach(sourceNode)
             log(

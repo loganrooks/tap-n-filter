@@ -283,6 +283,14 @@ public final class EQNode: EffectNode {
         }
     }
 
+    /// Re-apply mix gains once the engine is running. See
+    /// `ReverbNode.refreshMixState` — the mixer destinations are nil while the
+    /// engine is stopped, so gains set during `attach(to:)` only land when
+    /// this is called after `engine.start()`. (Codex PR #10 review.)
+    public func refreshMixState() {
+        applyMixGains()
+    }
+
     // MARK: - EXP-031 diagnostic
 
     /// `[EXP-031.*]` instrumentation. See `ReverbNode.debugStateDescription`

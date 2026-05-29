@@ -66,7 +66,8 @@ default output device.
 Concretely:
 
 1. Create a per-process tap with `AudioHardwareCreateProcessTap`
-   (`muteBehavior = .muted` per ADR-014).
+   (`muteBehavior = .mutedWhenTapped` — ADR-014 as amended 2026-05-29;
+   `.muted` makes `AudioDeviceStart` fail on this path, EXP-027).
 2. Create an aggregate device wrapping the tap with these dictionary keys:
    - `kAudioAggregateDeviceNameKey`, `kAudioAggregateDeviceUIDKey`
    - `kAudioAggregateDeviceIsPrivateKey: true`
@@ -88,8 +89,10 @@ Concretely:
    `outputNode`. The engine's `inputNode` is unreferenced; the engine
    never calls `setProperty(kAudioOutputUnitProperty_CurrentDevice, ...)`.
 
-The tap mute behaviour, the effect graph, and the AVAudioEngine output
-path are unchanged from V0.1's prior shape.
+The effect graph and the AVAudioEngine output path are unchanged from
+V0.1's prior shape. The tap mute behaviour did change: this path requires
+`.mutedWhenTapped` rather than ADR-014's original `.muted` (EXP-027 found
+`.muted` makes `AudioDeviceStart` fail here). ADR-014 is amended to match.
 
 ## Alternatives considered
 
@@ -186,8 +189,8 @@ Shipping V0.1 against current macOS is more useful than waiting.
   work in EXP-026. To be removed when this ADR's implementation lands.
 - ADR-001 — original capture API decision (Core Audio Process Taps);
   this ADR supplements rather than supersedes ADR-001's API choice.
-- ADR-014 — mute behaviour for the source process; unchanged by this
-  ADR.
+- ADR-014 — mute behaviour for the source process; **amended** by this
+  architecture: `.muted` → `.mutedWhenTapped` (EXP-027).
 - [makeusabrew/audiotee](https://github.com/makeusabrew/audiotee)
   `Sources/AudioTeeCore/Core/AudioTapManager.swift` lines 103-152 —
   the working aggregate creation + tap attachment reference pattern.

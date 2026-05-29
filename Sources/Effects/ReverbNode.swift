@@ -207,6 +207,15 @@ public final class ReverbNode: EffectNode {
         }
     }
 
+    /// Re-apply mix gains once the engine is running. The mixer destinations
+    /// `applyMixGains()` writes to are nil while the engine is stopped, so the
+    /// gains set during `attach(to:)` (and any preset restored before
+    /// power-on) only land when this is called after `engine.start()`.
+    /// (Codex PR #10 review — saved bypass / wet-dry honored on power-on.)
+    public func refreshMixState() {
+        applyMixGains()
+    }
+
     // MARK: - EXP-031 diagnostic
 
     /// `[EXP-031.*]` instrumentation. Exposes the parallel-mixer state +

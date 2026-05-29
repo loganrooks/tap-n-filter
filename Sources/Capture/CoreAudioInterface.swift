@@ -121,11 +121,9 @@ public protocol CoreAudioInterface {
 
     /// Lists every process tap currently registered with the HAL.
     /// Returns an empty array on enumeration failure. Used to detect
-    /// orphaned taps from previous runs (H13). The list of all
-    /// process-tap-class objects via
-    /// `kAudioHardwarePropertyProcessObjectList` is what we'd want
-    /// here; if that property is the wrong one for taps we fall back
-    /// to returning `[]` and log the error.
+    /// orphaned taps from previous runs (H13). Backed by
+    /// `kAudioHardwarePropertyTapList` (macOS 14.4+); on any read
+    /// failure it returns `[]`, which is itself diagnostic.
     func enumerateProcessTaps() -> [AudioObjectID]
 
     // MARK: - Orphan cleanup helpers (EXP-030)

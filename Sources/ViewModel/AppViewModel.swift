@@ -158,6 +158,14 @@ public final class AppViewModel: ObservableObject {
     @MainActor
     public func runReaderTest() {
         guard !isReaderTestRunning else { return }
+        guard captureState == .idle else {
+            logger.warning(
+                "runReaderTest: capture is active; stop capture before running "
+                + "the reader test (it would create a second tap on the same "
+                + "process and can fire a configuration change on the live engine)"
+            )
+            return
+        }
         guard let source = currentSource else {
             logger.warning("runReaderTest: no source selected; pick one first")
             return
@@ -215,7 +223,10 @@ public final class AppViewModel: ObservableObject {
             return
         }
 
-        // Drain the ring at ~100 ms cadence so it doesn't overflow.
+        // Drain the ring fully each ~100 ms tick. A single frameBatch read
+        // (4096) under-drains at 48 kHz (~4800 frames per 100 ms window), so
+        // the inner loop reads until the ring is empty to keep totalFrames
+        // accurate and avoid a slow ring overflow. (CodeRabbit PR #10 review.)
         let ring = reader.ring
         let channelCount = Int(reader.format.channelCount)
         let frameBatch = 4096
@@ -236,10 +247,10 @@ public final class AppViewModel: ObservableObject {
         let deadline = Date().addingTimeInterval(5.0)
         while Date() < deadline {
             try? await Task.sleep(nanoseconds: 100_000_000)
-            let framesRead = ring.read(into: channelPtrs, frames: frameBatch)
-            readCount += 1
-            totalFrames += framesRead
-            if framesRead > 0 {
+            var framesRead = ring.read(into: channelPtrs, frames: frameBatch)
+            while framesRead > 0 {
+                readCount += 1
+                totalFrames += framesRead
                 let ch0 = channelPtrs[0]
                 for i in 0..<framesRead {
                     let s = ch0[i]
@@ -247,6 +258,7 @@ public final class AppViewModel: ObservableObject {
                     let a = Swift.abs(s)
                     if a > maxAbs { maxAbs = a }
                 }
+                framesRead = ring.read(into: channelPtrs, frames: frameBatch)
             }
         }
 
@@ -537,6 +549,13 @@ public final class AppViewModel: ObservableObject {
         do {
             try engine.start()
             engineIsRunning = true
+            // Re-apply each node's wet/dry + bypass gains now that the engine
+            // is running. The mixer destinations the nodes use are nil while
+            // the engine is stopped, so gains set during attach do not land
+            // until here — without this a preset-loaded bypass / non-50-50 mix
+            // is ignored on power-on until the user touches a control.
+            // (Codex PR #10 review.)
+            graph.refreshNodeMixState()
             let chainSummary = graph.nodes.isEmpty
                 ? "EMPTY (audio passes through unprocessed; add effects to hear filtering)"
                 : graph.nodes.map { type(of: $0).typeIdentifier }.joined(separator: " -> ")
@@ -795,6 +814,8 @@ public final class AppViewModel: ObservableObject {
         do {
             try engine.start()
             engineIsRunning = true
+            // See powerOn: re-apply node mix gains once the engine is running.
+            graph.refreshNodeMixState()
             logger.info(
                 "[EXP-031.reattach.engineStarted] engine.isRunning=\(engine.isRunning)"
             )

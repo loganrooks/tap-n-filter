@@ -96,6 +96,14 @@ public protocol EffectNode: AnyObject, Codable {
     /// `ReverbNode` and `EQNode` dispatch dynamically — calls on
     /// `any EffectNode` will reach the override, not the default impl.
     func debugStateDescription() -> String
+
+    /// Re-apply the wet/dry + bypass mix gains. Must be called after the
+    /// engine is running: the `AVAudioMixingDestination`s the node uses to
+    /// set per-bus gains are nil while the engine is stopped, so the gains
+    /// set during `attach(to:)` (and any preset restored before power-on) do
+    /// not land until the connections are realized. Idempotent. The default
+    /// impl is a no-op for nodes without the parallel wet/dry mixer pattern.
+    func refreshMixState()
 }
 
 extension EffectNode {
@@ -109,6 +117,12 @@ extension EffectNode {
     /// the categorical preset stored in `EffectState.extras`) keep this
     /// default. `EQNode` overrides with the concrete band reader.
     public func parameterValue(_ identifier: String) -> Float? { nil }
+
+    /// Default `refreshMixState` is a no-op. `ReverbNode` and `EQNode`
+    /// override it to re-apply their parallel wet/dry mixer gains once the
+    /// engine is running (the mixer destinations are nil while it is stopped,
+    /// so gains set during `attach` do not land until then).
+    public func refreshMixState() {}
 
     /// Diagnostic snapshot of the node's current mixing state. Returned as
     /// a `tag=value` string for inclusion in `[EXP-031.*]` log lines.

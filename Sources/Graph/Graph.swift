@@ -154,6 +154,16 @@ public final class Graph {
         attachedDestination = destination
     }
 
+    /// Re-apply every node's wet/dry + bypass mix gains. Call after
+    /// `engine.start()`: the per-bus mixer destinations the nodes write to are
+    /// nil while the engine is stopped, so gains set during `attach` only land
+    /// once the engine is running. Idempotent.
+    public func refreshNodeMixState() {
+        for node in nodes {
+            node.refreshMixState()
+        }
+    }
+
     /// Disconnect everything wired by `attach` and call `detach()` on every
     /// node. Safe to call when not attached.
     public func detach() {
