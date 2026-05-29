@@ -1,0 +1,29 @@
+{
+  "schema_version": "1.0",
+  "pr_number": 11,
+  "repo": "loganrooks/tap-n-filter",
+  "last_synced_at": "2026-05-29T12:21:48.267228+00:00",
+  "threads": [
+    {
+      "id": "PRRT_kwDOSjmLjM6FleJu",
+      "path": "Sources/UI/ControlPanelView.swift",
+      "line": 50,
+      "reviewer": "chatgpt-codex-connector",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "P2",
+      "category": "doc-evidence-consistency",
+      "finding_excerpt": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Synchronize the a11y dump viewport**\n\nWhen regenerating the Phase 3 accessibility evidence with `swift run tap-n-filter-a11y-dump`, the executable still hosts `ControlPanelView` in a 320\u00d7600 `NSHostingView` (`Sou",
+      "created_at": "2026-05-29T04:42:27Z",
+      "resolved": true,
+      "outdated": false,
+      "verdict": "ACCEPTED_MODIFIED",
+      "verdict_commit": "d61a430",
+      "verdict_refs": [],
+      "verdict_notes": "Updated the a11y-dump NSHostingView from 320x600 to 380x700 (Sources/AccessibilityDump/main.swift) to match the widened panel + snapshot helper, so regenerated Phase 3 accessibility evidence reflects the real viewport.",
+      "verdict_source": "block",
+      "reconsidered_verdict": null,
+      "verdict_history": [],
+      "extras": {}
+    }
+  ]
+}
