@@ -13,7 +13,7 @@ MenuBarExtra("tap-n-filter", systemImage: "waveform")
 
 `.window` style (as opposed to `.menu`) gives us a fixed-width popover with arbitrary SwiftUI content. The menu style is too constrained for sliders and chain editing.
 
-Width: 320pt. Height: dynamic, capped at 600pt (above which the chain editor scrolls).
+Width: 380pt. Height: dynamic, capped at 700pt (900pt with the debug panel open), above which the chain editor scrolls. The chain editor's own scroll region is capped at 440pt. These were widened from the original 320×600 because the chain editor's per-row header (chevron, reorder, name, bypass, wet/dry, remove) was too cramped to add and customize filters comfortably.
 
 The icon in the menubar reflects state:
 - `.waveform` when idle.

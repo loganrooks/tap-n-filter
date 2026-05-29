@@ -6,8 +6,8 @@ import ViewModel
 /// Composed of `HeaderView`, `SourcePickerView`, `ChainEditorView`, and
 /// `FooterView`, with an optional `DebugPanel` rendered below the footer
 /// when `viewModel.showDebugPanel` is true (toggled via the ladybug button
-/// in `HeaderView`). Width is fixed at 320 pt per `docs/specs/ui.md`.
-/// Height is dynamic, capped at 600 pt by default and lifted to 820 pt
+/// in `HeaderView`). Width is fixed at 380 pt per `docs/specs/ui.md`.
+/// Height is dynamic, capped at 700 pt by default and lifted to 900 pt
 /// while the debug panel is shown to keep the log readable without
 /// pushing the chain editor off-screen.
 public struct ControlPanelView: View {
@@ -46,7 +46,7 @@ public struct ControlPanelView: View {
                     .padding(.vertical, 8)
             }
         }
-        .frame(width: 320)
-        .frame(maxHeight: viewModel.showDebugPanel ? 820 : 600)
+        .frame(width: 380)
+        .frame(maxHeight: viewModel.showDebugPanel ? 900 : 700)
     }
 }

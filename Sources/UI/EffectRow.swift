@@ -59,12 +59,13 @@ public struct EffectRow: View {
     /// `MenuBarExtra` historically does not play well with drag gestures
     /// and the keyboard/VoiceOver story for drag handles is poor.
     private var reorderButtons: some View {
-        VStack(spacing: 2) {
+        VStack(spacing: 3) {
             Button {
                 viewModel.moveEffect(from: index, to: index - 1)
             } label: {
                 Image(systemName: "chevron.up")
-                    .frame(width: 10, height: 8)
+                    .frame(width: 14, height: 11)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .disabled(index == 0)
@@ -81,7 +82,8 @@ public struct EffectRow: View {
                 viewModel.moveEffect(from: index, to: index + 1)
             } label: {
                 Image(systemName: "chevron.down")
-                    .frame(width: 10, height: 8)
+                    .frame(width: 14, height: 11)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .disabled(index >= viewModel.graph.nodes.count - 1)
@@ -131,7 +133,7 @@ public struct EffectRow: View {
             ),
             in: 0.0 ... 1.0
         )
-        .frame(width: 64)
+        .frame(width: 88)
         .accessibilityLabel("\(node.displayName) wet/dry")
         .accessibilityValue("\(Int(node.wetDryMix * 100)) percent")
     }

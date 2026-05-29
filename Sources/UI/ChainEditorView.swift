@@ -21,7 +21,7 @@ public struct ChainEditorView: View {
                     }
                 }
             }
-            .frame(maxHeight: 360)
+            .frame(maxHeight: 440)
 
             AddEffectButton()
         }
