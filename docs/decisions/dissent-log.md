@@ -172,6 +172,18 @@ Entries are added at the bottom. They are not edited after commit (except for ty
 
 ---
 
+## 2026-06-08 — DMG creation tool: hdiutil directly
+
+**Decision**: `Build/release-bundle.sh` builds the DMG using `hdiutil create` + `hdiutil convert` only.
+
+**Phase**: 4
+
+**Considered**:
+- `create-dmg` (Homebrew) — rejected. Requires a Homebrew dependency on the build host; adds a third-party tool to a step that is already fully covered by the built-in `hdiutil`. No feature of `create-dmg` (custom background, icon positioning) is needed for v0.1.0.
+- `hdiutil` directly (chosen) — ships with macOS; no external dependencies; UDRW → UDZO two-step is the documented pattern for compressed read-only images.
+
+---
+
 ## Future entries
 
 The orchestrator appends new entries here during build. Examples of decisions that would warrant an entry:

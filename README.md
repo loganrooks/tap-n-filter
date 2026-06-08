@@ -77,11 +77,25 @@ You need Swift 5.10+ and the macOS 14.4 SDK. A full Xcode install is required to
 To build a distributable `.app` bundle and `.dmg`:
 
 ```sh
-./Build/bundle.sh        # produces Build/Release/tap-n-filter.app
-./Build/package-dmg.sh   # produces Build/Release/tap-n-filter-v0.1.0.dmg (after sign + notarize)
+./Build/release-bundle.sh          # default version 0.1.0
+./Build/release-bundle.sh 0.2.0    # pass an explicit version label
 ```
 
-The signing and notarization scripts live under `Build/` and are exercised during Phase 4.
+The script runs `swift build -c release`, assembles `Build/Release/tap-n-filter.app`,
+and produces `Build/Release/tap-n-filter-v<VERSION>.dmg`. Both outputs are
+git-ignored; only the script itself is tracked.
+
+**First-launch caveat.** The v0.1.0 release is ad-hoc signed and not notarized
+(see `docs/decisions/ADR-017-developer-id-deferral-v0.1.0.md`). macOS Gatekeeper
+will block the app on first open with "tap-n-filter can't be opened because Apple
+cannot check it for malicious software." To proceed:
+
+- **Right-click the app → Open**, then click Open in the dialog, or
+- Open **System Settings → Privacy & Security**, scroll to the blocked-app
+  notice, and click **Open Anyway**.
+
+This is a one-time action per installation. The restriction is removed when a
+Developer ID certificate is obtained and the app is notarized in a future release.
 
 ## Project governance
 
