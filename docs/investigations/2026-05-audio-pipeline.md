@@ -1138,6 +1138,7 @@ load-bearing without ambiguity.
 
 | EXP | Date | Target mechanism | Type | Landed? | Resolved? | Revision on failure |
 |---|---|---|---|---|---|---|
+| EXP-037 | 06-08 | H15 automation: app switches default input away from BT during capture and restores on stop/crash (lever already confirmed load-bearing by EXP-036) | intervention — **pre-registered; code not yet written** | pending | pending | landed-but-unresolved routes to auxiliary A1 (switch timing vs HFP negotiation), not the mechanism; restore failure (D3/D4) is a ship-blocker routed to save/restore + crash-marker code |
 | EXP-036 | 05-29 | H15 refined: HFP trigger gated on BT being the system default *input*; manually set default input to built-in mic | behavior-inferred (causal); source-grounded (format readback) | yes (default input changed; input path 44.1 kHz) | **yes** — output stayed A2DP (`outputOut 44100×2` vs `16000×1`); reverb depth/width returned | — (lever confirmed load-bearing; app-side automation = EXP-037, settings branch) |
 | EXP-034 | 05-28 | Bug B: tap is interleaved, pipeline is planar; IOProc writes interleaved data as one planar channel at 2× frames | source-grounded (flags=9, bytesPerFrame=8) | yes (build; `[EXP-034.layout] interleaved=true`) | **yes** — pitch, imaging, crackle, duration all resolved together | — (mechanism confirmed load-bearing) |
 | EXP-033 | 05-28 | Bug B (H17a): chain runs at 44.1 kHz while tap is 48 kHz; pin chain to tap rate via `graph.attach(sourceFormat:)` | source-grounded (EXP-032 readback) | yes (`[EXP-032.format.source] rate=48000`) | **no** (still pitched low) | rate mismatch obtains but is **not load-bearing** for the audible artifact → look for a second mismatch at the same boundary → EXP-034 |
@@ -4137,6 +4138,137 @@ user's own microphone usage.
 ADR-019 reframed from "intrinsic limitation" to "app-side mitigation +
 deferred HAL path"; resolves Q4.
 
+### EXP-037 — App-side default-input auto-switch + restore (PRE-REGISTERED, code not yet written)
+
+**Date**: 2026-06-08 (pre-registration; the intervention has not run — no
+device-switch code exists yet)
+**Type**: intervention (fix attempt) — the app-side automation of the
+EXP-036 lever. This entry is the gate required by
+`docs/governance/debugging-protocol.md` and ADR-019: it is written *before*
+any device-switch code, and it must be revisited and completed (Landed? /
+Resolved? / Revision) after the implementation runs.
+
+**Target mechanism**: H15 (refined by EXP-036). The HFP route switch is
+gated on the Bluetooth device being the system default *input* while a
+capture session is active. The automation: when capture starts on a
+Bluetooth output and the BT device is also the default input, set the
+system default input to a non-BT device (prefer built-in mic) for the
+duration of capture, then restore the prior default input on stop.
+
+**Mechanism type**: the lever is **already source-grounded + load-bearing**
+— EXP-036 moved the symptom by manipulating exactly this variable. EXP-037
+does **not** re-test whether the lever is load-bearing; that is settled.
+EXP-037 tests two new, distinct claims the manual test did not exercise:
+1. **Equivalence** — the *automated* switch reproduces EXP-036's effect
+   (BT output stays A2DP) under real capture-start timing.
+2. **Reversibility safety** — the prior input is reliably restored on clean
+   stop and recovered after a crash, so the system-wide side effect never
+   strands the user.
+
+**Auxiliaries** (must hold for the automation to resolve the symptom *and*
+be safe):
+- **A1 (timing/ordering)**: the default-input switch takes effect *before*
+  macOS negotiates HFP. EXP-029 timed the HFP flip at ~65 ms after
+  `AudioDeviceStart`; the switch must precede the point where the active tap
+  registers as a running input on the BT-default-input route. This is the
+  auxiliary most likely to be false and is the pre-named revision site for a
+  landed-but-unresolved result (see Risky branch).
+- **A2 (device identity)**: the device the app classifies as "the BT output"
+  and "the BT default input" are correctly identified via
+  `kAudioDevicePropertyTransportType == kAudioDeviceTransportTypeBluetooth`
+  (and `…BluetoothLE`), and the replacement is genuinely non-BT.
+- **A3 (restore target exists)**: at stop/recovery time the saved input UID
+  still resolves to a present device; if not, a defined fallback applies
+  (restore to current system default, else built-in input).
+- **A4 (no contention)**: switching the default input does not hijack a
+  device the user is actively using as a microphone (the call-mid-call
+  race).
+
+**Race policy decided here** (ADR-019 left this as EXP-037's open design
+point): **decline to switch when the BT input is already in use by another
+process.** Before switching, query the BT input device's
+`kAudioDevicePropertyDeviceIsRunningSomewhere`; if true (e.g. an active
+call), the app does **not** touch the default input and surfaces the
+README-style caveat instead. Hijacking a live call microphone is a worse
+failure than degraded playback. The switch only engages on an idle BT input.
+
+**Question**: does app code that switches the default input away from the BT
+device on capture start (subject to the engage conditions) keep the BT
+output on A2DP automatically, and does it leave the user's default input
+correct on clean stop and after a crash?
+
+**Diagnostics defined** (so "landed" and "resolved" are separable — the
+ambiguous-fix anti-pattern is the thing to avoid):
+- **D1 (switch landed)**: `[EXP-037.switch] from=<origUID> to=<replUID>
+  btOutput=<uid> engaged=true` plus a readback that
+  `kAudioHardwarePropertyDefaultInputDevice` now equals `replUID`.
+- **D2 (symptom resolved)**: the existing output-route readback
+  `[EXP-032.format.outputOut] rate=44100 ch=2` (A2DP) during *app-driven*
+  capture, where the unmitigated run shows `rate=16000 ch=1` (HFP).
+- **D3 (clean-stop restore landed)**: `[EXP-037.restore] to=<origUID>
+  trigger=clean-stop ok=true` plus a readback that the default input equals
+  `origUID` after stop.
+- **D4 (crash recovery landed)**: with capture killed mid-session
+  (simulated crash), on next launch with capture inactive
+  `[EXP-037.recover] restoredTo=<origUID> markerCleared=true`, driven by the
+  persisted `hfpMitigation.strandedInputUID` marker.
+- **D5 (race decline)**: when the BT input is in use,
+  `[EXP-037.switch] engaged=false reason=bt-input-in-use` and the default
+  input is unchanged.
+
+**Prediction** (locked before writing the code):
+- **If load-bearing (automation correct and safe)**: D1 shows the input
+  switched to a non-BT device on capture start (engage conditions met); D2
+  shows A2DP retained automatically; D3 shows the original input restored on
+  clean stop; D4 shows crash recovery restoring it on the next launch; D5
+  shows the switch is declined when the BT mic is busy.
+- **Risky branch (switch lands, symptom persists)**: D1 shows the input
+  changed but D2 still shows HFP (`16000×1`). Because EXP-036 already
+  established the lever is load-bearing, this does **not** refute the
+  mechanism — it falsifies auxiliary **A1**: the switch landed too late,
+  after HFP negotiated. Revision goes to the switch's *ordering* (perform it
+  before `AudioDeviceStart` / before the tap registers as a running input,
+  and re-verify the flip timing against EXP-029). Only if the switch is
+  provably before capture start *and* HFP still wins does the revision
+  escalate to "the automated context differs from EXP-036 in a way we have
+  not modeled," at which point the HAL-plugin virtual device (V0.2) returns
+  as the candidate. Blaming A1 is legitimate *here specifically* because the
+  mechanism has independent intervention support (EXP-036); this is recorded
+  now to prevent it reading as post-hoc auxiliary-rescue later.
+- **Restore-risky branch (mitigation works, restore fails)**: D1 and D2
+  succeed but D3 or D4 fails — the input is not restored on clean stop, or
+  the crash marker does not recover it. The mitigation is then *effective
+  but unsafe* (it strands the user on the wrong input). This is a
+  **ship-blocker**, not a tuning note: ADR-019 makes restore reliability a
+  safety requirement. Revision targets the save/restore call (D3) or the
+  marker + launch-recovery logic (D4) — never the mechanism.
+- **Did-not-land branch**: D1 does not show a switch when the engage
+  conditions were met → the engage-condition evaluation or the
+  `AudioObjectSetPropertyData` call on
+  `kAudioHardwarePropertyDefaultInputDevice` is wrong. The mechanism is
+  untested; fix the call and re-run rather than concluding anything about
+  H15.
+
+**Variables to change** (in the implementation under test):
+- System default input device, app-driven, for the capture lifetime, under
+  the three ADR-019 engage conditions plus the A4 race check.
+
+**Variables to hold constant**:
+- Output device (the BT headphones); source; effect chain; the post-EXP-034
+  build of the audio path. The only manipulated variable is the default
+  input automation, mirroring EXP-036.
+
+**Method** (when the code exists): on a BT output with the BT device as
+default input, start capture on Safari/YouTube with the setting on. Grep
+`[EXP-037.*]` and `[EXP-032.format.outputOut]`. Then: clean-stop and confirm
+D3; re-run and `kill -9` the app mid-capture, relaunch, confirm D4; start a
+call on the BT mic, start capture, confirm D5 (declined). Compare against a
+setting-off control run (expect HFP `16000×1`).
+
+**Landed?**: pending — no implementation yet.
+**Resolved?**: pending — no implementation yet.
+**Revision taken**: pending.
+
 ## External references
 
 ### Codex investigation report (this session)
@@ -4940,3 +5072,16 @@ instead of testing causal salience by intervention.
   TL;DR, the Intervention ledger, and resolved Q4. The app-side
   automation is queued as **EXP-037**, to be pre-registered before its
   code on the settings branch per the debugging protocol.
+- 2026-06-08 — **EXP-037 pre-registered** (code not yet written),
+  satisfying the ADR-019 / debugging-protocol gate before any
+  default-input switch code. The entry frames EXP-037 as testing the
+  *automation* (equivalence to EXP-036 under real capture-start timing,
+  plus restore/crash-recovery safety) rather than re-testing the lever,
+  which EXP-036 already proved load-bearing. It names auxiliary A1
+  (switch must precede HFP negotiation, ~65 ms post-`AudioDeviceStart`
+  per EXP-029) as the pre-committed revision site for a
+  landed-but-unresolved result, makes a restore-failure (D3/D4) a
+  ship-blocker, and settles the open race-policy design point: **decline
+  to switch when the BT input is already in use**
+  (`kAudioDevicePropertyDeviceIsRunningSomewhere`). Added the Intervention
+  ledger row (Landed?/Resolved? = pending) and diagnostics D1–D5.
