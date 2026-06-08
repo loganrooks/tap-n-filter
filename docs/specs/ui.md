@@ -105,6 +105,7 @@ Below the list, the "Add Effect" button presents a `Menu`:
 ```swift
 Menu("Add Effect") {
     Button("Parametric EQ") { viewModel.addEffect(of: "tnf.eq") }
+    Button("Gain") { viewModel.addEffect(of: "tnf.gain") }
     Button("Reverb") { viewModel.addEffect(of: "tnf.reverb") }
 }
 ```
@@ -128,6 +129,8 @@ The menu's contents are sourced from `EffectNodeRegistry.shared`, so adding a ne
 The chevron toggles expansion. The bypass toggle is a small SwiftUI `Toggle` styled minimally. The wet/dry slider is visible by default for nodes whose effect is time-domain (e.g., reverb, future delay, future distortion) — for these the wet/dry control is the most-used adjustment. For nodes whose effect is spectral-shaping (e.g., EQ), the wet/dry slider is hidden by default and accessible only via the expanded controls panel; the rationale is that wet/dry on an EQ at any value other than 1.0 partially defeats the filter, which is rarely what a user adjusting the slider expects. The trash icon removes the effect with confirmation (or with undo via a toast — V1 implements confirmation modal).
 
 The decision of "show wet/dry by default" is per-node. Each `EffectNode` exposes a static property `showsWetDryByDefault: Bool` (default `true`) that the UI consults when rendering the `EffectRow` header. `EQNode` overrides this to `false`; `ReverbNode` uses the default `true`. See `docs/decisions/ADR-007-wet-dry-on-eq.md`.
+
+A second flag, `supportsWetDry: Bool` (default `true`), distinguishes nodes that have no wet/dry concept at all. `GainNode` overrides it to `false`: a gain trim only scales level, so a partial wet/dry blend is meaningless. When `supportsWetDry` is `false` the UI suppresses the wet/dry control everywhere — both the row header and the expanded controls panel — rather than showing a slider that does nothing. See `docs/specs/effect-node-protocol.md`.
 
 ## EffectControlsView
 

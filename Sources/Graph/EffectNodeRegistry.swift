@@ -31,6 +31,7 @@ public final class EffectNodeRegistry {
     /// Construct a registry with the V1 built-in effects already registered.
     public init() {
         register(EQNode.self)
+        register(GainNode.self)
         register(ReverbNode.self)
     }
 
@@ -78,4 +79,5 @@ public protocol DefaultConstructibleEffectNode: EffectNode {
 }
 
 extension EQNode: DefaultConstructibleEffectNode {}
+extension GainNode: DefaultConstructibleEffectNode {}
 extension ReverbNode: DefaultConstructibleEffectNode {}

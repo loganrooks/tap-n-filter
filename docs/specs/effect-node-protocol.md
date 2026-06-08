@@ -133,6 +133,8 @@ Wet/dry mixing is **less meaningful** for spectral-shaping effects (EQ, filters)
 
 The protocol still requires `wetDryMix` on every node — the uniformity of the protocol surface is load-bearing for the graph layer, the UI's per-row controls, and serialization. Concrete nodes that don't meaningfully benefit from wet/dry mixing implement the protocol normally and document the limitation in their doc comments. The UI (`docs/specs/ui.md`) governs which nodes expose the wet/dry slider visibly. See `docs/decisions/ADR-007-wet-dry-on-eq.md`.
 
+Wet/dry mixing is **not applicable at all** to pure level/utility nodes. A `GainNode` only scales amplitude; a partial blend of the scaled signal with the original is itself just a different scaling, never a distinct effect. Such a node sets the type-level flag `static var supportsWetDry: Bool { false }` (default `true`). The UI consults this flag to suppress the wet/dry control entirely — not merely hide it from the row header as `showsWetDryByDefault` does for the EQ, but remove it from the expanded panel too — so the node never presents a control that does nothing. `wetDryMix` remains on the protocol surface and round-trips through serialization for uniformity, but it is inert for these nodes.
+
 ## Bypass
 
 When `bypass = true`, the effect's underlying `AVAudioUnit` is still attached to the engine, but the wet path's mixer gain is set to zero. This avoids the click that engine restructuring would cause. The dry path is set to 1.0.
@@ -186,6 +188,10 @@ V1 ships two effects:
 
 - `EQNode` — see `docs/specs/effects/eq.md` (TODO: extract into separate file if it grows; for now, content is inlined in `02-dsp-chain.md`).
 - `ReverbNode` — same.
+
+Added after V1:
+
+- `GainNode` (V0.2) — a level trim. One `gain` parameter in decibels (−24…+12 dB), realised by a zero-band `AVAudioUnitEQ`'s `globalGain` (a documented dB gain that supports boost, unlike `AVAudioMixerNode.outputVolume`, whose contract is 0.0–1.0). `supportsWetDry == false`. The boost it can apply is backstopped by the always-on output limiter; see `docs/decisions/ADR-021-output-safety-limiter.md`.
 
 Future:
 

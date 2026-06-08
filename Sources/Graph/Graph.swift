@@ -1,3 +1,4 @@
+import AudioToolbox
 import AVFoundation
 import Effects
 import Foundation
@@ -39,6 +40,15 @@ public final class Graph {
     /// destination. Owned by the graph, attached to the engine on `attach`.
     private let trimMixer: AVAudioMixerNode
 
+    /// Always-on brick-wall peak limiter sitting between `trimMixer` and the
+    /// destination. It is not a user effect and not in the `nodes` chain: it is
+    /// a fixed safety stage that prevents the output from exceeding 0 dBFS no
+    /// matter how hot the source is or how much boost the user dials in via a
+    /// `GainNode` or the output trim. See ADR-021. Apple's `PeakLimiter`
+    /// AudioUnit at its defaults limits to ~0 dBFS, which is exactly the
+    /// safety behaviour wanted; no parameter tuning is required.
+    private let safetyLimiter: AVAudioUnitEffect
+
     private weak var attachedEngine: AVAudioEngine?
     private weak var attachedSource: AVAudioNode?
     private weak var attachedDestination: AVAudioNode?
@@ -49,6 +59,21 @@ public final class Graph {
         self.nodes = nodes
         self.outputGain = outputGain
         self.trimMixer = AVAudioMixerNode()
+        self.safetyLimiter = Graph.makeSafetyLimiter()
+    }
+
+    /// Build the always-on output limiter: Apple's `PeakLimiter` AudioUnit.
+    /// Defaults (pre-gain 0 dB) limit peaks to ~0 dBFS — the brick-wall
+    /// safety behaviour ADR-021 specifies — so no parameters are set here.
+    private static func makeSafetyLimiter() -> AVAudioUnitEffect {
+        let description = AudioComponentDescription(
+            componentType: kAudioUnitType_Effect,
+            componentSubType: kAudioUnitSubType_PeakLimiter,
+            componentManufacturer: kAudioUnitManufacturer_Apple,
+            componentFlags: 0,
+            componentFlagsMask: 0
+        )
+        return AVAudioUnitEffect(audioComponentDescription: description)
     }
 
     // MARK: Attach / detach
@@ -89,8 +114,10 @@ public final class Graph {
             throw GraphError.alreadyAttached
         }
 
-        // Attach the trim mixer first so we can roll back if a node throws.
+        // Attach the trim mixer and safety limiter first so we can roll back
+        // if a node throws.
         engine.attach(trimMixer)
+        engine.attach(safetyLimiter)
         trimMixer.outputVolume = clampedGain(outputGain)
 
         var attachedNodes: [any EffectNode] = []
@@ -100,10 +127,11 @@ public final class Graph {
                 attachedNodes.append(node)
             }
         } catch {
-            // Roll back any partially-attached nodes plus the trim mixer.
+            // Roll back any partially-attached nodes plus the fixed stages.
             for partial in attachedNodes {
                 partial.detach()
             }
+            engine.detach(safetyLimiter)
             engine.detach(trimMixer)
             throw error
         }
@@ -141,12 +169,29 @@ public final class Graph {
         } else {
             engine.connect(source, to: trimMixer, fromBus: 0, toBus: 0, format: resolvedSourceFormat)
         }
+        // Insert the always-on safety limiter between the trim and the
+        // destination: trimMixer → safetyLimiter → destination. Both links
+        // obey the same H17 format-pin discipline as the rest of the chain —
+        // when the caller pins the capture rate, every connection (including
+        // these two) runs at that rate and the engine's mainMixerNode performs
+        // the single sample-rate conversion. Pinning here is load-bearing for
+        // the same reason it is upstream: an attached-but-unconnected
+        // AVAudioUnitEffect reports the engine's default format from
+        // `outputFormat(forBus:)`, not the rate it will actually run at. See
+        // the `sourceFormat` doc above and EXP-032.
         engine.connect(
             trimMixer,
-            to: destination,
+            to: safetyLimiter,
             fromBus: 0,
             toBus: 0,
             format: pinFormat ? resolvedSourceFormat : trimMixer.outputFormat(forBus: 0)
+        )
+        engine.connect(
+            safetyLimiter,
+            to: destination,
+            fromBus: 0,
+            toBus: 0,
+            format: pinFormat ? resolvedSourceFormat : safetyLimiter.outputFormat(forBus: 0)
         )
 
         attachedEngine = engine
@@ -180,10 +225,12 @@ public final class Graph {
             engine.disconnectNodeOutput(node.inputBus)
         }
         engine.disconnectNodeOutput(trimMixer)
+        engine.disconnectNodeOutput(safetyLimiter)
 
         for node in nodes {
             node.detach()
         }
+        engine.detach(safetyLimiter)
         engine.detach(trimMixer)
 
         attachedEngine = nil

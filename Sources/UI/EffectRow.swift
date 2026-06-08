@@ -154,8 +154,11 @@ public struct EffectRow: View {
         viewModel.expandedEffectID == node.id
     }
 
-    /// Pick up the type-level default from the concrete node's metatype.
+    /// Pick up the type-level default from the concrete node's metatype. A
+    /// node that has no wet/dry concept at all (`supportsWetDry == false`)
+    /// never shows the header slider regardless of `showsWetDryByDefault`.
     private var showsWetDry: Bool {
-        return type(of: node).showsWetDryByDefault
+        let type = type(of: node)
+        return type.supportsWetDry && type.showsWetDryByDefault
     }
 }

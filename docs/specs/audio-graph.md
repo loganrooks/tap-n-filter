@@ -7,8 +7,10 @@ The `Graph` is the central data structure of the audio side of the app. It owns 
 A graph is a linear chain:
 
 ```
-   input → node[0] → node[1] → … → node[n] → outputGain → output
+   input → node[0] → node[1] → … → node[n] → outputGain → safetyLimiter → output
 ```
+
+`safetyLimiter` is an always-on `PeakLimiter` the graph owns as a fixed final stage (not a user node). It holds the output near 0 dBFS so nothing upstream — a hot source, a boosting effect, or a `GainNode` — can clip the output device. See `docs/decisions/ADR-021-output-safety-limiter.md`.
 
 Nodes are ordered. Each node has one input bus and one output bus. The graph wires them sequentially. There is no branching or parallel routing at the graph level in V1. Wet/dry mixing happens **inside each node** so the graph itself stays linear.
 
@@ -54,8 +56,8 @@ The sequence:
 1. For each node in `nodes`, call `node.attach(to: engine)`. The node creates its mixer scaffolding (per the wet/dry mixing convention in `effect-node-protocol.md`), attaches its underlying `AVAudioUnit`s plus mixers to the engine, and connects its internal dry and wet paths to the appropriate input buses on its `outputBus`.
 2. Connect `source` to `nodes[0].inputBus` on bus 0 with the source's `outputFormat(forBus: 0)`.
 3. For each adjacent pair `(nodes[i], nodes[i+1])`, connect `nodes[i].outputBus` bus 0 to `nodes[i+1].inputBus` bus 0 with the upstream output format.
-4. Connect `nodes[last].outputBus` bus 0 to a graph-owned `AVAudioMixerNode` that applies `outputGain` (set via its single-input bus volume).
-5. Connect that mixer to `destination` bus 0.
+4. Connect `nodes[last].outputBus` bus 0 to a graph-owned `AVAudioMixerNode` that applies `outputGain` (via its output volume).
+5. Connect that trim mixer to the graph-owned always-on safety limiter, and the limiter to `destination` bus 0 (ADR-021). Both links honour the same format pin as the rest of the chain (see the `sourceFormat` note below / EXP-032), so the limiter never reintroduces the H17 sample-rate mismatch.
 
 Format negotiation: each `connect` uses the source node's `outputFormat(forBus: 0)`. The graph does not insert format converters; nodes are expected to produce a format compatible with the next node's input. The aggregate device's native format is the format the chain runs at; sample rate and channel layout are determined by the device, not by the graph.
 

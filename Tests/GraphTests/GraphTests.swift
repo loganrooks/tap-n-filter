@@ -30,6 +30,12 @@ final class GraphTests: XCTestCase {
         XCTAssertEqual(type(of: node).typeIdentifier, "tnf.eq")
     }
 
+    func test_register_and_makeNode_roundtrip_for_gain() throws {
+        let registry = EffectNodeRegistry()
+        let node = try registry.makeNode(typeIdentifier: "tnf.gain")
+        XCTAssertEqual(type(of: node).typeIdentifier, "tnf.gain")
+    }
+
     func test_register_and_makeNode_roundtrip_for_reverb() throws {
         let registry = EffectNodeRegistry()
         let node = try registry.makeNode(typeIdentifier: "tnf.reverb")
@@ -49,7 +55,7 @@ final class GraphTests: XCTestCase {
 
     func test_registry_lists_default_type_identifiers() {
         let registry = EffectNodeRegistry()
-        XCTAssertEqual(registry.registeredTypeIdentifiers, ["tnf.eq", "tnf.reverb"])
+        XCTAssertEqual(registry.registeredTypeIdentifiers, ["tnf.eq", "tnf.gain", "tnf.reverb"])
     }
 
     // MARK: Snapshot / restore
@@ -217,5 +223,79 @@ final class GraphTests: XCTestCase {
             try graph.attach(to: engine, source: player, destination: engine.mainMixerNode)
         )
         graph.detach()
+    }
+
+    // MARK: Always-on safety limiter (ADR-021)
+
+    /// Offline-render a 0.5-amplitude 1 kHz sine through `graph` and return the
+    /// peak output magnitude over the steady-state region (after the limiter's
+    /// ~12 ms attack settles).
+    private func renderSteadyStatePeak(through graph: Graph) throws -> Float {
+        let engine = AVAudioEngine()
+        let player = AVAudioPlayerNode()
+        let format = AVAudioFormat(standardFormatWithSampleRate: 48_000.0, channels: 2)!
+        engine.attach(player)
+        try graph.attach(to: engine, source: player, destination: engine.mainMixerNode)
+
+        let frameCount: AVAudioFrameCount = 9_600 // 0.2 s at 48 kHz
+        try engine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: frameCount)
+
+        let inputBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount)!
+        inputBuffer.frameLength = frameCount
+        let angularFreq = 2.0 * Double.pi * 1_000.0 / 48_000.0
+        for channel in 0 ..< Int(format.channelCount) {
+            let data = inputBuffer.floatChannelData![channel]
+            for frame in 0 ..< Int(frameCount) {
+                data[frame] = Float(sin(angularFreq * Double(frame))) * 0.5
+            }
+        }
+
+        try engine.start()
+        player.scheduleBuffer(inputBuffer, at: nil, options: [], completionHandler: nil)
+        player.play()
+
+        let outputBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount)!
+        let status = try engine.renderOffline(frameCount, to: outputBuffer)
+        XCTAssertEqual(status, .success)
+
+        player.stop()
+        engine.stop()
+        engine.disableManualRenderingMode()
+        graph.detach()
+
+        // Skip the first 50 ms so the limiter's attack ramp does not skew the peak.
+        let settleFrame = 2_400
+        var peak: Float = 0
+        let channels = Int(format.channelCount)
+        let frames = Int(outputBuffer.frameLength)
+        for channel in 0 ..< channels {
+            let data = outputBuffer.floatChannelData![channel]
+            for frame in settleFrame ..< frames {
+                peak = max(peak, abs(data[frame]))
+            }
+        }
+        return peak
+    }
+
+    /// A +12 dB gain on a 0.5-amplitude source would drive peaks to ≈1.99
+    /// (0.5 × 3.98) without protection. The always-on limiter must hold the
+    /// output at ~0 dBFS. The lower bound also rules out the confound "the
+    /// boost silently failed to apply" — a failed boost would leave peaks at
+    /// ≈0.5, well under 0.8.
+    func test_safety_limiter_clamps_hot_signal() throws {
+        let gain = GainNode()
+        try gain.setParameter("gain", value: 12.0)
+        let graph = Graph(nodes: [gain])
+        let peak = try renderSteadyStatePeak(through: graph)
+        XCTAssertLessThanOrEqual(peak, 1.1, "safety limiter must hold the output near 0 dBFS")
+        XCTAssertGreaterThan(peak, 0.8, "the +12 dB boost should drive the signal up into the limiter")
+    }
+
+    /// A quiet signal that never approaches 0 dBFS must pass the limiter
+    /// essentially untouched — the safety stage should not colour normal levels.
+    func test_safety_limiter_transparent_below_threshold() throws {
+        let graph = Graph(nodes: [GainNode()]) // unity
+        let peak = try renderSteadyStatePeak(through: graph)
+        XCTAssertEqual(peak, 0.5, accuracy: 0.05, "unity-level signal must pass the limiter unchanged")
     }
 }

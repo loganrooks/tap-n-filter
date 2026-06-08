@@ -39,13 +39,18 @@ This document describes the overall structure. Sub-specs cover each layer in mor
             └──────────────┬───────────────────┘
                            │
                            ▼
-                  mainMixerNode (output gain)
+                  output trim (Graph.outputGain)
                            │
                            ▼
-                  outputNode (default speakers)
+              safety limiter (always-on, ~0 dBFS, ADR-021)
+                           │
+                           ▼
+                  mainMixerNode  →  outputNode (default speakers)
 ```
 
 The app is a single process. There is no helper daemon, no XPC service, no kernel extension.
+
+The output trim and the safety limiter are fixed stages owned by `Graph`, not user effects in the chain. The always-on `PeakLimiter` holds the output near 0 dBFS so neither a hot source, a boosting effect, nor a user-dialed `GainNode` can clip the output device. See `docs/decisions/ADR-021-output-safety-limiter.md`.
 
 ## Module layout
 
@@ -56,7 +61,7 @@ Top-level Swift modules:
 | `tap_n_filter` (app target) | App entry, scene composition, `MenuBarExtra`. |
 | `Capture` | Core Audio process tap, aggregate device, bridge to `AVAudioEngine`. |
 | `Graph` | The `Graph` type and `EffectNode` protocol. |
-| `Effects` | Concrete effect implementations (`EQNode`, `ReverbNode`). |
+| `Effects` | Concrete effect implementations (`EQNode`, `ReverbNode`, `GainNode`). |
 | `Presets` | `GraphPreset`, `PresetStore`, bundled presets. |
 | `UI` | SwiftUI views, view model. |
 
