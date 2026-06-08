@@ -61,6 +61,7 @@ public struct AddEffectButton: View {
     private func displayName(for typeIdentifier: String) -> String {
         switch typeIdentifier {
         case "tnf.eq": return "Parametric EQ"
+        case "tnf.gain": return "Gain"
         case "tnf.reverb": return "Reverb"
         default: return typeIdentifier
         }

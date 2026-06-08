@@ -18,10 +18,19 @@ public protocol EffectNode: AnyObject, Codable {
     /// Convention: `"tnf.<short-name>"`, e.g. `"tnf.eq"`, `"tnf.reverb"`.
     static var typeIdentifier: String { get }
 
+    /// Whether the wet/dry concept applies to this node at all. Spectral and
+    /// time-domain effects support it (even when the header hides it, per
+    /// `showsWetDryByDefault`). Pure level/utility nodes (`GainNode`) do not —
+    /// for them the UI suppresses the wet/dry control everywhere, because a
+    /// partial blend of the processed and original signals is not a meaningful
+    /// effect. Defaults to `true`; utility nodes override to `false`.
+    static var supportsWetDry: Bool { get }
+
     /// Whether the EffectRow surfaces the wet/dry slider in its always-visible
     /// header. Time-domain effects (reverb, delay) override-or-default to
     /// `true`; spectral-shaping effects (EQ, filters) override to `false`
-    /// because mixing dry back in defeats the filter. See ADR-007.
+    /// because mixing dry back in defeats the filter. See ADR-007. Only
+    /// consulted when `supportsWetDry` is `true`.
     static var showsWetDryByDefault: Bool { get }
 
     /// Per-instance identifier preserved across save/load.
@@ -107,6 +116,10 @@ public protocol EffectNode: AnyObject, Codable {
 }
 
 extension EffectNode {
+
+    /// Default value for `supportsWetDry`. Effects that process the signal
+    /// (EQ, reverb) accept the default; level/utility nodes override to `false`.
+    public static var supportsWetDry: Bool { true }
 
     /// Default value for `showsWetDryByDefault`. Time-domain effects accept
     /// the default; spectral-shaping effects override to `false`.

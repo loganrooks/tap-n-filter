@@ -143,6 +143,35 @@ Entries are added at the bottom. They are not edited after commit (except for ty
 
 ---
 
+## 2026-06-07 — GainNode realises gain via mixer outputVolume, no AudioUnit
+
+**Decision**: `GainNode` applies its decibel trim through a single `AVAudioMixerNode`'s `outputVolume`, with a range capped at +12 dB.
+
+**Phase**: 4 / V0.2
+
+**Considered**:
+- `AVAudioUnitEQ` with zero bands, using `globalGain` (documented ±24 dB) — rejected. Instantiates an AudioUnit for a pure level change and is heavier than the job needs.
+- A parallel wet/dry mixer like EQ/Reverb — rejected. Gain has no meaningful wet/dry (a partial blend of a scaled signal is just a different scale); `supportsWetDry = false` instead.
+- Symmetric ±24 dB range via `outputVolume` — rejected for now. `outputVolume` above unity is relied on only up to 2× elsewhere (the output trim); +12 dB (≈3.98×) is a modest extension and the safety limiter backstops it, where +24 dB (≈15.8×) goes well past any proven envelope.
+- Single `AVAudioMixerNode`, gain via `outputVolume`, −24…+12 dB (chosen) — lightest correct implementation, no AU, boost protected by ADR-021.
+
+---
+
+## 2026-06-07 — Output safety limiter is fixed and Apple PeakLimiter
+
+**Decision**: The always-on output limiter is Apple's `PeakLimiter` at defaults, owned by `Graph` as a fixed stage. Full reasoning in ADR-021.
+
+**Phase**: 4 / V0.2
+
+**Considered**:
+- No limiter — rejected. A boostable gain control with no protection makes a headphone blowout a one-slider mistake.
+- Insertable/toggleable limiter `EffectNode` — rejected for the safety role; it could be removed or ordered before the gain it must catch. A creative limiter effect is a separate future thing.
+- Manual sample clamp / soft-clip in a render block — rejected; a hard clip without look-ahead is harsh, and look-ahead is what PeakLimiter already gives us.
+- `DynamicsProcessor` as a limiter — viable but needs tuning; PeakLimiter is the purpose-built component for "do not exceed 0 dBFS."
+- Fixed always-on Apple `PeakLimiter` at defaults (chosen) — purpose-built, transparent below threshold, not user-defeatable.
+
+---
+
 ## Future entries
 
 The orchestrator appends new entries here during build. Examples of decisions that would warrant an entry:

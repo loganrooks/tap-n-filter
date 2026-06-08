@@ -33,10 +33,13 @@ public struct EffectControlsView: View {
             ForEach(node.parameters, id: \.identifier) { parameter in
                 control(for: parameter)
             }
-            // The wet/dry slider lives here on every effect — for nodes that
-            // hide it in the header (EQ, per ADR-007) this is the only place
-            // to reach it.
-            wetDryRow
+            // The wet/dry slider lives here for nodes that hide it in the
+            // header (EQ, per ADR-007) — this is the only place to reach it.
+            // Level/utility nodes (GainNode) have no wet/dry concept, so the
+            // control is suppressed entirely rather than shown as a no-op.
+            if type(of: node).supportsWetDry {
+                wetDryRow
+            }
         }
     }
 
