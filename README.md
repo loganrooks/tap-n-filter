@@ -1,6 +1,6 @@
 # tap-n-filter
 
-A macOS app that captures audio from a specific application and routes it through a customizable chain of audio effects before playing back. Apply a lowpass and reverb to a YouTube tab while you work. Layer your own audio underneath. Save chains as presets and share them.
+A macOS app that captures audio from a specific application and routes it through a customizable chain of audio effects before playing back. Apply a lowpass and reverb to your browser — or to a single site, by adding it to the Dock as its own app — while you work. Layer your own audio underneath. Save chains as presets and share them.
 
 > **Status: in active development.** V1 is being built via an agentic workflow described under `docs/orchestration/`. This README will be revised once V1 ships.
 
