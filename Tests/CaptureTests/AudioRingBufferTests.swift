@@ -295,6 +295,15 @@ final class AudioRingBufferTests: XCTestCase {
         }
 
         // Consumer: drain chunkFrames at a time, verifying monotonicity.
+        // The loop terminates on completion (`framesRead == totalFrames`),
+        // not on a wall-clock deadline: the producer writes exactly
+        // `totalFrames` and `read` never returns more than is buffered, so
+        // a correct run always converges on the full count regardless of
+        // how the two threads are scheduled. A slow-but-correct run under
+        // CI load therefore keeps draining instead of bailing out early.
+        // The generous `wait(for:)` timeout below is the sole backstop: a
+        // genuinely wedged ring never fulfils `consumerDone` and fails the
+        // test there, with no flaky partial-drain assertion in between.
         consumer.async {
             var nextExpected: Float = 0
             var framesRead = 0
@@ -304,8 +313,7 @@ final class AudioRingBufferTests: XCTestCase {
                 dch0.deallocate()
                 dch1.deallocate()
             }
-            let deadline = Date().addingTimeInterval(5.0)
-            while framesRead < totalFrames && Date() < deadline {
+            while framesRead < totalFrames {
                 let n = ring.read(into: [dch0, dch1], frames: chunkFrames)
                 if n == 0 {
                     Thread.sleep(forTimeInterval: 0.001)
@@ -318,11 +326,15 @@ final class AudioRingBufferTests: XCTestCase {
                 }
                 framesRead += n
             }
-            XCTAssertEqual(framesRead, totalFrames, "consumer did not drain all frames within deadline")
+            XCTAssertEqual(framesRead, totalFrames, "consumer drained \(framesRead) of \(totalFrames) frames")
             consumerDone.fulfill()
         }
 
-        wait(for: [producerDone, consumerDone], timeout: 10.0)
+        // Generous backstop only. The producer needs ~1 s (100 chunks at a
+        // ~10 ms cadence) and the consumer drains in parallel, so a healthy
+        // run completes in a couple of seconds even under load; the timeout
+        // exists to fail a wedged ring rather than hang the suite forever.
+        wait(for: [producerDone, consumerDone], timeout: 30.0)
     }
 
     // MARK: T1.8
