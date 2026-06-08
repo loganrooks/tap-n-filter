@@ -121,6 +121,7 @@ The architecture commits to the following extension points for future versions:
 ## Constraints and non-goals
 
 - **Latency.** V1 is for ambient listening, not real-time monitoring. Round-trip latency of 50–100ms is acceptable. The architecture doesn't optimize for sub-10ms latency.
+- **Targeting granularity.** The finest unit the app can target is an OS process (one PID). The addressable hierarchy is System (all audio) → app-group (all PIDs of one app) → single process. Per-window and per-tab capture are out of scope: a process tap is PID-granular, and browsers mix every tab's audio into one shared output process (Safari `WebKit.GPU`, Chrome's audio service, Firefox's parent cubeb server) before any tap reaches it. See ADR-020. A user who wants to isolate one site can split it into its own process (Safari "Add to Dock", or a separate Chrome/Firefox instance), which the tap then captures as a distinct source.
 - **Channel count.** V1 supports stereo only. Multi-channel (5.1, Atmos) is out of scope.
 - **Sample rate.** The engine runs at the aggregate device's native sample rate (typically 44.1 or 48 kHz depending on the source). The graph is sample-rate agnostic.
 - **Cross-platform.** V1 is macOS only. No iOS, no Linux, no Windows. The Core Audio process tap API is macOS-specific.

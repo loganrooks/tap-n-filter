@@ -128,6 +128,21 @@ Entries are added at the bottom. They are not edited after commit (except for ty
 
 ---
 
+## 2026-05-29 — Targeting granularity: accept the process-tap floor, reframe per-tab
+
+**Decision**: tap-n-filter targets System / app-group / single-process audio only. Per-window and per-tab capture are out of scope (ADR-020). The "filter one browser tab" goal is reframed to "filter the whole app," with per-site isolation left to the user via Safari Add-to-Dock or a separate Chrome/Firefox instance.
+
+**Phase**: 4 / V0.2 planning
+
+**Considered**:
+- Build per-tab via Core Audio taps — ruled out. Taps are PID-granular and browsers mix all tabs into one shared audio process (Safari WebKit.GPU, Chrome audio service, Firefox parent cubeb); ScreenCaptureKit captures app-level audio even with a single-window filter (WWDC22). Impossible, triple-sourced.
+- Browser-extension per-tab product — rejected for the tap-based product. Cooperating browsers only, no native apps, breaks on DRM, reimplements the DSP in Web Audio. Parked as a separate future spike (ADR-020, U-013).
+- In-app per-site launcher (spawn isolated browser instances) — deferred. A real feature with profile/lifecycle complexity; long-horizon candidate, own ADR if committed.
+- Run a negative-result spike first — not run. The finding is documentation-confirmed three ways and matches our own notebook observation (`Safari Graphics and Media (pid 77880)`); a spike adds in-house confirmation of a settled fact at the cost of a session.
+- Accept System / app-group / single-process as the hierarchy (chosen) — the granularity the OS actually addresses, surfaced with an honest source-picker explainer.
+
+---
+
 ## Future entries
 
 The orchestrator appends new entries here during build. Examples of decisions that would warrant an entry:

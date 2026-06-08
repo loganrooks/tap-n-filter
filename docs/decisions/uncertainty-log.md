@@ -194,3 +194,17 @@ Entries that are resolved during build are updated in place (status changed, lin
 **Resolution path**: V0.2 adds an ownership/liveness marker so cleanup only reclaims genuinely-orphaned resources. Options: embed the owning PID in the aggregate UID (`tap-n-filter.aggregate.<pid>.<uuid>`) and skip destruction when that PID is still alive; or check `kAudioDevicePropertyDeviceIsRunning` on each match and never destroy a running device; or take a per-launch lock file the cleanup consults.
 
 **Revisit trigger**: any work that makes multiple concurrent capture controllers a real configuration (a helper process, a second window, automated tests that run capture against the live HAL), or a bug report of capture stopping when a second tap-n-filter-adjacent process launches.
+
+---
+
+## U-013: Per-tab audio filtering parked behind a browser-extension spike
+
+**Status**: Open — parked (outside the tap-based architecture); see ADR-020.
+**Triggered by**: V0.2 targeting-granularity planning (ADR-020).
+**Question**: ADR-020 establishes that per-tab audio isolation is impossible via Core Audio process taps (PID-granular; browsers mix all tabs into one shared output process — Safari `WebKit.GPU`, Chrome audio service, Firefox parent cubeb). The only path to genuine per-tab filtering is a browser extension intercepting the tab's in-page Web Audio / media graph. Whether that path is worth building, and whether it can clear a useful bar, is unresolved.
+
+**Current best guess**: Not worth building as part of the tap-based product. The extension route works on cooperating (Chromium) browsers only, cannot touch native apps, goes silent on DRM-protected media (Netflix/Widevine, Spotify Web Player), and reimplements the effect chain in Web Audio rather than reusing the `AVAudioEngine` DSP. It is a separate product surface.
+
+**Resolution path**: If revisited, a pre-registered spike must demonstrate either (1) a distinct per-tab audio PID exists for the target browser and a tap on it isolates that tab [predicted: false], or (2) for the extension route, that a WebExtension can intercept a tab's Web Audio/`<media>` graph, apply effects, and play back — while quantifying the DRM failure and the per-browser support matrix. Either path gets its own ADR. A secondary undocumented question surfaced during research: whether two same-origin Safari "Add to Dock" web apps run as separate renderer processes (separately tappable) or coalesce — relevant only to the deferred in-app per-site launcher, not to the per-tab verdict.
+
+**Revisit trigger**: a future macOS/browser that splits tab audio into distinct output processes; a decision to build the in-app per-site launcher (which needs the same-origin coalescing question answered); or sustained user demand for per-tab that justifies a separate extension product.
