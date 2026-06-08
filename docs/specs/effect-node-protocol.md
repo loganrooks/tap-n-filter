@@ -191,7 +191,7 @@ V1 ships two effects:
 
 Added after V1:
 
-- `GainNode` (V0.2) — a level trim. One `gain` parameter in decibels (−24…+12 dB), realised by a single `AVAudioMixerNode`'s `outputVolume` with no `AVAudioUnit`. `supportsWetDry == false`. The boost it can apply is backstopped by the always-on output limiter; see `docs/decisions/ADR-021-output-safety-limiter.md`.
+- `GainNode` (V0.2) — a level trim. One `gain` parameter in decibels (−24…+12 dB), realised by a zero-band `AVAudioUnitEQ`'s `globalGain` (a documented dB gain that supports boost, unlike `AVAudioMixerNode.outputVolume`, whose contract is 0.0–1.0). `supportsWetDry == false`. The boost it can apply is backstopped by the always-on output limiter; see `docs/decisions/ADR-021-output-safety-limiter.md`.
 
 Future:
 

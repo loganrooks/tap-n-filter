@@ -143,17 +143,17 @@ Entries are added at the bottom. They are not edited after commit (except for ty
 
 ---
 
-## 2026-06-07 — GainNode realises gain via mixer outputVolume, no AudioUnit
+## 2026-06-07 — GainNode realises gain via AVAudioUnitEQ.globalGain
 
-**Decision**: `GainNode` applies its decibel trim through a single `AVAudioMixerNode`'s `outputVolume`, with a range capped at +12 dB.
+**Decision**: `GainNode` applies its decibel trim through a zero-band `AVAudioUnitEQ`'s `globalGain`, surface range −24…+12 dB.
 
 **Phase**: 4 / V0.2
 
 **Considered**:
-- `AVAudioUnitEQ` with zero bands, using `globalGain` (documented ±24 dB) — rejected. Instantiates an AudioUnit for a pure level change and is heavier than the job needs.
+- `AVAudioMixerNode.outputVolume` (the initial draft) — rejected on review. Its documented range is 0.0–1.0, so boost above unity is outside the API contract; even though it works empirically (and the graph's output trim still leans on it up to 2×), a user-facing boost should not depend on undocumented behaviour. Flagged as a P1 by Codex on PR #13.
+- Restrict the range to ≤ 0 dB so `outputVolume` stays in contract (attenuator only) — rejected. Boost of a quiet source is a wanted feature, and the always-on limiter (ADR-021) makes it safe.
 - A parallel wet/dry mixer like EQ/Reverb — rejected. Gain has no meaningful wet/dry (a partial blend of a scaled signal is just a different scale); `supportsWetDry = false` instead.
-- Symmetric ±24 dB range via `outputVolume` — rejected for now. `outputVolume` above unity is relied on only up to 2× elsewhere (the output trim); +12 dB (≈3.98×) is a modest extension and the safety limiter backstops it, where +24 dB (≈15.8×) goes well past any proven envelope.
-- Single `AVAudioMixerNode`, gain via `outputVolume`, −24…+12 dB (chosen) — lightest correct implementation, no AU, boost protected by ADR-021.
+- Zero-band `AVAudioUnitEQ`, gain via `globalGain` (chosen) — `globalGain` is a documented dB gain (≈−96…+24 dB) that boosts reliably; the one extra lightweight AU is a fair price for staying inside the contract. Boost backstopped by ADR-021.
 
 ---
 

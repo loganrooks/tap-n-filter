@@ -1,19 +1,23 @@
 import AVFoundation
 import Foundation
 
-/// A level-trim effect: one gain knob in decibels, applied by a single
-/// `AVAudioMixerNode`'s output volume.
+/// A level-trim effect: one gain knob in decibels.
 ///
-/// `GainNode` is the simplest concrete `EffectNode`. It holds no `AVAudioUnit`
-/// — the gain is realised entirely by the mixer's `outputVolume`, so the node
-/// is a single attachable object that doubles as both `inputBus` and
-/// `outputBus`. The graph wires `source → mixer → next`; the mixer scales.
+/// The gain is realised by `AVAudioUnitEQ.globalGain`, a documented master
+/// gain (in dB) that supports both attenuation and boost. An earlier draft
+/// scaled an `AVAudioMixerNode.outputVolume`, but that property's documented
+/// range is 0.0–1.0, so relying on it for boost above unity is outside the API
+/// contract (Codex review, PR #13). A zero-band EQ is a clean, documented gain
+/// stage: no bands means a flat response, and `globalGain` does the work.
+///
+/// The graph sees the node as the usual single-in / single-out box via the
+/// `inputBus` and `outputBus` mixers, with the EQ wired between them.
 ///
 /// Unlike `EQNode` and `ReverbNode`, a gain trim has no wet/dry concept: a
 /// partial blend of "the level-changed signal" with "the original" is just a
 /// different effective level, never a useful effect. `supportsWetDry` is
 /// therefore `false` and the UI suppresses the wet/dry control entirely.
-/// `bypass` still works: it forces unity so the user can A/B their trim
+/// `bypass` still works: it forces unity (0 dB) so the user can A/B their trim
 /// without losing the dialled-in value.
 ///
 /// See `docs/specs/effect-node-protocol.md` and ADR-021 (the always-on output
@@ -59,12 +63,12 @@ public final class GainNode: EffectNode {
         didSet { applyGain() }
     }
 
-    /// The single mixer that both receives and emits audio. The gain is its
-    /// `outputVolume`. Returned as both `inputBus` and `outputBus`.
-    private let mixer: AVAudioMixerNode
-
-    public var inputBus: AVAudioMixerNode { mixer }
-    public var outputBus: AVAudioMixerNode { mixer }
+    /// The graph connects audio into this node on bus 0.
+    public let inputBus: AVAudioMixerNode
+    /// The graph reads audio from this node on bus 0.
+    public let outputBus: AVAudioMixerNode
+    /// Zero-band EQ used purely as a documented dB gain stage via `globalGain`.
+    private let gainUnit: AVAudioUnitEQ
 
     private weak var attachedEngine: AVAudioEngine?
 
@@ -90,18 +94,18 @@ public final class GainNode: EffectNode {
         self.bypass = bypass
         self.wetDryMix = 1.0
         self.gainDecibels = Self.clampToRange(gainDecibels)
-        self.mixer = AVAudioMixerNode()
+        self.inputBus = AVAudioMixerNode()
+        self.outputBus = AVAudioMixerNode()
+        self.gainUnit = AVAudioUnitEQ(numberOfBands: 0)
     }
 
     // MARK: Parameters
 
     /// All tunable parameters for this node type, in display order.
     ///
-    /// The range tops out at +12 dB rather than the symmetric +24 dB a console
-    /// trim might offer: the gain is applied through `AVAudioMixerNode`'s
-    /// `outputVolume`, which the project already drives above unity for the
-    /// graph's output trim (0–2×); +12 dB (≈3.98×) stays within that proven
-    /// envelope. The always-on output limiter (ADR-021) backstops the boost.
+    /// `AVAudioUnitEQ.globalGain` accepts roughly −96…+24 dB; the −24…+12 dB
+    /// surface range is the useful trim envelope, with the boost backstopped by
+    /// the always-on output limiter (ADR-021).
     public static let parameterCatalog: [EffectParameter] = [
         EffectParameter(
             identifier: GainNode.gainParameterIdentifier,
@@ -137,25 +141,34 @@ public final class GainNode: EffectNode {
     // MARK: Attach / detach
 
     public func attach(to engine: AVAudioEngine) throws {
-        engine.attach(mixer)
+        engine.attach(inputBus)
+        engine.attach(gainUnit)
+        engine.attach(outputBus)
+
+        // Linear pass-through: inputBus → gainUnit → outputBus. Internal links
+        // use format nil so they inherit the format the graph pins on the
+        // external source → inputBus connection (the same convention EQNode
+        // uses); this keeps the H17 capture-rate pin intact.
+        engine.connect(inputBus, to: gainUnit, format: nil)
+        engine.connect(gainUnit, to: outputBus, format: nil)
+
         applyGain()
         attachedEngine = engine
     }
 
     public func detach() {
         guard let engine = attachedEngine else { return }
-        engine.detach(mixer)
+        engine.detach(gainUnit)
+        engine.detach(outputBus)
+        engine.detach(inputBus)
         attachedEngine = nil
     }
 
-    /// Convert the decibel trim to a linear factor and write it to the mixer.
-    ///
-    /// `outputVolume` is a direct property of `AVAudioMixerNode` (not an
-    /// `AVAudioMixingDestination`), so unlike the parallel-mixer nodes this
-    /// value lands whether the engine is stopped or running; `refreshMixState`
-    /// re-applies it only for symmetry with the rest of the chain.
+    /// Write the decibel trim to the EQ's global gain. `globalGain` is in dB
+    /// and is settable whether the engine is stopped or running; bypass forces
+    /// 0 dB (unity).
     private func applyGain() {
-        mixer.outputVolume = bypass ? 1.0 : Self.decibelsToLinear(gainDecibels)
+        gainUnit.globalGain = bypass ? 0.0 : gainDecibels
     }
 
     public func refreshMixState() {
@@ -166,10 +179,10 @@ public final class GainNode: EffectNode {
 
     public func debugStateDescription() -> String {
         return "bypass=\(bypass) gainDecibels=\(gainDecibels) "
-            + "linear=\(Self.decibelsToLinear(gainDecibels)) "
-            + "outputVolume=\(mixer.outputVolume) "
+            + "globalGain=\(gainUnit.globalGain) "
             + "attached=\(attachedEngine != nil) "
-            + "fmt=\(Self.fmt(mixer.outputFormat(forBus: 0)))"
+            + "inFmt=\(Self.fmt(inputBus.outputFormat(forBus: 0))) "
+            + "outFmt=\(Self.fmt(outputBus.outputFormat(forBus: 0)))"
     }
 
     private static func fmt(_ format: AVAudioFormat) -> String {
@@ -208,12 +221,7 @@ public final class GainNode: EffectNode {
         applyGain()
     }
 
-    // MARK: dB / linear conversion
-
-    /// 10^(dB/20). 0 dB → 1.0, −6 dB → ≈0.5, +6 dB → ≈2.0.
-    public static func decibelsToLinear(_ decibels: Float) -> Float {
-        powf(10.0, decibels / 20.0)
-    }
+    // MARK: Range clamping
 
     /// Clamp a decibel value to the catalog's declared range.
     private static func clampToRange(_ decibels: Float) -> Float {

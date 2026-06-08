@@ -71,15 +71,6 @@ final class GainNodeTests: XCTestCase {
         XCTAssertEqual(tooCold.parameterValue("gain"), -24.0, "init must clamp to the −24 dB floor")
     }
 
-    // MARK: dB / linear conversion
-
-    func test_decibels_to_linear_reference_points() {
-        XCTAssertEqual(GainNode.decibelsToLinear(0.0), 1.0, accuracy: 0.0001)
-        XCTAssertEqual(GainNode.decibelsToLinear(-6.0), 0.501, accuracy: 0.005)
-        XCTAssertEqual(GainNode.decibelsToLinear(6.0), 1.995, accuracy: 0.01)
-        XCTAssertEqual(GainNode.decibelsToLinear(-20.0), 0.1, accuracy: 0.001)
-    }
-
     // MARK: Offline render — gain applied to the rendered signal
 
     /// Offline-render a 0.5-amplitude 1 kHz sine through `node` and return the
