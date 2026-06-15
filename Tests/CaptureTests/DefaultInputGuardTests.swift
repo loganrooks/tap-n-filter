@@ -273,6 +273,87 @@ final class DefaultInputGuardTests: XCTestCase {
         XCTAssertTrue(control.setInputCalls.isEmpty, "an active session owns the switch; recovery must not interfere")
         XCTAssertEqual(defaults.string(forKey: DefaultInputGuard.strandedInputMarkerKey), "bt-uid", "marker preserved while capture is active")
     }
+
+    // MARK: Marker-safety regressions (from the adversarial review of #20)
+
+    /// Re-engaging while a switch is already owed must NOT overwrite the stored
+    /// original input — otherwise restore strands the user on the wrong device.
+    /// (Review blocker.)
+    func test_engage_doesNotOverwriteMarker_onSecondEngage() {
+        let bt2ID: AudioDeviceID = 40
+        let control = FakeDefaultInputControl(
+            devices: [
+                btID: .init(uid: "bt-uid", transport: kAudioDeviceTransportTypeBluetooth, running: false, isInput: true),
+                builtInID: .init(uid: "builtin-uid", transport: kAudioDeviceTransportTypeBuiltIn, running: false, isInput: true),
+                bt2ID: .init(uid: "bt2-uid", transport: kAudioDeviceTransportTypeBluetooth, running: false, isInput: true),
+            ],
+            defaultInput: btID,
+            defaultOutput: btID
+        )
+        let defaults = makeDefaults()
+        let guardian = DefaultInputGuard(control: control, defaults: defaults, log: { _ in })
+
+        XCTAssertTrue(guardian.engageIfNeeded(settingEnabled: true).engaged)
+        XCTAssertEqual(defaults.string(forKey: DefaultInputGuard.strandedInputMarkerKey), "bt-uid")
+
+        // Simulate the default input becoming Bluetooth again mid-session
+        // (a second headset, a manual re-selection) and a second engage.
+        control.defaultInput = bt2ID
+        let second = guardian.engageIfNeeded(settingEnabled: true)
+
+        XCTAssertFalse(second.engaged)
+        XCTAssertEqual(second.reason, "already-engaged")
+        XCTAssertEqual(defaults.string(forKey: DefaultInputGuard.strandedInputMarkerKey), "bt-uid",
+                       "the original input UID must survive a second engage")
+        XCTAssertEqual(control.defaultInput, bt2ID, "a declined re-engage must not switch the input")
+    }
+
+    /// When restore cannot land (saved device gone AND no fallback input), the
+    /// marker must be KEPT so the next launch retries — clearing it would make
+    /// the strand permanent. (Review major.)
+    func test_restore_keepsMarkerWhenRestoreFails() {
+        let control = FakeDefaultInputControl(
+            devices: [btID: .init(uid: "bt-uid", transport: kAudioDeviceTransportTypeBluetooth, running: false, isInput: true)],
+            defaultInput: btID,
+            defaultOutput: btID
+        )
+        let defaults = makeDefaults()
+        defaults.set("ghost-uid", forKey: DefaultInputGuard.strandedInputMarkerKey)
+        var logs: [String] = []
+        let guardian = DefaultInputGuard(control: control, defaults: defaults, log: { logs.append($0) })
+
+        guardian.restore(trigger: "clean-stop")
+
+        XCTAssertEqual(defaults.string(forKey: DefaultInputGuard.strandedInputMarkerKey), "ghost-uid",
+                       "marker must be retained when restore fails, so launch recovery can retry")
+        XCTAssertTrue(logs.contains { $0.contains("[EXP-037.restore]") && $0.contains("ok=false") })
+    }
+
+    /// A HAL write that returns success but does not take (readback mismatch)
+    /// must be reported as a failed engage and must NOT leave a marker — we
+    /// never claim a switch that did not land. (Review minor — diagnostic
+    /// integrity.)
+    func test_engage_readbackFailure_dropsMarkerAndReportsFailure() {
+        let control = FakeDefaultInputControl(
+            devices: [
+                btID: .init(uid: "bt-uid", transport: kAudioDeviceTransportTypeBluetooth, running: false, isInput: true),
+                builtInID: .init(uid: "builtin-uid", transport: kAudioDeviceTransportTypeBuiltIn, running: false, isInput: true),
+            ],
+            defaultInput: btID,
+            defaultOutput: btID
+        )
+        control.ignoreSetInput = true   // switch silently no-ops
+        let defaults = makeDefaults()
+        let guardian = DefaultInputGuard(control: control, defaults: defaults, log: { _ in })
+
+        let outcome = guardian.engageIfNeeded(settingEnabled: true)
+
+        XCTAssertFalse(outcome.engaged)
+        XCTAssertEqual(outcome.reason, "switch-readback-failed")
+        XCTAssertNil(defaults.string(forKey: DefaultInputGuard.strandedInputMarkerKey),
+                     "no marker should remain for a switch that did not land")
+        XCTAssertEqual(control.defaultInput, btID, "the input is unchanged after a no-op switch")
+    }
 }
 
 // MARK: - Fake
@@ -289,6 +370,10 @@ private final class FakeDefaultInputControl: DefaultInputControlling {
     var defaultInput: AudioDeviceID
     var defaultOutput: AudioDeviceID
     private(set) var setInputCalls: [AudioDeviceID] = []
+    /// When true, `setDefaultInputDeviceID` records the call but does NOT
+    /// change `defaultInput` — models a HAL write that returns success yet
+    /// does not take, so the guard's readback check can be exercised.
+    var ignoreSetInput = false
 
     init(devices: [AudioDeviceID: Device], defaultInput: AudioDeviceID, defaultOutput: AudioDeviceID) {
         self.devices = devices
@@ -301,7 +386,7 @@ private final class FakeDefaultInputControl: DefaultInputControlling {
 
     func setDefaultInputDeviceID(_ id: AudioDeviceID) throws {
         setInputCalls.append(id)
-        defaultInput = id
+        if !ignoreSetInput { defaultInput = id }
     }
 
     func transportType(of id: AudioDeviceID) throws -> UInt32 {

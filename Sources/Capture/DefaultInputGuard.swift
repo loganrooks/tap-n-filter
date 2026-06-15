@@ -18,6 +18,10 @@ import os
 /// The emitted `[EXP-037.switch|restore|recover]` markers are the diagnostics
 /// defined in the EXP-037 pre-registration (D1, D3, D4, D5) and must not drift
 /// from it — the on-device verification greps for exactly these strings.
+///
+/// Not internally synchronized. Call all methods from the main actor: the
+/// capture lifecycle (`powerOn`/`powerOff`) and launch recovery both run there,
+/// so the single `UserDefaults` marker is only ever touched from one thread.
 public final class DefaultInputGuard {
 
     /// Key under which the pre-switch default-input UID is persisted, so a
@@ -69,28 +73,47 @@ public final class DefaultInputGuard {
     @discardableResult
     public func engageIfNeeded(settingEnabled: Bool) -> EngageOutcome {
         guard settingEnabled else { return .notEngaged("setting-off") }
+        // Set-once: a present marker means a switch (from this session or a
+        // crashed prior one) is still owed a restore. Never switch again while
+        // one is outstanding — overwriting the marker would lose the true
+        // original input and strand the user, the ship-blocker ADR-019 names.
+        // Fails safe: a stale marker declines the switch (degraded audio)
+        // rather than stranding.
+        guard defaults.string(forKey: Self.strandedInputMarkerKey) == nil else {
+            return .notEngaged("already-engaged")
+        }
         do {
             let outputID = try control.defaultOutputDeviceID()
+            guard outputID != AudioObjectID(kAudioObjectUnknown) else {
+                return .notEngaged("no-default-output")
+            }
             guard AudioDeviceTransport.isBluetooth(try control.transportType(of: outputID)) else {
                 return .notEngaged("output-not-bluetooth")
             }
             let inputID = try control.defaultInputDeviceID()
+            guard inputID != AudioObjectID(kAudioObjectUnknown) else {
+                return .notEngaged("no-default-input")
+            }
             guard AudioDeviceTransport.isBluetooth(try control.transportType(of: inputID)) else {
                 // The default input is already non-Bluetooth: HFP will not
                 // trigger, so there is nothing to switch.
                 return .notEngaged("input-not-bluetooth")
             }
-            // EXP-037 race policy: never hijack a Bluetooth mic that is in
-            // active use (e.g. a live call). Degraded playback is the lesser
-            // failure. (D5)
+            guard let replacement = try pickReplacementInput(excluding: inputID) else {
+                log("[EXP-037.switch] engaged=false reason=no-replacement-input")
+                return .notEngaged("no-replacement-input")
+            }
+            // EXP-037 race policy (D5): never hijack a Bluetooth mic in active
+            // use (e.g. a live call). Checked immediately before the switch to
+            // keep the check-then-act window minimal. A residual TOCTOU remains
+            // between here and the real `AudioDeviceStart` in the capture
+            // lifecycle — the HAL has no atomic test-and-set on the default
+            // input — so the wiring keeps engage close to capture start (A1)
+            // and this guarantee is best-effort by nature.
             if try control.isRunningSomewhere(inputID) {
                 let originUID = (try? control.uid(of: inputID)) ?? "?"
                 log("[EXP-037.switch] from=\(originUID) engaged=false reason=bt-input-in-use")
                 return .notEngaged("bt-input-in-use")
-            }
-            guard let replacement = try pickReplacementInput(excluding: inputID) else {
-                log("[EXP-037.switch] engaged=false reason=no-replacement-input")
-                return .notEngaged("no-replacement-input")
             }
             let originUID = try control.uid(of: inputID)
             let outputUID = (try? control.uid(of: outputID)) ?? "?"
@@ -99,10 +122,19 @@ public final class DefaultInputGuard {
             defaults.set(originUID, forKey: Self.strandedInputMarkerKey)
             try control.setDefaultInputDeviceID(replacement)
             let replacementUID = try control.uid(of: replacement)
-            let readbackOK = (try? control.defaultInputDeviceID()) == replacement
-            // D1 (switch landed).
+            // D1 requires the switch to have actually landed: a readback that
+            // the default input now equals the replacement. A `noErr` write
+            // that did not take is NOT success — drop the marker we just set
+            // and report failure, so we never claim D1 (or leave a recovery
+            // breadcrumb) for a no-op switch.
+            guard (try? control.defaultInputDeviceID()) == replacement else {
+                defaults.removeObject(forKey: Self.strandedInputMarkerKey)
+                log("[EXP-037.switch] from=\(originUID) to=\(replacementUID) "
+                    + "engaged=false reason=switch-readback-failed")
+                return .notEngaged("switch-readback-failed")
+            }
             log("[EXP-037.switch] from=\(originUID) to=\(replacementUID) "
-                + "btOutput=\(outputUID) engaged=true readback=\(readbackOK)")
+                + "btOutput=\(outputUID) engaged=true readback=true")
             return EngageOutcome(engaged: true, reason: nil, fromUID: originUID, toUID: replacementUID)
         } catch {
             log("[EXP-037.switch] engaged=false reason=error error=\(error)")
@@ -119,7 +151,13 @@ public final class DefaultInputGuard {
         let ok = applyRestore(toUID: savedUID)
         // D3 (clean-stop restore landed).
         log("[EXP-037.restore] to=\(savedUID) trigger=\(trigger) ok=\(ok)")
-        defaults.removeObject(forKey: Self.strandedInputMarkerKey)
+        // Clear the marker ONLY when the restore actually landed. On failure
+        // (HAL threw, or the saved device is gone and no fallback exists) keep
+        // the breadcrumb so launch recovery retries — clearing it here would
+        // convert a transient failure into a permanent strand.
+        if ok {
+            defaults.removeObject(forKey: Self.strandedInputMarkerKey)
+        }
     }
 
     // MARK: Recover (launch after crash)
@@ -132,9 +170,13 @@ public final class DefaultInputGuard {
         guard !captureActive else { return }
         guard let savedUID = defaults.string(forKey: Self.strandedInputMarkerKey) else { return }
         let ok = applyRestore(toUID: savedUID)
-        // D4 (crash recovery landed).
-        log("[EXP-037.recover] restoredTo=\(savedUID) ok=\(ok) markerCleared=true")
-        defaults.removeObject(forKey: Self.strandedInputMarkerKey)
+        // D4 (crash recovery landed). Clear the marker only on success so a
+        // transient HAL failure is retried on the next launch rather than
+        // erased (consistent with `restore`).
+        log("[EXP-037.recover] restoredTo=\(savedUID) ok=\(ok) markerCleared=\(ok)")
+        if ok {
+            defaults.removeObject(forKey: Self.strandedInputMarkerKey)
+        }
     }
 
     // MARK: Helpers
