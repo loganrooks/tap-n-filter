@@ -20,8 +20,16 @@ public struct ChainEditorView: View {
                         EffectRow(index: index, node: node)
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxHeight: 440)
+            // A ScrollView has no intrinsic height — it fills whatever it is
+            // given. Inside a `MenuBarExtra(.window)` the window sizes to the
+            // content's fitting height, so a `maxHeight`-only constraint lets
+            // the scroll region collapse to nothing whenever the OS resolves
+            // the fitting size to its minimum (observed on macOS 27). The
+            // `minHeight` floor keeps the chain editor open across OS versions;
+            // `maxHeight` still caps it so a long chain scrolls.
+            .frame(minHeight: 200, maxHeight: 440)
 
             AddEffectButton()
         }
