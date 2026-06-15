@@ -47,6 +47,12 @@ public struct ControlPanelView: View {
             }
         }
         .frame(width: 380)
-        .frame(maxHeight: viewModel.showDebugPanel ? 900 : 700)
+        // Floor the overall height as well as cap it. Without a `minHeight`,
+        // the menu-bar window's fitting-size pass can collapse the whole panel
+        // when an interior flexible view (the chain editor's ScrollView)
+        // reports a small ideal height — the macOS 27 regression. The floor
+        // guarantees the window stays usable regardless of how a given OS
+        // resolves the fitting size; the cap still bounds growth.
+        .frame(minHeight: 420, maxHeight: viewModel.showDebugPanel ? 900 : 700)
     }
 }

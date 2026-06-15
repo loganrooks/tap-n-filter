@@ -184,6 +184,31 @@ Entries are added at the bottom. They are not edited after commit (except for ty
 
 ---
 
+## 2026-06-15 — macOS 27 menu-panel collapse: minHeight floor
+
+**Decision**: Fix the macOS 27 chain-editor collapse by adding a `minHeight`
+floor to the chain editor's `ScrollView` (200 pt) and to `ControlPanelView`'s
+root frame (420 pt), keeping the existing `maxHeight` caps.
+
+**Phase**: 4 (maintenance / cross-version compatibility)
+
+**Considered**:
+- Computed deterministic height (derive panel height from node count, no
+  reliance on SwiftUI's window fitting-size pass) — rejected for the hotfix.
+  Most robust across OS versions but a larger change; deferred to the
+  cross-version-compatibility pass.
+- Fixed window height (always ~560/760 pt) — rejected. Wastes space with a
+  short chain and loses the dynamic-grow behaviour.
+- minHeight floor + existing maxHeight cap (chosen) — one-line, low-risk,
+  preserves dynamic growth, and prevents the scroll region / panel from
+  collapsing regardless of how a given OS resolves the fitting size.
+
+**Verification owed**: symptom resolution must be confirmed on a live macOS 27
+build. The package compiles; the `MenuBarExtra` GUI cannot be driven from the
+dev sandbox (Command Line Tools only; the host is the Mac).
+
+---
+
 ## Future entries
 
 The orchestrator appends new entries here during build. Examples of decisions that would warrant an entry:
