@@ -31,15 +31,26 @@ enum SnapshotHelper {
     /// value to opt into write-on-missing mode for local baseline generation.
     /// The test passes in that mode after writing; the developer commits the
     /// new PNG and re-runs without the variable to confirm strict equality.
+    ///
+    /// The `size` parameter is optional. When omitted, width is fixed at 380
+    /// and height is measured from the view's intrinsic fitting size. Forcing
+    /// a fixed height was the harness flaw that allowed the macOS-27 layout
+    /// collapse to go undetected: a collapsed view rendered at a
+    /// caller-dictated height looked plausible in a snapshot even though
+    /// SwiftUI had given it zero intrinsic height. Measuring from
+    /// `fittingSize` exercises the actual layout pass and lets the snapshot
+    /// serve as evidence of correct sizing, not just correct pixels at an
+    /// arbitrary fixed dimension.
     static func assertSnapshot<V: View>(
         _ view: V,
         named name: String,
-        size: CGSize = CGSize(width: 380, height: 700),
+        size: CGSize? = nil,
         sourceFile: StaticString = #filePath,
         file: StaticString = #file,
         line: UInt = #line
     ) throws {
-        guard let pngData = render(view, size: size) else {
+        let renderSize = size ?? intrinsicSize(of: view, width: 380)
+        guard let pngData = render(view, size: renderSize) else {
             XCTFail("Failed to render view to PNG", file: file, line: line)
             return
         }
@@ -98,8 +109,34 @@ enum SnapshotHelper {
         }
     }
 
+    /// Measure the fitting height of `view` when constrained to `width`.
+    ///
+    /// Hosts the view in an `NSHostingController`, pins its width via Auto
+    /// Layout, and reads `fittingSize`. This exercises SwiftUI's actual layout
+    /// pass — including the ScrollView floor/cap we added to fix the macOS-27
+    /// collapse — rather than bypassing it with a hardcoded dimension.
+    ///
+    /// The returned size has width exactly `width` and height from the layout
+    /// pass, floored at 1.0 so we never attempt a zero-height render.
+    static func intrinsicSize<V: View>(of view: V, width: CGFloat) -> CGSize {
+        let controller = NSHostingController(rootView: view)
+        let hostView = controller.view
+        // Pin width and let the layout pass decide height.
+        hostView.translatesAutoresizingMaskIntoConstraints = false
+        let widthConstraint = hostView.widthAnchor.constraint(equalToConstant: width)
+        widthConstraint.isActive = true
+        let measured = hostView.fittingSize
+        widthConstraint.isActive = false
+        return CGSize(width: width, height: max(measured.height, 1.0))
+    }
+
     /// Render `view` to PNG bytes at `size`.
-    private static func render<V: View>(_ view: V, size: CGSize) -> Data? {
+    ///
+    /// Width is pinned to `size.width`; height is pinned to `size.height`.
+    /// Callers that want intrinsic-height rendering should compute the size
+    /// via `intrinsicSize(of:width:)` and pass it here. `assertSnapshot`
+    /// does this automatically when no explicit size is given.
+    static func render<V: View>(_ view: V, size: CGSize) -> Data? {
         let renderer = ImageRenderer(content: view.frame(width: size.width, height: size.height))
         renderer.scale = 1.0
         guard let cg = renderer.cgImage else { return nil }
