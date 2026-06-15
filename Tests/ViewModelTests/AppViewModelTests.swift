@@ -380,6 +380,46 @@ final class AppViewModelTests: XCTestCase {
         // rework-1.md` § Task 4 + gate criterion 7.
     }
 
+    // MARK: preserveBluetoothQuality preference
+
+    /// Default is true when the key is absent from the suite (ADR-019 §Decision).
+    func test_preserveBluetoothQuality_defaults_to_true_when_key_absent() async throws {
+        // Fresh suite: key has never been written.
+        XCTAssertNil(defaults.object(forKey: AppViewModelDefaultsKey.preserveBluetoothQuality))
+        let model = makeViewModel()
+        await Task.yield()
+        XCTAssertTrue(
+            model.preserveBluetoothQuality,
+            "preserveBluetoothQuality must default to true when the key is absent"
+        )
+    }
+
+    /// Setting the property persists to the injected defaults and is restored
+    /// by a fresh view model initialised from the same suite.
+    func test_preserveBluetoothQuality_persists_and_survives_reinit() async throws {
+        let model = makeViewModel()
+        await Task.yield()
+        XCTAssertTrue(model.preserveBluetoothQuality)
+
+        // Toggle it off and verify the value landed in defaults.
+        model.preserveBluetoothQuality = false
+        let stored = defaults.object(forKey: AppViewModelDefaultsKey.preserveBluetoothQuality) as? Bool
+        XCTAssertEqual(stored, false, "didSet must write false to injected defaults immediately")
+
+        // A second view model from the same suite should restore false.
+        let model2 = AppViewModel(
+            capture: MockCaptureController(),
+            engine: AVAudioEngine(),
+            registry: EffectNodeRegistry(),
+            defaults: defaults
+        )
+        await Task.yield()
+        XCTAssertFalse(
+            model2.preserveBluetoothQuality,
+            "Re-init from same UserDefaults suite must restore the persisted false value"
+        )
+    }
+
     // MARK: Waiters
 
     /// Polls the view model until `predicate(model)` returns true, or 1s

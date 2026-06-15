@@ -4,12 +4,13 @@ import ViewModel
 /// Root view shown in the menu bar dropdown.
 ///
 /// Composed of `HeaderView`, `SourcePickerView`, `ChainEditorView`, and
-/// `FooterView`, with an optional `DebugPanel` rendered below the footer
-/// when `viewModel.showDebugPanel` is true (toggled via the ladybug button
-/// in `HeaderView`). Width is fixed at 380 pt per `docs/specs/ui.md`.
+/// `FooterView`, with an optional `SettingsSectionView` rendered below the
+/// footer when `viewModel.showSettings` is true (toggled via the gear button
+/// in `HeaderView`), and an optional `DebugPanel` rendered below that when
+/// `viewModel.showDebugPanel` is true (toggled via the ladybug button in
+/// `HeaderView`). Width is fixed at 380 pt per `docs/specs/ui.md`.
 /// Height is dynamic, capped at 700 pt by default and lifted to 900 pt
-/// while the debug panel is shown to keep the log readable without
-/// pushing the chain editor off-screen.
+/// while the debug panel or settings panel is shown.
 public struct ControlPanelView: View {
 
     /// View model injected via `@EnvironmentObject` from the scene root.
@@ -38,6 +39,13 @@ public struct ControlPanelView: View {
             FooterView()
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
+
+            if viewModel.showSettings {
+                Divider()
+                SettingsSectionView()
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+            }
 
             if viewModel.showDebugPanel {
                 Divider()
