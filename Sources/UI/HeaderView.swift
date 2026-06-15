@@ -19,8 +19,22 @@ public struct HeaderView: View {
                 .accessibilityAddTraits(.isHeader)
             Spacer()
             statusPill
+            settingsToggle
             debugToggle
         }
+    }
+
+    private var settingsToggle: some View {
+        Button {
+            viewModel.toggleSettings()
+        } label: {
+            Image(systemName: viewModel.showSettings ? "gearshape.fill" : "gearshape")
+                .frame(width: 14, height: 14)
+                .foregroundStyle(viewModel.showSettings ? Color.accentColor : Color.secondary)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Settings")
+        .accessibilityHint("Toggle the settings panel at the bottom of the window.")
     }
 
     private var debugToggle: some View {
