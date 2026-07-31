@@ -44,7 +44,7 @@ To stop, click the power toggle again. tap-n-filter restores the source's normal
 
 ## Presets
 
-Save the current chain as a preset via the File menu. Load a preset via the same menu. Presets are `.tnf` files — open one in a text editor and you'll see plain JSON. They're meant to be edited, forked, and shared.
+Save the current chain via **Presets → Save As…** at the bottom left of the control panel, and load one via **Presets → Open…**. The same menu lists the bundled factory presets. Presets are `.tnf` files — open one in a text editor and you'll see plain JSON. They're meant to be edited, forked, and shared.
 
 A starter set of presets ships with the app:
 
