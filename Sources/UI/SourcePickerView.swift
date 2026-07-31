@@ -93,14 +93,25 @@ public struct SourceRow: View {
         }
     }
 
-    /// Resolve the app icon from the running-application registry.
-    /// Returns nil if the bundle ID is no longer running — the row still
-    /// renders the display name in that case.
+    /// Resolve the app icon for this row's process.
+    ///
+    /// Looks the process up by pid, which is both O(1) and exact. The previous
+    /// implementation filtered the entire `NSWorkspace.runningApplications`
+    /// array by bundle identifier on every render of every row — O(rows ×
+    /// running apps) per layout pass — and, when several instances of one app
+    /// were running, could return a different instance's icon than the row
+    /// actually refers to.
+    ///
+    /// Falls back to a bundle-identifier lookup for the case where the process
+    /// has exited between enumeration and render. Returns nil when neither
+    /// resolves; the row still renders its display name.
     private var icon: NSImage? {
-        guard let bundleID = source.bundleIdentifier else { return nil }
-        let candidates = NSWorkspace.shared.runningApplications.filter {
-            $0.bundleIdentifier == bundleID
+        if let running = NSRunningApplication(processIdentifier: source.pid) {
+            return running.icon
         }
-        return candidates.first?.icon
+        guard let bundleID = source.bundleIdentifier else { return nil }
+        return NSWorkspace.shared.runningApplications
+            .first { $0.bundleIdentifier == bundleID }?
+            .icon
     }
 }

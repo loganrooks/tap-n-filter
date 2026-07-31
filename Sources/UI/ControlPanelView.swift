@@ -61,6 +61,12 @@ public struct ControlPanelView: View {
         // reports a small ideal height — the macOS 27 regression. The floor
         // guarantees the window stays usable regardless of how a given OS
         // resolves the fitting size; the cap still bounds growth.
-        .frame(minHeight: 420, maxHeight: viewModel.showDebugPanel ? 900 : 700)
+        // Either drawer lifts the cap: both append a section below the footer,
+        // so gating the lift on the debug panel alone let an expanded settings
+        // section push the chain editor against the 700 pt cap.
+        .frame(
+            minHeight: 420,
+            maxHeight: (viewModel.showDebugPanel || viewModel.showSettings) ? 900 : 700
+        )
     }
 }

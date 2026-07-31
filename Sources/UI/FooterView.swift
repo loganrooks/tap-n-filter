@@ -25,11 +25,17 @@ public struct FooterView: View {
     /// Keyboard shortcut: Cmd-Q matches the macOS convention; AppKit handles
     /// the shortcut even when no NSWindow is keyWindow because the
     /// MenuBarExtra window receives the key event.
+    ///
+    /// The glyph is deliberately not `power.circle`. This button sits directly
+    /// beside the Start/Stop control, and a power symbol next to an audio
+    /// on/off button reads as "turn the audio off" — a user reaching to stop
+    /// filtering would quit the app instead. `xmark.circle` carries the
+    /// close-the-thing meaning without competing with the power metaphor.
     private var quitButton: some View {
         Button {
             NSApplication.shared.terminate(nil)
         } label: {
-            Image(systemName: "power.circle")
+            Image(systemName: "xmark.circle")
         }
         .buttonStyle(.plain)
         .keyboardShortcut("q", modifiers: .command)

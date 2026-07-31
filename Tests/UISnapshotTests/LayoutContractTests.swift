@@ -91,6 +91,51 @@ final class LayoutContractTests: XCTestCase {
         )
     }
 
+    // MARK: - Drawers
+
+    /// Opening the settings drawer must lift the height cap, exactly as the
+    /// debug drawer does.
+    ///
+    /// The cap was originally gated on `showDebugPanel` alone while both
+    /// drawers append a section below the footer. With a populated chain and
+    /// settings open, the panel was therefore squeezed against the 700 pt cap
+    /// and had to shed height somewhere — the same class of failure as the
+    /// macOS-27 collapse this file exists to guard, arrived at through the
+    /// cap rather than the floor.
+    func test_settingsDrawerOpen_liftsHeightCap() async throws {
+        let model = try await makeModel()
+        model.addEffect(of: "tnf.eq")
+        model.addEffect(of: "tnf.gain")
+        model.addEffect(of: "tnf.reverb")
+
+        let closed = SnapshotHelper.intrinsicSize(
+            of: ControlPanelView().environmentObject(model),
+            width: 380
+        )
+
+        model.toggleSettings()
+        XCTAssertTrue(model.showSettings, "toggleSettings did not open the drawer")
+
+        let open = SnapshotHelper.intrinsicSize(
+            of: ControlPanelView().environmentObject(model),
+            width: 380
+        )
+
+        XCTAssertGreaterThan(
+            open.height,
+            closed.height,
+            "Opening the settings drawer did not grow the panel (closed \(closed.height) pt, " +
+            "open \(open.height) pt). The settings section is being absorbed by the height " +
+            "cap instead of extending the window."
+        )
+        XCTAssertLessThanOrEqual(
+            open.height,
+            900,
+            "Panel height \(open.height) pt with the settings drawer open exceeds the 900 pt " +
+            "drawer cap (docs/specs/ui.md)."
+        )
+    }
+
     // MARK: - Helpers
 
     /// Build a view model backed by a minimal mock capture controller and a

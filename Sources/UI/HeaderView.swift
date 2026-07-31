@@ -70,13 +70,22 @@ public struct HeaderView: View {
         .accessibilityValue(pillLabel)
     }
 
+    /// True only for the case the error override exists to catch: a rollback
+    /// that published `.idle` while leaving `lastError` set, which would
+    /// otherwise read "Off" and hide the failure.
+    ///
+    /// Scoping this to `.idle` matters. Letting any non-nil `lastError` win
+    /// meant a stale error from an earlier attempt pinned the pill to red
+    /// "Failed" while capture was running perfectly well — the live state is
+    /// the more truthful signal whenever there is one.
+    private var isSilentlyFailed: Bool {
+        guard viewModel.lastError != nil else { return false }
+        if case .idle = viewModel.captureState { return true }
+        return false
+    }
+
     private var pillColor: Color {
-        // An unacknowledged error always wins. The capture controller's
-        // rollback paths publish `.idle` after a teardown, so a failure
-        // can leave `captureState == .idle` with `lastError` set — the
-        // status pill would otherwise read "Off" and the user would not
-        // know what happened. Make the error state the primary signal.
-        if viewModel.lastError != nil { return .red }
+        if isSilentlyFailed { return .red }
         switch viewModel.captureState {
         case .idle: return .secondary
         case .starting, .stopping: return .yellow
@@ -86,10 +95,10 @@ public struct HeaderView: View {
     }
 
     private var pillLabel: String {
-        // Status only — short and stable. The actual error text lives in the
-        // debug log panel (toggle via the ladybug button) so the header stays
-        // compact and a long error string never has to fit in a pill.
-        if viewModel.lastError != nil { return "Failed" }
+        // Status only — short and stable. The full error text is shown in the
+        // inline banner above the power toggle (and in the debug log), so the
+        // header stays compact and a long error string never has to fit here.
+        if isSilentlyFailed { return "Failed" }
         switch viewModel.captureState {
         case .idle: return "Off"
         case .starting: return "Starting"
