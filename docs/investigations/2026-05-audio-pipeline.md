@@ -4269,6 +4269,136 @@ setting-off control run (expect HFP `16000×1`).
 **Resolved?**: pending — no implementation yet.
 **Revision taken**: pending.
 
+### FC-006 — Cross-vendor review falsifies the EXP-037 race-signal auxiliary
+
+**Date**: 2026-06-16
+**Trigger**: a cross-vendor review (Codex GPT-5.5, xhigh) of the Layer B-core
+implementation (PR #20) before merge.
+
+The EXP-037 race policy (above) decided to gate the switch on the Bluetooth
+input device's `kAudioDevicePropertyDeviceIsRunningSomewhere`: if true, decline
+(diagnostic D5, auxiliary A4). That choice was source-grounded only as "the
+device reports running, so treat it as busy." It was never tested for the
+property it actually needs: that the signal *discriminates* a Bluetooth device
+merely playing A2DP output from one whose microphone is in active use by a call.
+
+Codex finding #3 supplies the discriminating case. On a single Bluetooth headset
+that is both the default input and the default output (AirPods and most
+single-device BT headsets), audio is already playing when the user presses Start
+— that is the whole scenario. The device is therefore running, so
+`IsRunningSomewhere` reads true, so the guard takes the D5 decline path
+(`reason=bt-input-in-use`) and the mitigation never engages in its primary
+scenario. The shipped race check inverts its own intent: it fires on exactly the
+case the mitigation exists to handle, and the "active call" case it was meant to
+protect is indistinguishable from it by this signal.
+
+This is a coherence-capture near-miss. The race policy read as a complete,
+plausible design — query a documented "is the device in use" property, decline
+if busy — and the internal adversarial reviewer accepted it. The property obtains
+when a call is active (true), so the policy looked confirmed. The unstated
+auxiliary was "and it is false during ordinary playback," which is the load-
+bearing half and was never checked. The EXP-035-era lesson repeats at a new
+boundary: a condition obtaining is not the condition being load-bearing for the
+decision that rests on it.
+
+The EXP-032 baseline run of the new probe (read-only, current machine state, no
+Bluetooth attached) already corroborates the mechanism without the headset: with
+music playing, the default *output* device (`MacBook Air Speakers`) reads
+`runningSomewhere=true` purely from output, while the default *input* (the
+separate built-in mic) reads `runningSomewhere=false`. The false-positive is a
+property of output playback, and it lands on the input read only when input and
+output are the same device. The headset run (EXP-037-R, below) tests whether the
+Bluetooth case is in fact one device.
+
+Codex finding #4 (readback timing) is a separate auxiliary on the same fix: the
+`455d9c8` "drop the marker if the immediate default-input readback does not
+match" logic assumes the HAL write is synchronous. If the write is asynchronous,
+the immediate readback can miss a switch that lands a few milliseconds later,
+which both reports a false failure and — having dropped the marker — strands the
+user on the replacement input with no recovery breadcrumb. EXP-037-R measures the
+write-to-readback latency to settle whether the immediate readback is safe.
+
+Findings #2, #5, #6 are correctness refinements that do not bear on the
+mechanism (require input==output same BT device for engage; preserve a valid
+current non-BT default in the A3 fallback; skip non-defaultable candidates).
+They are tracked on PR #20 and folded into the Layer B-core rework, not here.
+
+### EXP-037-R — On-device race-signal discrimination + write-readback latency (PRE-REGISTERED)
+
+**Date**: 2026-06-16 (pre-registration; the discriminating conditions Y and Z
+have not yet been run — only the X baseline, as apparatus validation)
+**Type**: measurement (signal selection) — supplies the corrected auxiliary for
+the EXP-037 race check before the Layer B-core rework is written. Read-only
+except for the optional `--measure-write` latency mode, which restores the prior
+default input.
+
+**Instrument**: `docs/investigations/probes/exp037_race_signal.swift`, compiled
+with `swiftc -O -framework CoreAudio`. For the default input device it reports
+five candidate race signals:
+- **SIG_A** `kAudioDevicePropertyDeviceIsRunningSomewhere`, global scope — the
+  shipped signal.
+- **SIG_B** the same property, input scope.
+- **SIG_C** any HAL process object with `kAudioProcessPropertyIsRunningInput`.
+- **SIG_D** any process with `IsRunningInput` whose `kAudioProcessPropertyDevices`
+  (input scope) includes the default-input device — the device-attributed form.
+- **SIG_E** the input stream is present at an HFP-class rate (≤ 16 kHz).
+
+**Question**: which signal reads FALSE when a Bluetooth headset is only playing
+A2DP output (so the mitigation should engage) and TRUE when its microphone is in
+active use by another process (so the mitigation should decline)?
+
+**Conditions** (the BT headset is the default output throughout; the user sets
+the default input to the BT headset where the scenario requires it):
+- **X (baseline, done)**: current machine state, no Bluetooth. Validates that the
+  probe runs and that the per-process list is populated. Result recorded below.
+- **Y (A2DP playback, no call)**: BT headset connected and default output, music
+  playing to it, BT headset also the default input, no app using the mic.
+- **Z (active call on the BT mic)**: BT headset connected, an app (Voice Memos,
+  Photo Booth, FaceTime, or `say` into a recording) actively capturing from the
+  BT microphone, so the link is in genuine HFP voice use.
+
+**Predictions** (locked before running Y and Z):
+- **SIG_A** is TRUE in both Y and Z (the false positive Codex #3 predicts). If
+  SIG_A is false in Y, finding #3 is refuted on this hardware and the shipped
+  race check is adequate — the risky branch for Codex's claim.
+- **SIG_C / SIG_D** are FALSE in Y and TRUE in Z. SIG_D is preferred if it holds,
+  because it attributes the input use to the Bluetooth device specifically and
+  will not decline because some unrelated app holds the built-in mic. SIG_C is
+  the fallback if per-process device attribution (SIG_D) proves unreliable.
+- **SIG_E** is FALSE in Y (A2DP, no input stream or a high-rate one) and TRUE in
+  Z (HFP input stream at 16 kHz). SIG_E is a coarse fallback if the per-process
+  signals do not discriminate.
+- **Risky branch (no signal discriminates)**: if every candidate reads the same
+  in Y and Z, the per-process approach fails on this HAL and the race check
+  cannot be made precise from user space. The revision then goes to accepting a
+  residual race and relying on prompt restore plus the documented caveat, or to
+  gating on whether the headset is already in HFP at engage time (SIG_E) and
+  treating "already HFP" as "leave it alone." This branch is named now so a
+  same-in-both result is not quietly explained away later.
+- **Single-device question**: the run also records whether the BT headset is one
+  AudioObject exposing both input and output channels, or two. Codex #3 only
+  bites if input and output resolve to the same device read; a two-device headset
+  would localize the false positive differently and is recorded as a finding.
+
+**Write-readback latency** (Codex #4, `--measure-write` mode): set the default
+input to the built-in mic, poll the readback at 5 ms granularity with
+timestamps, record the latency, restore. A latency at or near 0 ms means the
+write is effectively synchronous and the `455d9c8` immediate-readback guard is
+safe. A non-trivial latency means the immediate readback can false-fail and the
+guard must poll for confirmation before declaring the switch landed or dropping
+the marker.
+
+**X baseline result (collected 2026-06-16)**: probe runs; 40 process objects
+returned (per-process signals are available to an unsigned CLI binary). Default
+input is the built-in mic (`runningSomewhere=false`); default output is the
+built-in speakers, which reads `runningSomewhere=true` while music plays. SIG_A
+on the default input is false because input and output are different devices
+here. Apparatus validated; the discriminating Y/Z conditions require the headset.
+
+**Landed?**: pending Y/Z runs.
+**Resolved?**: pending Y/Z runs.
+**Revision taken**: pending.
+
 ## External references
 
 ### Codex investigation report (this session)
