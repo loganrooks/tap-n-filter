@@ -69,6 +69,9 @@ public enum AppViewModelDefaultsKey {
     public static let graph: String = "lastSession.graph"
     public static let sourceBundleID: String = "lastSession.sourceBundleID"
     public static let debugPanel: String = "debug.enabled"
+    /// Whether the "Preserve Bluetooth quality during capture" mitigation is
+    /// active. Stored as a Bool; absent means default ON (ADR-019).
+    public static let preserveBluetoothQuality: String = "settings.preserveBluetoothQuality"
 }
 
 /// The single owner of UI state for the menubar window.
@@ -140,6 +143,29 @@ public final class AppViewModel: ObservableObject {
     public func toggleDebugPanel() {
         showDebugPanel.toggle()
         defaults.set(showDebugPanel, forKey: AppViewModelDefaultsKey.debugPanel)
+    }
+
+    /// Whether the settings panel is visible. Toggled via the gear button in
+    /// `HeaderView`. Mirrors the `showDebugPanel` pattern exactly.
+    @Published public private(set) var showSettings: Bool = false
+
+    public func toggleSettings() {
+        showSettings.toggle()
+    }
+
+    /// "Preserve Bluetooth quality during capture" — Layer A storage only.
+    ///
+    /// When true, the app will (via a separate, gated Layer B) switch the
+    /// system default input away from the Bluetooth device during capture to
+    /// keep the output on A2DP instead of HFP. The actual device-switch logic
+    /// is out of scope for this PR (ADR-019, EXP-037). This property only
+    /// stores and exposes the preference.
+    ///
+    /// Default: true (absent key is treated as true per ADR-019 §Decision).
+    @Published public var preserveBluetoothQuality: Bool {
+        didSet {
+            defaults.set(preserveBluetoothQuality, forKey: AppViewModelDefaultsKey.preserveBluetoothQuality)
+        }
     }
 
     // MARK: - EXP-029 minimal-reader control (throwaway)
@@ -324,6 +350,9 @@ public final class AppViewModel: ObservableObject {
         self.defaults = defaults
         self.debugLog = debugLog
         self.showDebugPanel = defaults.bool(forKey: AppViewModelDefaultsKey.debugPanel)
+        // Absent key → true (default ON per ADR-019).
+        let storedPreserve = defaults.object(forKey: AppViewModelDefaultsKey.preserveBluetoothQuality)
+        self.preserveBluetoothQuality = (storedPreserve as? Bool) ?? true
         self.logger = TnfLogger(source: "AppViewModel", store: debugLog)
         let bootstrapLogger = Logger(subsystem: "tnf.app", category: "AppViewModel.bootstrap")
         self.graph = AppViewModel.restoreGraph(from: defaults, registry: registry, logger: bootstrapLogger)

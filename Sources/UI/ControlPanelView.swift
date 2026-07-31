@@ -4,12 +4,13 @@ import ViewModel
 /// Root view shown in the menu bar dropdown.
 ///
 /// Composed of `HeaderView`, `SourcePickerView`, `ChainEditorView`, and
-/// `FooterView`, with an optional `DebugPanel` rendered below the footer
-/// when `viewModel.showDebugPanel` is true (toggled via the ladybug button
-/// in `HeaderView`). Width is fixed at 380 pt per `docs/specs/ui.md`.
+/// `FooterView`, with an optional `SettingsSectionView` rendered below the
+/// footer when `viewModel.showSettings` is true (toggled via the gear button
+/// in `HeaderView`), and an optional `DebugPanel` rendered below that when
+/// `viewModel.showDebugPanel` is true (toggled via the ladybug button in
+/// `HeaderView`). Width is fixed at 380 pt per `docs/specs/ui.md`.
 /// Height is dynamic, capped at 700 pt by default and lifted to 900 pt
-/// while the debug panel is shown to keep the log readable without
-/// pushing the chain editor off-screen.
+/// while the debug panel or settings panel is shown.
 public struct ControlPanelView: View {
 
     /// View model injected via `@EnvironmentObject` from the scene root.
@@ -39,6 +40,13 @@ public struct ControlPanelView: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
 
+            if viewModel.showSettings {
+                Divider()
+                SettingsSectionView()
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+            }
+
             if viewModel.showDebugPanel {
                 Divider()
                 DebugPanel()
@@ -47,6 +55,12 @@ public struct ControlPanelView: View {
             }
         }
         .frame(width: 380)
-        .frame(maxHeight: viewModel.showDebugPanel ? 900 : 700)
+        // Floor the overall height as well as cap it. Without a `minHeight`,
+        // the menu-bar window's fitting-size pass can collapse the whole panel
+        // when an interior flexible view (the chain editor's ScrollView)
+        // reports a small ideal height — the macOS 27 regression. The floor
+        // guarantees the window stays usable regardless of how a given OS
+        // resolves the fitting size; the cap still bounds growth.
+        .frame(minHeight: 420, maxHeight: viewModel.showDebugPanel ? 900 : 700)
     }
 }

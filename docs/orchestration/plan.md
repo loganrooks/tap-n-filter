@@ -10,6 +10,15 @@ The build is performed by a Claude Code session running under `/goal`. That sess
 
 Two phases require human input: Phase 2 (ear test) and Phase 4 (acceptance). Every other gate is agent-evaluated.
 
+## Post-V1 roadmap
+
+The six phases below cover the linear v0.1.0 build and terminate at release. Work
+after that build — features, polish, and reliability beyond v0.1.0 — is tracked
+as milestones and epics in `../roadmap/roadmap.md`, with review weight per
+`../governance/review-tiers.md`. Post-V1 work right-sizes its ceremony: a PR plus
+the warranted review tier, with the full framing-audit and verification-subagent
+machinery reserved for epics marked heavyweight in the roadmap.
+
 ## Phase summary
 
 | # | Name | Purpose | Gate type |
