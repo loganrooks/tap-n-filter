@@ -47,7 +47,13 @@ public struct ErrorBanner: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Dismiss error")
-                .accessibilityHint("Hide this error message. The status pill keeps reporting a failure while audio is not flowing.")
+                // Deliberately makes no promise about the status pill. The
+                // pill keeps reporting a failure only on the stalled-engine
+                // path, where `engineStalled` outlives the dismissal. For a
+                // failed start the state is `.idle` and dismissing clears the
+                // only record, so the pill correctly returns to "Off" — a hint
+                // guaranteeing otherwise would be false for that case.
+                .accessibilityHint("Hide this error message.")
             }
             .padding(8)
             .background(
