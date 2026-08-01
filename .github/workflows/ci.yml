@@ -6,10 +6,25 @@ on:
     branches: [main]
 
 jobs:
-  build-and-test:
-    name: Build and test
-    runs-on: macos-14
+  matrix-build:
+    name: Build and test on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+
+    strategy:
+      # One runner failing should not mask the result on the others — a
+      # version-specific layout or SDK problem is exactly what this matrix
+      # exists to surface.
+      fail-fast: false
+      matrix:
+        # Labels are pinned explicitly. `macos-latest` silently re-points when
+        # GitHub rotates the fleet, which would turn a deliberate version
+        # matrix into an accidental one (ADR-022 item 5).
+        #
+        # macos-14 is the supported floor (ADR-005). There is no macos-27
+        # image and there will not be one for months, so the newest-OS check
+        # remains the manual pre-merge gate in docs/governance/review-tiers.md.
+        os: [macos-14, macos-15, macos-26]
 
     steps:
       - name: Check out
@@ -30,6 +45,34 @@ jobs:
 
       - name: Test
         run: swift test -c debug --enable-code-coverage
+
+  # Aggregating gate. `main`'s branch protection requires a status check named
+  # exactly "Build and test"; a matrix job cannot produce that name, because
+  # GitHub suffixes every leg with its matrix values. Without this job the
+  # required context would never report again and every PR would become
+  # permanently unmergeable. This job carries the required name and passes
+  # only when every matrix leg succeeded.
+  #
+  # If the matrix gains or loses an OS, nothing here changes — `needs` covers
+  # the whole job regardless of how many legs it expands to.
+  build-and-test:
+    name: Build and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: matrix-build
+    # `always()` so a failed or cancelled leg still produces a reported
+    # conclusion here rather than leaving the required check pending forever.
+    if: always()
+
+    steps:
+      - name: Verify every matrix leg passed
+        run: |
+          result="${{ needs.matrix-build.result }}"
+          echo "matrix-build result: $result"
+          if [ "$result" != "success" ]; then
+            echo "::error::One or more OS legs did not succeed ($result)."
+            exit 1
+          fi
 
   # Integration tests are gated behind a workflow_dispatch trigger because
   # they require real Core Audio devices and are slow on the CI runner.
