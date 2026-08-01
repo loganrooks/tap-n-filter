@@ -142,6 +142,22 @@ who would rather we never touch their input device.
   devices, classify Bluetooth vs non-Bluetooth (via
   `kAudioDevicePropertyTransportType`), persist and restore the prior
   default input, and recover a stranded marker on launch.
+- **Engage condition 3 cannot be an object-identity test.** "The current
+  system default input is that same Bluetooth device" reads as an
+  `AudioDeviceID` comparison and is not one. macOS publishes a Bluetooth
+  headset as *two* device objects — one input-only, one output-only — with
+  distinct IDs and distinct UIDs. Measured on macOS 27 with a Bose
+  QuietComfort (EXP-037-R condition Y):
+
+      [108] QuietComfort Headphones  in=1 out=0  uid=BC-87-FA-23-5B-E0:input
+      [102] QuietComfort Headphones  in=0 out=2  uid=BC-87-FA-23-5B-E0:output
+
+  Comparing IDs, or comparing UIDs verbatim, would never match, and the
+  mitigation would silently never engage — a failure indistinguishable from
+  "conditions not met." The condition is implemented by comparing the UID
+  with its `:input` / `:output` scope suffix stripped. A headset that
+  presented a single combined object would need a different test; none has
+  been observed.
 
 **Risks:**
 
@@ -153,6 +169,15 @@ who would rather we never touch their input device.
   switch tightly and rely on prompt restore. The default-on choice raises
   the stakes here, which is why the toggle is prominent and the restore
   path must be reliable.
+
+  *Settled by EXP-037-R:* the detect-and-decline option was taken, gated on
+  `kAudioDevicePropertyDeviceIsRunningSomewhere` read on the default-input
+  device. A cross-vendor review argued that signal false-fires on ordinary
+  playback; measurement under condition Y showed it does not, because the
+  split device objects above mean output activity marks the *output* object
+  and cannot mark the input one. Condition Z — confirming the signal does
+  go true when the microphone is genuinely in use, so the decline is not a
+  false *negative* — is still owed and needs a real call on the headset.
 - **Restore correctness.** A missed restore strands the user on the wrong
   input. The UserDefaults marker plus launch-time recovery is the guard;
   EXP-037's prediction must include a diagnostic that the restore actually
