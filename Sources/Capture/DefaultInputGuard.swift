@@ -46,17 +46,6 @@ public final class DefaultInputGuard {
         }
     }
 
-    /// Emit the D5-shaped decline marker and return the matching outcome.
-    ///
-    /// Every decline goes through here so none is silent. The on-device
-    /// verification greps `[EXP-037.switch]`, and a decline that logged nothing
-    /// would read identically to a guard that was never called.
-    private func declined(_ reason: String, detail: String? = nil) -> EngageOutcome {
-        let suffix = detail.map { " \($0)" } ?? ""
-        log("[EXP-037.switch] engaged=false reason=\(reason)\(suffix)")
-        return .notEngaged(reason)
-    }
-
     private let control: DefaultInputControlling
     private let defaults: UserDefaults
     private let log: (String) -> Void
@@ -72,6 +61,17 @@ public final class DefaultInputGuard {
         self.control = control
         self.defaults = defaults
         self.log = log
+    }
+
+    /// Emit the D5-shaped decline marker and return the matching outcome.
+    ///
+    /// Every decline goes through here so none is silent. The on-device
+    /// verification greps `[EXP-037.switch]`, and a decline that logged nothing
+    /// would read identically to a guard that was never called.
+    private func declined(_ reason: String, detail: String? = nil) -> EngageOutcome {
+        let suffix = detail.map { " \($0)" } ?? ""
+        log("[EXP-037.switch] engaged=false reason=\(reason)\(suffix)")
+        return .notEngaged(reason)
     }
 
     // MARK: Engage (capture start)
