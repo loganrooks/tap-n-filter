@@ -14,7 +14,10 @@ Work toward v0.1.0. Nothing has been tagged or released yet.
 ### Added
 
 - Audio capture from a chosen application via Core Audio process taps, with a
-  direct IOProc reader and a lock-free ring buffer (ADR-018).
+  direct IOProc reader and a single-lock SPSC ring buffer (ADR-018). The
+  buffer guards each read and write with an `OSAllocatedUnfairLock` over a
+  bounded copy; a genuinely lock-free implementation is deferred to V0.2 and
+  gated on measured glitching.
 - Configurable effect graph: a two-band resonant EQ, a reverb built on
   `AVAudioUnitReverb`'s factory presets, and a gain stage, each with bypass.
   Wet/dry mixing is per node and applies where it is meaningful; `GainNode`
@@ -31,16 +34,18 @@ Work toward v0.1.0. Nothing has been tagged or released yet.
   and `dry` factory presets.
 - "Preserve Bluetooth quality during capture" setting (ADR-019, Layer A).
 
+- Release bundler producing a `.app` and a compressed `.dmg`. See the signing
+  note under Known limitations for what the produced artifact is signed with.
+- Accessibility labels, values, and hints across every control, with a
+  committed accessibility-tree artifact and tests enforcing label discipline
+  (ADR-011).
+
 ### Deferred to V0.2
 
 - The `submerged` and `next-room` factory presets. Four presets were scoped for
   V1 and cut to two (`distant-engines`, `dry`) during the framing audit, because
   only the shipped pair had a documented design rationale and ear-test budget.
   README and `docs/specs/preset-format.md` both point here for this deferral.
-- Release bundler producing an ad-hoc-signed `.app` and a compressed `.dmg`.
-- Accessibility labels, values, and hints across every control, with a
-  committed accessibility-tree artifact and tests enforcing label discipline
-  (ADR-011).
 
 ### Fixed
 
