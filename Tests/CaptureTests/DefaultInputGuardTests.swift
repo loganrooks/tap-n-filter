@@ -548,6 +548,151 @@ final class DefaultInputGuardReviewRoundTwoTests: XCTestCase {
         XCTAssertNil(defaults.string(forKey: DefaultInputGuard.strandedInputMarkerKey))
     }
 
+    // MARK: Ownership — do not overwrite an input the user chose themselves
+
+    /// The user reached for a USB mic mid-capture. Restore must leave it, not
+    /// put back a device they had already moved away from.
+    func test_restore_relinquishesWhenUserChangedInputAfterEngage() async throws {
+        let control = FakeDefaultInputControl(
+            devices: [
+                btInputID: .init(uid: "bt-uid", transport: kAudioDeviceTransportTypeBluetooth,
+                                 running: false, isInput: true),
+                builtInID: .init(uid: "builtin-uid", transport: kAudioDeviceTransportTypeBuiltIn,
+                                 running: false, isInput: true),
+                usbID: .init(uid: "usb-uid", transport: kAudioDeviceTransportTypeUSB,
+                             running: false, isInput: true),
+            ],
+            defaultInput: btInputID,
+            defaultOutput: btInputID
+        )
+        let defaults = makeDefaults()
+        let guardian = DefaultInputGuard(control: control, defaults: defaults, log: { _ in })
+
+        let outcome = await guardian.engageIfNeeded(settingEnabled: true)
+        XCTAssertTrue(outcome.engaged)
+        XCTAssertEqual(control.defaultInput, builtInID)
+
+        // The user picks a USB mic while capture is running.
+        control.defaultInput = usbID
+
+        await guardian.restore(trigger: "clean-stop")
+
+        XCTAssertEqual(control.defaultInput, usbID,
+                       "an input the user chose after engage must not be overwritten")
+        XCTAssertNil(defaults.string(forKey: DefaultInputGuard.strandedInputMarkerKey),
+                     "ownership is relinquished, so both markers are retired")
+        XCTAssertNil(defaults.string(forKey: DefaultInputGuard.replacementInputMarkerKey))
+    }
+
+    /// The ordinary case: the input is still the one the guard installed, so it
+    /// is restored.
+    func test_restore_proceedsWhenInputIsStillTheOneWeInstalled() async throws {
+        let control = FakeDefaultInputControl(
+            devices: [
+                btInputID: .init(uid: "bt-uid", transport: kAudioDeviceTransportTypeBluetooth,
+                                 running: false, isInput: true),
+                builtInID: .init(uid: "builtin-uid", transport: kAudioDeviceTransportTypeBuiltIn,
+                                 running: false, isInput: true),
+            ],
+            defaultInput: btInputID,
+            defaultOutput: btInputID
+        )
+        let defaults = makeDefaults()
+        let guardian = DefaultInputGuard(control: control, defaults: defaults, log: { _ in })
+
+        let outcome = await guardian.engageIfNeeded(settingEnabled: true)
+        XCTAssertTrue(outcome.engaged)
+
+        await guardian.restore(trigger: "clean-stop")
+
+        XCTAssertEqual(control.defaultInput, btInputID)
+        XCTAssertNil(defaults.string(forKey: DefaultInputGuard.strandedInputMarkerKey))
+        XCTAssertNil(defaults.string(forKey: DefaultInputGuard.replacementInputMarkerKey))
+    }
+
+    // MARK: Rollback when no candidate confirms
+
+    /// A readback timeout means "not visible within the budget", not "never
+    /// landed". If the HAL accepted a write, the original must be put back and
+    /// confirmed before the recovery breadcrumb may be dropped.
+    func test_engage_rollsBackAndKeepsMarkerWhenRollbackUnconfirmed() async throws {
+        let control = FakeDefaultInputControl(
+            devices: [
+                btInputID: .init(uid: "bt-uid", transport: kAudioDeviceTransportTypeBluetooth,
+                                 running: false, isInput: true),
+                builtInID: .init(uid: "builtin-uid", transport: kAudioDeviceTransportTypeBuiltIn,
+                                 running: false, isInput: true),
+            ],
+            defaultInput: btInputID,
+            defaultOutput: btInputID
+        )
+        // Writes are accepted but never take, so neither the switch nor the
+        // rollback can be confirmed.
+        control.ignoreSetInput = true
+        let defaults = makeDefaults()
+        let guardian = DefaultInputGuard(control: control, defaults: defaults, log: { _ in })
+
+        let outcome = await guardian.engageIfNeeded(settingEnabled: true)
+
+        XCTAssertFalse(outcome.engaged)
+        XCTAssertEqual(outcome.reason, "switch-readback-failed")
+        XCTAssertTrue(control.setInputCalls.contains(btInputID),
+                      "the original must be written back after the failed candidates")
+        XCTAssertEqual(defaults.string(forKey: DefaultInputGuard.strandedInputMarkerKey), "bt-uid",
+                       "an unconfirmed rollback must keep the breadcrumb for launch recovery")
+    }
+
+    /// When no write was ever accepted, nothing can land later, so the marker
+    /// is safe to drop.
+    func test_engage_dropsMarkerWhenNoWriteWasAccepted() async throws {
+        let control = FakeDefaultInputControl(
+            devices: [
+                btInputID: .init(uid: "bt-uid", transport: kAudioDeviceTransportTypeBluetooth,
+                                 running: false, isInput: true),
+                builtInID: .init(uid: "builtin-uid", transport: kAudioDeviceTransportTypeBuiltIn,
+                                 running: false, isInput: true),
+            ],
+            defaultInput: btInputID,
+            defaultOutput: btInputID
+        )
+        control.rejectSetInput = [builtInID]
+        let defaults = makeDefaults()
+        let guardian = DefaultInputGuard(control: control, defaults: defaults, log: { _ in })
+
+        let outcome = await guardian.engageIfNeeded(settingEnabled: true)
+
+        XCTAssertFalse(outcome.engaged)
+        XCTAssertNil(defaults.string(forKey: DefaultInputGuard.strandedInputMarkerKey))
+        XCTAssertEqual(control.defaultInput, btInputID)
+    }
+
+    // MARK: One bad HAL entry must not disable the search
+
+    /// A device whose transport read throws is skipped, not fatal to the whole
+    /// candidate enumeration.
+    func test_engage_skipsDeviceWhoseTransportReadFails() async throws {
+        let control = FakeDefaultInputControl(
+            devices: [
+                btInputID: .init(uid: "bt-uid", transport: kAudioDeviceTransportTypeBluetooth,
+                                 running: false, isInput: true),
+                builtInID: .init(uid: "builtin-uid", transport: kAudioDeviceTransportTypeBuiltIn,
+                                 running: false, isInput: true),
+            ],
+            defaultInput: btInputID,
+            defaultOutput: btInputID
+        )
+        // A device the enumeration returns but whose properties cannot be read
+        // — the hot-plug / malformed-virtual-device case.
+        control.phantomInputIDs = [99]
+
+        let guardian = DefaultInputGuard(control: control, defaults: makeDefaults(), log: { _ in })
+
+        let outcome = await guardian.engageIfNeeded(settingEnabled: true)
+
+        XCTAssertTrue(outcome.engaged, "one unreadable device must not disable the mitigation")
+        XCTAssertEqual(control.defaultInput, builtInID)
+    }
+
     // MARK: Physical-device key
 
     func test_physicalDeviceKey_stripsScopeSuffixes() {
@@ -581,6 +726,10 @@ private final class FakeDefaultInputControl: DefaultInputControlling {
     /// Device IDs whose `setDefaultInputDeviceID` throws, modelling a HAL that
     /// refuses a device the enumeration offered.
     var rejectSetInput: Set<AudioDeviceID> = []
+    /// IDs returned by `inputDeviceIDs()` that have no `Device` entry, so every
+    /// property read on them throws — the hot-plug / malformed-virtual-device
+    /// case where the HAL lists a device it cannot describe.
+    var phantomInputIDs: [AudioDeviceID] = []
     /// When true, `setDefaultInputDeviceID` records the call but does NOT
     /// change `defaultInput` — models a HAL write that returns success yet
     /// does not take, so the guard's readback check can be exercised.
@@ -625,7 +774,7 @@ private final class FakeDefaultInputControl: DefaultInputControlling {
     }
 
     func inputDeviceIDs() throws -> [AudioDeviceID] {
-        devices.filter { $0.value.isInput }.keys.sorted()
+        (devices.filter { $0.value.isInput }.keys.sorted() + phantomInputIDs).sorted()
     }
 
     enum FakeError: Error { case unknownDevice, setRefused }

@@ -33,6 +33,15 @@ public final class DefaultInputGuard {
     /// is fixed by the EXP-037 pre-registration.
     public static let strandedInputMarkerKey = "hfpMitigation.strandedInputUID"
 
+    /// Key under which the UID this guard switched *to* is persisted.
+    ///
+    /// The origin marker alone cannot distinguish "the default input is still
+    /// the replacement I installed" from "the user has since picked something
+    /// else." Without that distinction, restoring after the user chose a USB
+    /// mic mid-capture would silently overwrite their choice with a device
+    /// they had already moved away from.
+    public static let replacementInputMarkerKey = "hfpMitigation.replacementInputUID"
+
     /// Outcome of an engage attempt. `engaged == false` carries a `reason`
     /// describing which engage condition (or the race check) declined.
     public struct EngageOutcome: Equatable {
@@ -162,9 +171,11 @@ public final class DefaultInputGuard {
             // channels and still refuse to become the default input, and the
             // HAL only reports that at write time — so one unusable candidate
             // must not disable the mitigation while a usable one remains.
+            var anyWriteAccepted = false
             for replacement in candidates {
                 do {
                     try control.setDefaultInputDeviceID(replacement)
+                    anyWriteAccepted = true
                 } catch {
                     log("[EXP-037.switch] candidate=\(replacement) set-failed error=\(error)")
                     continue
@@ -172,12 +183,16 @@ public final class DefaultInputGuard {
                 // D1 requires the switch to have actually landed: a readback
                 // that the default input now equals the replacement. A `noErr`
                 // write that did not take is NOT success — we never claim D1
-                // (or leave a recovery breadcrumb) for a no-op switch.
+                // for a no-op switch.
                 guard await readBackDefaultInput(equals: replacement) else {
                     log("[EXP-037.switch] candidate=\(replacement) readback-failed")
                     continue
                 }
                 let replacementUID = (try? control.uid(of: replacement)) ?? "?"
+                // Record what we switched *to*, not just what we switched from.
+                // Restore needs it to tell "the input is still the one I set"
+                // from "the user has since chosen something else."
+                defaults.set(replacementUID, forKey: Self.replacementInputMarkerKey)
                 log("[EXP-037.switch] from=\(originUID) to=\(replacementUID) "
                     + "btOutput=\(outputUID) engaged=true readback=true")
                 return EngageOutcome(
@@ -187,11 +202,32 @@ public final class DefaultInputGuard {
                     toUID: replacementUID
                 )
             }
-            // Every candidate failed. Drop the marker we optimistically set —
-            // nothing was changed, so there is nothing owed a restore.
-            defaults.removeObject(forKey: Self.strandedInputMarkerKey)
+            // Every candidate failed its readback. Whether the marker may be
+            // dropped depends on something the readback cannot tell us: a
+            // timeout means "not visible within 80 ms", not "never landed". If
+            // the HAL accepted any write, one may yet take effect after we
+            // return, and dropping the marker would strand the user with no
+            // breadcrumb — the ship-blocker.
+            //
+            // So put the original back explicitly and confirm it. Only a
+            // confirmed original justifies clearing the marker; otherwise the
+            // marker survives and launch recovery retries.
+            if anyWriteAccepted {
+                try? control.setDefaultInputDeviceID(inputID)
+                if await readBackDefaultInput(equals: inputID) {
+                    clearMarkers()
+                    log("[EXP-037.switch] rolled-back to=\(originUID) confirmed=true")
+                } else {
+                    log("[EXP-037.switch] rollback-unconfirmed from=\(originUID) "
+                        + "marker=retained")
+                }
+            } else {
+                // No write was ever accepted, so nothing can land later.
+                clearMarkers()
+            }
             return declined("switch-readback-failed",
-                            detail: "from=\(originUID) candidates=\(candidates.count)")
+                            detail: "from=\(originUID) candidates=\(candidates.count) "
+                                  + "writeAccepted=\(anyWriteAccepted)")
         } catch {
             return declined("error", detail: "error=\(error)")
         }
@@ -203,6 +239,7 @@ public final class DefaultInputGuard {
     /// No-op when no marker is present (engage never ran or already restored).
     public func restore(trigger: String) async {
         guard let savedUID = defaults.string(forKey: Self.strandedInputMarkerKey) else { return }
+        if relinquishIfUserChangedInput(trigger: trigger) { return }
         let ok = await applyRestore(toUID: savedUID)
         // D3 (clean-stop restore landed).
         log("[EXP-037.restore] to=\(savedUID) trigger=\(trigger) ok=\(ok)")
@@ -211,7 +248,7 @@ public final class DefaultInputGuard {
         // the breadcrumb so launch recovery retries — clearing it here would
         // convert a transient failure into a permanent strand.
         if ok {
-            defaults.removeObject(forKey: Self.strandedInputMarkerKey)
+            clearMarkers()
         }
     }
 
@@ -224,17 +261,60 @@ public final class DefaultInputGuard {
     public func recoverIfStranded(captureActive: Bool) async {
         guard !captureActive else { return }
         guard let savedUID = defaults.string(forKey: Self.strandedInputMarkerKey) else { return }
+        if relinquishIfUserChangedInput(trigger: "launch-recovery") { return }
         let ok = await applyRestore(toUID: savedUID)
         // D4 (crash recovery landed). Clear the marker only on success so a
         // transient HAL failure is retried on the next launch rather than
         // erased (consistent with `restore`).
         log("[EXP-037.recover] restoredTo=\(savedUID) ok=\(ok) markerCleared=\(ok)")
         if ok {
-            defaults.removeObject(forKey: Self.strandedInputMarkerKey)
+            clearMarkers()
         }
     }
 
     // MARK: Helpers
+
+    /// True when the guard no longer owns the default input, in which case the
+    /// caller must not restore.
+    ///
+    /// The user may pick a different input while capture is running — reaching
+    /// for a USB mic to take a call is the obvious case. The origin marker
+    /// alone cannot see that: it only says what the input *was*. Comparing
+    /// against the replacement UID we recorded at engage time distinguishes
+    /// "still the device I installed" from "the user has moved on," and in the
+    /// latter case the right move is to drop the markers and leave their choice
+    /// alone. Restoring would overwrite a deliberate selection with a device
+    /// they had already abandoned.
+    ///
+    /// Absent a replacement marker — a crash recovery from a build that predates
+    /// it — ownership cannot be established, so this returns false and the
+    /// restore proceeds as before. That is the safer default: the stranding this
+    /// guards against is worse than a redundant restore.
+    private func relinquishIfUserChangedInput(trigger: String) -> Bool {
+        guard let replacementUID = defaults.string(forKey: Self.replacementInputMarkerKey) else {
+            return false
+        }
+        guard let currentID = try? control.defaultInputDeviceID(),
+              currentID != AudioObjectID(kAudioObjectUnknown),
+              let currentUID = try? control.uid(of: currentID) else {
+            return false
+        }
+        guard currentUID != replacementUID else { return false }
+        log("[EXP-037.restore] relinquished trigger=\(trigger) "
+            + "current=\(currentUID) expected=\(replacementUID) "
+            + "reason=user-changed-input")
+        clearMarkers()
+        return true
+    }
+
+    /// Drop both markers. They are always retired together: a replacement
+    /// marker outliving its origin would claim ownership of an input this guard
+    /// is no longer tracking.
+    private func clearMarkers() {
+        defaults.removeObject(forKey: Self.strandedInputMarkerKey)
+        defaults.removeObject(forKey: Self.replacementInputMarkerKey)
+    }
+
 
     /// Readback poll budget: 5 attempts with a 20 ms pause *between* them, so
     /// 4 sleeps — a worst case of 80 ms, not 100.
@@ -322,7 +402,11 @@ public final class DefaultInputGuard {
         var builtIn: [AudioDeviceID] = []
         var others: [AudioDeviceID] = []
         for id in try control.inputDeviceIDs() where id != excludedID {
-            let transport = try control.transportType(of: id)
+            // Per-device, not throwing: hot-plug churn or one malformed virtual
+            // device rejecting its transport read must not abort the whole
+            // search. Aborting would skip a perfectly good built-in mic and, on
+            // the restore path, leave the user stranded on the replacement.
+            guard let transport = try? control.transportType(of: id) else { continue }
             if AudioDeviceTransport.isBluetooth(transport) { continue }
             // A device that cannot be read is a device we cannot vouch for.
             guard (try? control.canBeDefaultInputDevice(id)) == true else { continue }

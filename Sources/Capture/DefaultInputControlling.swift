@@ -55,7 +55,8 @@ public enum AudioDeviceIdentity {
     /// input-only, one output-only — with distinct `AudioDeviceID`s and
     /// distinct UIDs. The UIDs are the same Bluetooth MAC address with a
     /// `:input` / `:output` suffix. Measured on macOS 27 with a Bose
-    /// QuietComfort (`docs/investigations/probes/hal_device_identity.swift`):
+    /// QuietComfort, EXP-037-R condition Y
+    /// (`docs/investigations/probes/exp037_race_signal.swift`):
     ///
     ///     id=108  in=1 out=0  uid=BC-87-FA-23-5B-E0:input
     ///     id=102  in=0 out=2  uid=BC-87-FA-23-5B-E0:output
