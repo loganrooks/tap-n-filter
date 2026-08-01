@@ -314,3 +314,50 @@ occurrence arrives with evidence rather than a bare diff.
 **Revisit trigger**: a second occurrence in CI; any user report of an EQ that
 appears to do nothing or to sit at its lowest cutoff; or a macOS release that
 changes `AVAudioUnitEQ` instantiation behaviour.
+---
+
+---
+
+## U-016: The stranded-input marker may not survive the crash it exists for
+
+**Status**: Open — deferred to the HFP wiring PR, where the risk first becomes
+reachable.
+**Triggered by**: CodeRabbit review on PR #20 (`Sources/Capture/DefaultInputGuard.swift`).
+
+**Question**: `DefaultInputGuard` persists the pre-switch default-input UID with
+`UserDefaults.set` immediately before switching the system default input, so a
+crash mid-capture can be recovered on the next launch (EXP-037 diagnostic D4).
+`UserDefaults.set` updates the in-process store synchronously and forwards the
+change to `cfprefsd` asynchronously. A crash inside that window — after the
+device switch has landed but before the flush — leaves no marker, and launch
+recovery has nothing to restore from. The user stays on the replacement input
+with no path back except System Settings.
+
+That is precisely the stranding ADR-019 names as a ship-blocker, reached by the
+exact failure mode the marker was introduced to cover. `synchronize()` is not the
+answer: it is deprecated and Apple documents it as unnecessary rather than as a
+durability guarantee.
+
+**Current best guess**: the window is short — `cfprefsd` receives the write
+promptly under a normal run loop — so the joint probability of a crash landing
+inside it is low. Low is not zero, and the consequence is the blocker rather than
+a degraded experience, so this should not rest on the window being small.
+
+**Why deferred rather than fixed in PR #20**: the guard has no call sites. It is
+Layer B-core only; nothing calls `engageIfNeeded`, so no switch is ever performed
+and there is no marker to lose. The risk becomes live exactly when the wiring PR
+connects the guard to `powerOn`/`powerOff`, which is also where crash recovery
+first becomes testable. Changing the persistence mechanism now would alter the
+storage named in the EXP-037 pre-registration while the experiment is mid-flight,
+without the integration that would let the change be verified end to end.
+
+**Resolution path**: write the marker to an atomic file
+(`Data.write(to:options:.atomic)`) in Application Support before the switch, and
+treat that file as the record of truth, with the `UserDefaults` key kept in step
+so the pre-registered key name and the D4 diagnostic stay valid. The write must
+complete before `setDefaultInputDeviceID`, mirroring the current ordering. A
+recovery test should assert that a marker written but never flushed through
+`UserDefaults` is still found on the next launch.
+
+**Revisit trigger**: the HFP wiring PR; or any report of a user stranded on the
+wrong input after a crash.
