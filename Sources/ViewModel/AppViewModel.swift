@@ -333,7 +333,15 @@ public final class AppViewModel: ObservableObject {
 
     private static let persistenceDebounceInterval: TimeInterval = 0.200
 
-    private var engineIsRunning: Bool = false
+    /// Whether the render engine is believed to be running.
+    ///
+    /// Published because `captureState` alone does not tell the UI whether
+    /// audio is actually flowing. The device-configuration-change handler can
+    /// leave `captureState == .running` while the engine is stopped and a
+    /// restart has failed — the user hears silence with a "running" capture.
+    /// The header's status pill reads this to avoid reporting a healthy
+    /// green state over a dead pipeline.
+    @Published public private(set) var engineIsRunning: Bool = false
 
     // MARK: Init
 

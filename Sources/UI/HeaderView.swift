@@ -70,18 +70,33 @@ public struct HeaderView: View {
         .accessibilityValue(pillLabel)
     }
 
-    /// True only for the case the error override exists to catch: a rollback
-    /// that published `.idle` while leaving `lastError` set, which would
-    /// otherwise read "Off" and hide the failure.
+    /// True when an error is outstanding *and* no audio is reaching the user,
+    /// so the pill must report the failure rather than a healthy state.
     ///
-    /// Scoping this to `.idle` matters. Letting any non-nil `lastError` win
-    /// meant a stale error from an earlier attempt pinned the pill to red
-    /// "Failed" while capture was running perfectly well — the live state is
-    /// the more truthful signal whenever there is one.
+    /// Two distinct paths produce that combination, and both must be caught:
+    ///
+    /// - **`.idle` with an error.** A failed start rolls back and publishes
+    ///   `.idle`, so the pill would read "Off" and hide the failure.
+    /// - **`.running` with a stopped engine.** The device-configuration-change
+    ///   handler leaves `captureState == .running` when an engine restart
+    ///   throws; `AppViewModel` sets `engineIsRunning = false` and publishes
+    ///   the error. Audio is silent while capture claims to be running.
+    ///
+    /// Letting *any* non-nil `lastError` win was the original bug: a stale
+    /// error from an earlier attempt pinned the pill red while capture ran
+    /// fine. Narrowing it to `.idle` alone was the opposite bug, reporting a
+    /// green "Filtering …" over a dead pipeline. The condition is neither
+    /// state alone — it is "there is an error and audio is not flowing".
     private var isSilentlyFailed: Bool {
         guard viewModel.lastError != nil else { return false }
-        if case .idle = viewModel.captureState { return true }
-        return false
+        switch viewModel.captureState {
+        case .idle:
+            return true
+        case .running:
+            return !viewModel.engineIsRunning
+        case .starting, .stopping, .failed:
+            return false
+        }
     }
 
     private var pillColor: Color {

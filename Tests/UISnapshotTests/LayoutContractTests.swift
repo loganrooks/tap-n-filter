@@ -104,13 +104,27 @@ final class LayoutContractTests: XCTestCase {
     /// cap rather than the floor.
     func test_settingsDrawerOpen_liftsHeightCap() async throws {
         let model = try await makeModel()
-        model.addEffect(of: "tnf.eq")
-        model.addEffect(of: "tnf.gain")
-        model.addEffect(of: "tnf.reverb")
+
+        // Enough effects that the chain editor's ScrollView sits at its own
+        // 440 pt maximum, so the closed panel is pressed against the 700 pt
+        // cap. Without this the test proves nothing: with only a few rows the
+        // panel is far below 700, and "open is taller than closed, and under
+        // 900" holds just as well under the old debug-panel-only cap. The
+        // discriminating assertion is that the open panel exceeds 700 —
+        // impossible unless the settings drawer actually lifts the cap.
+        for _ in 0 ..< 12 {
+            model.addEffect(of: "tnf.eq")
+        }
 
         let closed = SnapshotHelper.intrinsicSize(
             of: ControlPanelView().environmentObject(model),
             width: 380
+        )
+        XCTAssertLessThanOrEqual(
+            closed.height,
+            700,
+            "Closed panel is \(closed.height) pt, above its own 700 pt cap — the test's " +
+            "premise is broken, not just its conclusion."
         )
 
         model.toggleSettings()
@@ -123,16 +137,17 @@ final class LayoutContractTests: XCTestCase {
 
         XCTAssertGreaterThan(
             open.height,
-            closed.height,
-            "Opening the settings drawer did not grow the panel (closed \(closed.height) pt, " +
-            "open \(open.height) pt). The settings section is being absorbed by the height " +
-            "cap instead of extending the window."
+            700,
+            "Panel is \(open.height) pt with the settings drawer open and a full chain " +
+            "(closed: \(closed.height) pt). It has not crossed the 700 pt closed-panel cap, " +
+            "so the settings section is being absorbed by the cap rather than extending the " +
+            "window — the defect this test guards."
         )
         XCTAssertLessThanOrEqual(
             open.height,
             900,
             "Panel height \(open.height) pt with the settings drawer open exceeds the 900 pt " +
-            "drawer cap (docs/specs/ui.md)."
+            "drawer cap."
         )
     }
 
