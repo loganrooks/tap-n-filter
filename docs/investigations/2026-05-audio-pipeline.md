@@ -4366,9 +4366,12 @@ the default input to the BT headset where the scenario requires it):
   probe runs and that the per-process list is populated. Result recorded below.
 - **Y (A2DP playback, no call)**: BT headset connected and default output, music
   playing to it, BT headset also the default input, no app using the mic.
-- **Z (active call on the BT mic)**: BT headset connected, an app (Voice Memos,
-  Photo Booth, FaceTime, or `say` into a recording) actively capturing from the
-  BT microphone, so the link is in genuine HFP voice use.
+- **Z (active call on the BT mic)**: BT headset connected, an app actively
+  *capturing* from the BT microphone, so the link is in genuine HFP voice use.
+  Voice Memos, Photo Booth, or a call app (FaceTime, Zoom) all qualify. `say`
+  does **not** — it synthesises output and never opens an input stream, so
+  recording it would leave the microphone path untouched and the condition
+  untested.
 
 **Predictions** (locked before running Y and Z):
 - **SIG_A** is TRUE in both Y and Z (the false positive Codex #3 predicts). If
@@ -4414,7 +4417,7 @@ output, with the system sound server holding the output
 (`pid=53912 systemsoundserverd runningInput=false runningOutput=true`), so the
 Bluetooth link was genuinely carrying output at read time.
 
-```
+```text
 DEFAULT INPUT : QuietComfort Headphones [BC-87-FA-23-5B-E0:input]  in=1ch rate=16000
 DEFAULT OUTPUT: QuietComfort Headphones [BC-87-FA-23-5B-E0:output] out=2ch rate=44100
 

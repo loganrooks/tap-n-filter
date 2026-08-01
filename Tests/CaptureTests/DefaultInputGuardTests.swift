@@ -20,7 +20,7 @@ final class DefaultInputGuardTests: XCTestCase {
 
     // MARK: Engage
 
-    func test_engage_switchesBluetoothInputToBuiltIn_andMarksStranded() throws {
+    func test_engage_switchesBluetoothInputToBuiltIn_andMarksStranded() async throws {
         let control = FakeDefaultInputControl(
             devices: [
                 btID: .init(uid: "bt-uid", transport: kAudioDeviceTransportTypeBluetooth, running: false, isInput: true),
@@ -33,7 +33,7 @@ final class DefaultInputGuardTests: XCTestCase {
         var logs: [String] = []
         let guardian = DefaultInputGuard(control: control, defaults: defaults, log: { logs.append($0) })
 
-        let outcome = guardian.engageIfNeeded(settingEnabled: true)
+        let outcome = await guardian.engageIfNeeded(settingEnabled: true)
 
         XCTAssertTrue(outcome.engaged)
         XCTAssertEqual(outcome.fromUID, "bt-uid")
@@ -44,7 +44,7 @@ final class DefaultInputGuardTests: XCTestCase {
         XCTAssertTrue(logs.contains { $0.contains("[EXP-037.switch]") && $0.contains("engaged=true") })
     }
 
-    func test_engage_prefersBuiltInOverOtherNonBluetooth() throws {
+    func test_engage_prefersBuiltInOverOtherNonBluetooth() async throws {
         let control = FakeDefaultInputControl(
             devices: [
                 btID: .init(uid: "bt-uid", transport: kAudioDeviceTransportTypeBluetooth, running: false, isInput: true),
@@ -56,13 +56,13 @@ final class DefaultInputGuardTests: XCTestCase {
         )
         let guardian = DefaultInputGuard(control: control, defaults: makeDefaults(), log: { _ in })
 
-        let outcome = guardian.engageIfNeeded(settingEnabled: true)
+        let outcome = await guardian.engageIfNeeded(settingEnabled: true)
 
         XCTAssertTrue(outcome.engaged)
         XCTAssertEqual(control.defaultInput, builtInID)
     }
 
-    func test_engage_usesNonBluetoothWhenNoBuiltIn() throws {
+    func test_engage_usesNonBluetoothWhenNoBuiltIn() async throws {
         let control = FakeDefaultInputControl(
             devices: [
                 btID: .init(uid: "bt-uid", transport: kAudioDeviceTransportTypeBluetooth, running: false, isInput: true),
@@ -73,13 +73,13 @@ final class DefaultInputGuardTests: XCTestCase {
         )
         let guardian = DefaultInputGuard(control: control, defaults: makeDefaults(), log: { _ in })
 
-        let outcome = guardian.engageIfNeeded(settingEnabled: true)
+        let outcome = await guardian.engageIfNeeded(settingEnabled: true)
 
         XCTAssertTrue(outcome.engaged)
         XCTAssertEqual(control.defaultInput, usbID)
     }
 
-    func test_doesNotEngage_whenSettingOff() {
+    func test_doesNotEngage_whenSettingOff() async {
         let control = FakeDefaultInputControl(
             devices: [btID: .init(uid: "bt-uid", transport: kAudioDeviceTransportTypeBluetooth, running: false, isInput: true)],
             defaultInput: btID,
@@ -88,7 +88,7 @@ final class DefaultInputGuardTests: XCTestCase {
         let defaults = makeDefaults()
         let guardian = DefaultInputGuard(control: control, defaults: defaults, log: { _ in })
 
-        let outcome = guardian.engageIfNeeded(settingEnabled: false)
+        let outcome = await guardian.engageIfNeeded(settingEnabled: false)
 
         XCTAssertFalse(outcome.engaged)
         XCTAssertEqual(outcome.reason, "setting-off")
@@ -96,7 +96,7 @@ final class DefaultInputGuardTests: XCTestCase {
         XCTAssertNil(defaults.string(forKey: DefaultInputGuard.strandedInputMarkerKey))
     }
 
-    func test_doesNotEngage_whenOutputNotBluetooth() {
+    func test_doesNotEngage_whenOutputNotBluetooth() async {
         let control = FakeDefaultInputControl(
             devices: [
                 btID: .init(uid: "bt-uid", transport: kAudioDeviceTransportTypeBluetooth, running: false, isInput: true),
@@ -107,14 +107,14 @@ final class DefaultInputGuardTests: XCTestCase {
         )
         let guardian = DefaultInputGuard(control: control, defaults: makeDefaults(), log: { _ in })
 
-        let outcome = guardian.engageIfNeeded(settingEnabled: true)
+        let outcome = await guardian.engageIfNeeded(settingEnabled: true)
 
         XCTAssertFalse(outcome.engaged)
         XCTAssertEqual(outcome.reason, "output-not-bluetooth")
         XCTAssertEqual(control.defaultInput, btID)
     }
 
-    func test_doesNotEngage_whenDefaultInputNotBluetooth() {
+    func test_doesNotEngage_whenDefaultInputNotBluetooth() async {
         let control = FakeDefaultInputControl(
             devices: [
                 btID: .init(uid: "bt-uid", transport: kAudioDeviceTransportTypeBluetooth, running: false, isInput: true),
@@ -125,13 +125,13 @@ final class DefaultInputGuardTests: XCTestCase {
         )
         let guardian = DefaultInputGuard(control: control, defaults: makeDefaults(), log: { _ in })
 
-        let outcome = guardian.engageIfNeeded(settingEnabled: true)
+        let outcome = await guardian.engageIfNeeded(settingEnabled: true)
 
         XCTAssertFalse(outcome.engaged)
         XCTAssertEqual(outcome.reason, "input-not-bluetooth")
     }
 
-    func test_declines_whenBluetoothInputRunningSomewhere() {
+    func test_declines_whenBluetoothInputRunningSomewhere() async {
         // D5: a live call on the BT mic must not be hijacked.
         let control = FakeDefaultInputControl(
             devices: [
@@ -145,7 +145,7 @@ final class DefaultInputGuardTests: XCTestCase {
         var logs: [String] = []
         let guardian = DefaultInputGuard(control: control, defaults: defaults, log: { logs.append($0) })
 
-        let outcome = guardian.engageIfNeeded(settingEnabled: true)
+        let outcome = await guardian.engageIfNeeded(settingEnabled: true)
 
         XCTAssertFalse(outcome.engaged)
         XCTAssertEqual(outcome.reason, "bt-input-in-use")
@@ -154,7 +154,7 @@ final class DefaultInputGuardTests: XCTestCase {
         XCTAssertTrue(logs.contains { $0.contains("engaged=false") && $0.contains("reason=bt-input-in-use") })
     }
 
-    func test_doesNotEngage_whenNoReplacementInputExists() {
+    func test_doesNotEngage_whenNoReplacementInputExists() async {
         let control = FakeDefaultInputControl(
             devices: [btID: .init(uid: "bt-uid", transport: kAudioDeviceTransportTypeBluetooth, running: false, isInput: true)],
             defaultInput: btID,
@@ -163,7 +163,7 @@ final class DefaultInputGuardTests: XCTestCase {
         let defaults = makeDefaults()
         let guardian = DefaultInputGuard(control: control, defaults: defaults, log: { _ in })
 
-        let outcome = guardian.engageIfNeeded(settingEnabled: true)
+        let outcome = await guardian.engageIfNeeded(settingEnabled: true)
 
         XCTAssertFalse(outcome.engaged)
         XCTAssertEqual(outcome.reason, "no-replacement-input")
@@ -173,7 +173,7 @@ final class DefaultInputGuardTests: XCTestCase {
 
     // MARK: Restore
 
-    func test_restore_setsInputBackAndClearsMarker() throws {
+    func test_restore_setsInputBackAndClearsMarker() async throws {
         let control = FakeDefaultInputControl(
             devices: [
                 btID: .init(uid: "bt-uid", transport: kAudioDeviceTransportTypeBluetooth, running: false, isInput: true),
@@ -186,17 +186,17 @@ final class DefaultInputGuardTests: XCTestCase {
         var logs: [String] = []
         let guardian = DefaultInputGuard(control: control, defaults: defaults, log: { logs.append($0) })
 
-        XCTAssertTrue(guardian.engageIfNeeded(settingEnabled: true).engaged)
+        XCTAssertTrue(await guardian.engageIfNeeded(settingEnabled: true).engaged)
         XCTAssertEqual(control.defaultInput, builtInID)
 
-        guardian.restore(trigger: "clean-stop")
+        await guardian.restore(trigger: "clean-stop")
 
         XCTAssertEqual(control.defaultInput, btID, "the original BT input should be restored")
         XCTAssertNil(defaults.string(forKey: DefaultInputGuard.strandedInputMarkerKey), "marker cleared after restore")
         XCTAssertTrue(logs.contains { $0.contains("[EXP-037.restore]") && $0.contains("trigger=clean-stop") && $0.contains("ok=true") })
     }
 
-    func test_restore_isNoOpWithoutMarker() {
+    func test_restore_isNoOpWithoutMarker() async {
         let control = FakeDefaultInputControl(
             devices: [builtInID: .init(uid: "builtin-uid", transport: kAudioDeviceTransportTypeBuiltIn, running: false, isInput: true)],
             defaultInput: builtInID,
@@ -204,12 +204,12 @@ final class DefaultInputGuardTests: XCTestCase {
         )
         let guardian = DefaultInputGuard(control: control, defaults: makeDefaults(), log: { _ in })
 
-        guardian.restore(trigger: "clean-stop")
+        await guardian.restore(trigger: "clean-stop")
 
         XCTAssertTrue(control.setInputCalls.isEmpty, "restore with no marker must not touch the input")
     }
 
-    func test_restore_keepsCurrentNonBluetoothInputWhenSavedDeviceMissing() {
+    func test_restore_keepsCurrentNonBluetoothInputWhenSavedDeviceMissing() async {
         // A3: saved UID no longer resolves to a present device. The user is
         // already on a USB mic, so the correct move is to leave it alone —
         // forcing the built-in over a device the user selected is the same
@@ -230,7 +230,7 @@ final class DefaultInputGuardTests: XCTestCase {
         var logs: [String] = []
         let guardian = DefaultInputGuard(control: control, defaults: defaults, log: { logs.append($0) })
 
-        guardian.restore(trigger: "clean-stop")
+        await guardian.restore(trigger: "clean-stop")
 
         XCTAssertEqual(control.defaultInput, usbID,
                        "a user-chosen USB mic must survive a restore whose saved device is gone")
@@ -241,7 +241,7 @@ final class DefaultInputGuardTests: XCTestCase {
 
     // MARK: Recover
 
-    func test_recover_restoresWhenStrandedAndCaptureInactive() {
+    func test_recover_restoresWhenStrandedAndCaptureInactive() async {
         // D4: crash left a marker; on next launch with capture inactive, restore.
         let control = FakeDefaultInputControl(
             devices: [
@@ -256,14 +256,14 @@ final class DefaultInputGuardTests: XCTestCase {
         var logs: [String] = []
         let guardian = DefaultInputGuard(control: control, defaults: defaults, log: { logs.append($0) })
 
-        guardian.recoverIfStranded(captureActive: false)
+        await guardian.recoverIfStranded(captureActive: false)
 
         XCTAssertEqual(control.defaultInput, btID, "the stranded input should be restored on launch")
         XCTAssertNil(defaults.string(forKey: DefaultInputGuard.strandedInputMarkerKey))
         XCTAssertTrue(logs.contains { $0.contains("[EXP-037.recover]") && $0.contains("markerCleared=true") })
     }
 
-    func test_recover_isNoOpWhenCaptureActive() {
+    func test_recover_isNoOpWhenCaptureActive() async {
         let control = FakeDefaultInputControl(
             devices: [
                 btID: .init(uid: "bt-uid", transport: kAudioDeviceTransportTypeBluetooth, running: false, isInput: true),
@@ -276,7 +276,7 @@ final class DefaultInputGuardTests: XCTestCase {
         defaults.set("bt-uid", forKey: DefaultInputGuard.strandedInputMarkerKey)
         let guardian = DefaultInputGuard(control: control, defaults: defaults, log: { _ in })
 
-        guardian.recoverIfStranded(captureActive: true)
+        await guardian.recoverIfStranded(captureActive: true)
 
         XCTAssertTrue(control.setInputCalls.isEmpty, "an active session owns the switch; recovery must not interfere")
         XCTAssertEqual(defaults.string(forKey: DefaultInputGuard.strandedInputMarkerKey), "bt-uid", "marker preserved while capture is active")
@@ -287,7 +287,7 @@ final class DefaultInputGuardTests: XCTestCase {
     /// Re-engaging while a switch is already owed must NOT overwrite the stored
     /// original input — otherwise restore strands the user on the wrong device.
     /// (Review blocker.)
-    func test_engage_doesNotOverwriteMarker_onSecondEngage() {
+    func test_engage_doesNotOverwriteMarker_onSecondEngage() async {
         let bt2ID: AudioDeviceID = 40
         let control = FakeDefaultInputControl(
             devices: [
@@ -301,13 +301,13 @@ final class DefaultInputGuardTests: XCTestCase {
         let defaults = makeDefaults()
         let guardian = DefaultInputGuard(control: control, defaults: defaults, log: { _ in })
 
-        XCTAssertTrue(guardian.engageIfNeeded(settingEnabled: true).engaged)
+        XCTAssertTrue(await guardian.engageIfNeeded(settingEnabled: true).engaged)
         XCTAssertEqual(defaults.string(forKey: DefaultInputGuard.strandedInputMarkerKey), "bt-uid")
 
         // Simulate the default input becoming Bluetooth again mid-session
         // (a second headset, a manual re-selection) and a second engage.
         control.defaultInput = bt2ID
-        let second = guardian.engageIfNeeded(settingEnabled: true)
+        let second = await guardian.engageIfNeeded(settingEnabled: true)
 
         XCTAssertFalse(second.engaged)
         XCTAssertEqual(second.reason, "already-engaged")
@@ -319,7 +319,7 @@ final class DefaultInputGuardTests: XCTestCase {
     /// When restore cannot land (saved device gone AND no fallback input), the
     /// marker must be KEPT so the next launch retries — clearing it would make
     /// the strand permanent. (Review major.)
-    func test_restore_keepsMarkerWhenRestoreFails() {
+    func test_restore_keepsMarkerWhenRestoreFails() async {
         let control = FakeDefaultInputControl(
             devices: [btID: .init(uid: "bt-uid", transport: kAudioDeviceTransportTypeBluetooth, running: false, isInput: true)],
             defaultInput: btID,
@@ -330,7 +330,7 @@ final class DefaultInputGuardTests: XCTestCase {
         var logs: [String] = []
         let guardian = DefaultInputGuard(control: control, defaults: defaults, log: { logs.append($0) })
 
-        guardian.restore(trigger: "clean-stop")
+        await guardian.restore(trigger: "clean-stop")
 
         XCTAssertEqual(defaults.string(forKey: DefaultInputGuard.strandedInputMarkerKey), "ghost-uid",
                        "marker must be retained when restore fails, so launch recovery can retry")
@@ -341,7 +341,7 @@ final class DefaultInputGuardTests: XCTestCase {
     /// must be reported as a failed engage and must NOT leave a marker — we
     /// never claim a switch that did not land. (Review minor — diagnostic
     /// integrity.)
-    func test_engage_readbackFailure_dropsMarkerAndReportsFailure() {
+    func test_engage_readbackFailure_dropsMarkerAndReportsFailure() async {
         let control = FakeDefaultInputControl(
             devices: [
                 btID: .init(uid: "bt-uid", transport: kAudioDeviceTransportTypeBluetooth, running: false, isInput: true),
@@ -354,7 +354,7 @@ final class DefaultInputGuardTests: XCTestCase {
         let defaults = makeDefaults()
         let guardian = DefaultInputGuard(control: control, defaults: defaults, log: { _ in })
 
-        let outcome = guardian.engageIfNeeded(settingEnabled: true)
+        let outcome = await guardian.engageIfNeeded(settingEnabled: true)
 
         XCTAssertFalse(outcome.engaged)
         XCTAssertEqual(outcome.reason, "switch-readback-failed")
@@ -385,7 +385,7 @@ final class DefaultInputGuardReviewRoundTwoTests: XCTestCase {
     /// macOS publishes a headset as two device objects with different IDs and
     /// `:input` / `:output` UID suffixes. The guard must still recognise them
     /// as the same headset — comparing IDs would never match.
-    func test_engage_matchesSplitInputOutputObjectsOfOneHeadset() throws {
+    func test_engage_matchesSplitInputOutputObjectsOfOneHeadset() async throws {
         let control = FakeDefaultInputControl(
             devices: [
                 btInputID: .init(uid: "BC-87-FA-23-5B-E0:input",
@@ -403,7 +403,7 @@ final class DefaultInputGuardReviewRoundTwoTests: XCTestCase {
         )
         let guardian = DefaultInputGuard(control: control, defaults: makeDefaults(), log: { _ in })
 
-        let outcome = guardian.engageIfNeeded(settingEnabled: true)
+        let outcome = await guardian.engageIfNeeded(settingEnabled: true)
 
         XCTAssertTrue(outcome.engaged,
                       "the split input/output objects of one headset must count as the same device")
@@ -413,7 +413,7 @@ final class DefaultInputGuardReviewRoundTwoTests: XCTestCase {
     /// Bluetooth output A with an unrelated Bluetooth microphone B as the
     /// default input: HFP negotiates on B, not A, so switching B away is a
     /// system-wide side effect that buys nothing.
-    func test_engage_declinesWhenBluetoothInputIsADifferentDeviceThanTheOutput() throws {
+    func test_engage_declinesWhenBluetoothInputIsADifferentDeviceThanTheOutput() async throws {
         let control = FakeDefaultInputControl(
             devices: [
                 otherBTInputID: .init(uid: "AA-11-22-33-44-55:input",
@@ -432,7 +432,7 @@ final class DefaultInputGuardReviewRoundTwoTests: XCTestCase {
         let defaults = makeDefaults()
         let guardian = DefaultInputGuard(control: control, defaults: defaults, log: { _ in })
 
-        let outcome = guardian.engageIfNeeded(settingEnabled: true)
+        let outcome = await guardian.engageIfNeeded(settingEnabled: true)
 
         XCTAssertFalse(outcome.engaged)
         XCTAssertEqual(outcome.reason, "input-not-the-bt-output")
@@ -444,7 +444,7 @@ final class DefaultInputGuardReviewRoundTwoTests: XCTestCase {
 
     /// A device can advertise input channels and still refuse to become the
     /// default input. It must not be offered.
-    func test_engage_skipsCandidateThatCannotBeDefaultInput() throws {
+    func test_engage_skipsCandidateThatCannotBeDefaultInput() async throws {
         let control = FakeDefaultInputControl(
             devices: [
                 btInputID: .init(uid: "bt-uid", transport: kAudioDeviceTransportTypeBluetooth,
@@ -459,7 +459,7 @@ final class DefaultInputGuardReviewRoundTwoTests: XCTestCase {
         )
         let guardian = DefaultInputGuard(control: control, defaults: makeDefaults(), log: { _ in })
 
-        let outcome = guardian.engageIfNeeded(settingEnabled: true)
+        let outcome = await guardian.engageIfNeeded(settingEnabled: true)
 
         XCTAssertTrue(outcome.engaged)
         XCTAssertEqual(control.defaultInput, usbID)
@@ -469,7 +469,7 @@ final class DefaultInputGuardReviewRoundTwoTests: XCTestCase {
 
     /// If the HAL rejects the first candidate at write time, the next one is
     /// tried rather than the whole mitigation aborting.
-    func test_engage_fallsThroughToNextCandidateWhenSetFails() throws {
+    func test_engage_fallsThroughToNextCandidateWhenSetFails() async throws {
         let control = FakeDefaultInputControl(
             devices: [
                 btInputID: .init(uid: "bt-uid", transport: kAudioDeviceTransportTypeBluetooth,
@@ -486,7 +486,7 @@ final class DefaultInputGuardReviewRoundTwoTests: XCTestCase {
         let defaults = makeDefaults()
         let guardian = DefaultInputGuard(control: control, defaults: defaults, log: { _ in })
 
-        let outcome = guardian.engageIfNeeded(settingEnabled: true)
+        let outcome = await guardian.engageIfNeeded(settingEnabled: true)
 
         XCTAssertTrue(outcome.engaged)
         XCTAssertEqual(control.defaultInput, usbID)
@@ -496,7 +496,7 @@ final class DefaultInputGuardReviewRoundTwoTests: XCTestCase {
 
     /// When no candidate can be applied, nothing changed — so the marker set
     /// ahead of the attempt must not survive to strand a later launch.
-    func test_engage_dropsMarkerWhenEveryCandidateFails() throws {
+    func test_engage_dropsMarkerWhenEveryCandidateFails() async throws {
         let control = FakeDefaultInputControl(
             devices: [
                 btInputID: .init(uid: "bt-uid", transport: kAudioDeviceTransportTypeBluetooth,
@@ -511,7 +511,7 @@ final class DefaultInputGuardReviewRoundTwoTests: XCTestCase {
         let defaults = makeDefaults()
         let guardian = DefaultInputGuard(control: control, defaults: defaults, log: { _ in })
 
-        let outcome = guardian.engageIfNeeded(settingEnabled: true)
+        let outcome = await guardian.engageIfNeeded(settingEnabled: true)
 
         XCTAssertFalse(outcome.engaged)
         XCTAssertEqual(outcome.reason, "switch-readback-failed")
@@ -523,7 +523,7 @@ final class DefaultInputGuardReviewRoundTwoTests: XCTestCase {
 
     /// The saved headset is gone and the current default is still a Bluetooth
     /// device, so the built-in fallback does apply.
-    func test_restore_appliesBuiltInFallbackWhenCurrentDefaultIsStillBluetooth() throws {
+    func test_restore_appliesBuiltInFallbackWhenCurrentDefaultIsStillBluetooth() async throws {
         let control = FakeDefaultInputControl(
             devices: [
                 btInputID: .init(uid: "other-bt-uid", transport: kAudioDeviceTransportTypeBluetooth,
@@ -538,7 +538,7 @@ final class DefaultInputGuardReviewRoundTwoTests: XCTestCase {
         defaults.set("gone-bt-uid", forKey: DefaultInputGuard.strandedInputMarkerKey)
         let guardian = DefaultInputGuard(control: control, defaults: defaults, log: { _ in })
 
-        guardian.restore(trigger: "clean-stop")
+        await guardian.restore(trigger: "clean-stop")
 
         XCTAssertEqual(control.defaultInput, builtInID)
         XCTAssertNil(defaults.string(forKey: DefaultInputGuard.strandedInputMarkerKey))

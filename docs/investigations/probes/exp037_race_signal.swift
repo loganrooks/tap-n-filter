@@ -204,6 +204,15 @@ func measureWriteLatency(allInputs: [DeviceFacts], currentInputID: AudioDeviceID
     print("  set default input -> \(target.name) [\(target.uid)] status=\(writeStatus)")
     guard writeStatus == noErr else { print("  write failed; nothing to restore"); return }
 
+    // From here the system default input is ours and MUST be handed back on
+    // every exit path, not just the one at the bottom of the function. Without
+    // this, an early return or a thrown signal during the ~1s poll would leave
+    // the user on the probe's replacement input with no indication why.
+    //
+    // Abrupt termination (SIGKILL, power loss) can still strand it; there is no
+    // handler for that, and recovery is manual via System Settings > Sound.
+    defer { restoreDefaultInput(to: currentInputID, writeAddr: writeAddr, size: size) }
+
     var landedNs: UInt64?
     for _ in 0..<200 { // up to ~1s at 5ms granularity
         var readAddr = addr(kAudioHardwarePropertyDefaultInputDevice)
@@ -222,10 +231,44 @@ func measureWriteLatency(allInputs: [DeviceFacts], currentInputID: AudioDeviceID
         print("  readback NEVER matched within ~1s (async write or rejected)")
     }
 
-    // Restore.
-    var restoreID = currentInputID
-    let restoreStatus = AudioObjectSetPropertyData(systemObject, &writeAddr, 0, nil, size, &restoreID)
-    print("  restored default input -> [\(currentInputID)] status=\(restoreStatus)")
+}
+
+/// Hand the system default input back, but only if it is still the device this
+/// probe set. The poll window is about a second, and a user who changes their
+/// input during it means it well — clobbering that choice would make the probe
+/// the very kind of silent device-stealer the mitigation it tests is careful
+/// not to be.
+func restoreDefaultInput(
+    to original: AudioDeviceID,
+    writeAddr: AudioObjectPropertyAddress,
+    size: UInt32
+) {
+    var readAddr = addr(kAudioHardwarePropertyDefaultInputDevice)
+    var current = AudioDeviceID(kAudioObjectUnknown)
+    var rsize = size
+    let readStatus = AudioObjectGetPropertyData(
+        systemObject, &readAddr, 0, nil, &rsize, &current
+    )
+    guard readStatus == noErr else {
+        print("  restore SKIPPED: could not read current default input (status=\(readStatus))")
+        print("  default input may still be the probe's replacement — check System Settings > Sound")
+        return
+    }
+    guard current != original else {
+        print("  restore not needed; default input is already [\(original)]")
+        return
+    }
+    var addrCopy = writeAddr
+    var restoreID = original
+    let restoreStatus = AudioObjectSetPropertyData(
+        systemObject, &addrCopy, 0, nil, size, &restoreID
+    )
+    if restoreStatus == noErr {
+        print("  restored default input -> [\(original)]")
+    } else {
+        print("  restore FAILED status=\(restoreStatus); default input is [\(current)]")
+        print("  recover manually via System Settings > Sound > Input")
+    }
 }
 
 // MARK: - Main

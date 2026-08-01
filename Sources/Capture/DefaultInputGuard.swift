@@ -42,6 +42,17 @@ public final class DefaultInputGuard {
         }
     }
 
+    /// Emit the D5-shaped decline marker and return the matching outcome.
+    ///
+    /// Every decline goes through here so none is silent. The on-device
+    /// verification greps `[EXP-037.switch]`, and a decline that logged nothing
+    /// would read identically to a guard that was never called.
+    private func declined(_ reason: String, detail: String? = nil) -> EngageOutcome {
+        let suffix = detail.map { " \($0)" } ?? ""
+        log("[EXP-037.switch] engaged=false reason=\(reason)\(suffix)")
+        return .notEngaged(reason)
+    }
+
     private let control: DefaultInputControlling
     private let defaults: UserDefaults
     private let log: (String) -> Void
@@ -64,15 +75,23 @@ public final class DefaultInputGuard {
     /// Evaluate the ADR-019 engage conditions plus the EXP-037 race check and,
     /// when all hold, switch the default input away from the Bluetooth device.
     /// Call once per capture start. Returns the outcome for the caller to log
-    /// or surface; the diagnostic markers are emitted here regardless.
+    /// or surface.
+    ///
+    /// Every path emits an `[EXP-037.switch]` marker, including each decline.
+    /// The on-device verification greps for these strings, so a silent decline
+    /// would be indistinguishable from a guard that never ran at all.
     ///
     /// Engage requires all of: the setting is on; the default *output* is a
-    /// Bluetooth device; the default *input* is that Bluetooth class of device;
-    /// the Bluetooth input is not already in use by another process; and a
+    /// Bluetooth device; the default *input* is that same physical device; the
+    /// Bluetooth input is not already in use by another process; and a
     /// non-Bluetooth replacement input exists.
+    ///
+    /// `async` because confirming the switch landed means polling the HAL
+    /// readback, and this runs on the main actor at capture start — a blocking
+    /// sleep there would stall the UI.
     @discardableResult
-    public func engageIfNeeded(settingEnabled: Bool) -> EngageOutcome {
-        guard settingEnabled else { return .notEngaged("setting-off") }
+    public func engageIfNeeded(settingEnabled: Bool) async -> EngageOutcome {
+        guard settingEnabled else { return declined("setting-off") }
         // Set-once: a present marker means a switch (from this session or a
         // crashed prior one) is still owed a restore. Never switch again while
         // one is outstanding — overwriting the marker would lose the true
@@ -80,24 +99,24 @@ public final class DefaultInputGuard {
         // Fails safe: a stale marker declines the switch (degraded audio)
         // rather than stranding.
         guard defaults.string(forKey: Self.strandedInputMarkerKey) == nil else {
-            return .notEngaged("already-engaged")
+            return declined("already-engaged")
         }
         do {
             let outputID = try control.defaultOutputDeviceID()
             guard outputID != AudioObjectID(kAudioObjectUnknown) else {
-                return .notEngaged("no-default-output")
+                return declined("no-default-output")
             }
             guard AudioDeviceTransport.isBluetooth(try control.transportType(of: outputID)) else {
-                return .notEngaged("output-not-bluetooth")
+                return declined("output-not-bluetooth")
             }
             let inputID = try control.defaultInputDeviceID()
             guard inputID != AudioObjectID(kAudioObjectUnknown) else {
-                return .notEngaged("no-default-input")
+                return declined("no-default-input")
             }
             guard AudioDeviceTransport.isBluetooth(try control.transportType(of: inputID)) else {
                 // The default input is already non-Bluetooth: HFP will not
                 // trigger, so there is nothing to switch.
-                return .notEngaged("input-not-bluetooth")
+                return declined("input-not-bluetooth")
             }
             let originUID = try control.uid(of: inputID)
             let outputUID = try control.uid(of: outputID)
@@ -115,14 +134,12 @@ public final class DefaultInputGuard {
             // engage. The comparison is on the UID with its scope suffix
             // stripped.
             guard AudioDeviceIdentity.isSamePhysicalDevice(originUID, outputUID) else {
-                log("[EXP-037.switch] from=\(originUID) btOutput=\(outputUID) "
-                    + "engaged=false reason=input-not-the-bt-output")
-                return .notEngaged("input-not-the-bt-output")
+                return declined("input-not-the-bt-output",
+                                detail: "from=\(originUID) btOutput=\(outputUID)")
             }
             let candidates = try replacementCandidates(excluding: inputID)
             guard !candidates.isEmpty else {
-                log("[EXP-037.switch] engaged=false reason=no-replacement-input")
-                return .notEngaged("no-replacement-input")
+                return declined("no-replacement-input")
             }
             // EXP-037 race policy (D5): never hijack a Bluetooth mic in active
             // use (e.g. a live call). Checked immediately before the switch to
@@ -132,8 +149,7 @@ public final class DefaultInputGuard {
             // input — so the wiring keeps engage close to capture start (A1)
             // and this guarantee is best-effort by nature.
             if try control.isRunningSomewhere(inputID) {
-                log("[EXP-037.switch] from=\(originUID) engaged=false reason=bt-input-in-use")
-                return .notEngaged("bt-input-in-use")
+                return declined("bt-input-in-use", detail: "from=\(originUID)")
             }
             // Persist the original UID BEFORE the switch so a crash between the
             // switch and a clean stop can still be recovered on next launch.
@@ -153,7 +169,7 @@ public final class DefaultInputGuard {
                 // that the default input now equals the replacement. A `noErr`
                 // write that did not take is NOT success — we never claim D1
                 // (or leave a recovery breadcrumb) for a no-op switch.
-                guard readBackDefaultInput(equals: replacement) else {
+                guard await readBackDefaultInput(equals: replacement) else {
                     log("[EXP-037.switch] candidate=\(replacement) readback-failed")
                     continue
                 }
@@ -170,12 +186,10 @@ public final class DefaultInputGuard {
             // Every candidate failed. Drop the marker we optimistically set —
             // nothing was changed, so there is nothing owed a restore.
             defaults.removeObject(forKey: Self.strandedInputMarkerKey)
-            log("[EXP-037.switch] from=\(originUID) engaged=false "
-                + "reason=switch-readback-failed candidates=\(candidates.count)")
-            return .notEngaged("switch-readback-failed")
+            return declined("switch-readback-failed",
+                            detail: "from=\(originUID) candidates=\(candidates.count)")
         } catch {
-            log("[EXP-037.switch] engaged=false reason=error error=\(error)")
-            return .notEngaged("error")
+            return declined("error", detail: "error=\(error)")
         }
     }
 
@@ -183,9 +197,9 @@ public final class DefaultInputGuard {
 
     /// Restore the default input saved at engage time. Called on a clean stop.
     /// No-op when no marker is present (engage never ran or already restored).
-    public func restore(trigger: String) {
+    public func restore(trigger: String) async {
         guard let savedUID = defaults.string(forKey: Self.strandedInputMarkerKey) else { return }
-        let ok = applyRestore(toUID: savedUID)
+        let ok = await applyRestore(toUID: savedUID)
         // D3 (clean-stop restore landed).
         log("[EXP-037.restore] to=\(savedUID) trigger=\(trigger) ok=\(ok)")
         // Clear the marker ONLY when the restore actually landed. On failure
@@ -203,10 +217,10 @@ public final class DefaultInputGuard {
     /// active, restore the saved input. Recovers from a crash that skipped
     /// `restore(trigger:)`. No-op while capture is active (a live session owns
     /// the switch and will restore it on its own stop).
-    public func recoverIfStranded(captureActive: Bool) {
+    public func recoverIfStranded(captureActive: Bool) async {
         guard !captureActive else { return }
         guard let savedUID = defaults.string(forKey: Self.strandedInputMarkerKey) else { return }
-        let ok = applyRestore(toUID: savedUID)
+        let ok = await applyRestore(toUID: savedUID)
         // D4 (crash recovery landed). Clear the marker only on success so a
         // transient HAL failure is retried on the next launch rather than
         // erased (consistent with `restore`).
@@ -218,27 +232,34 @@ public final class DefaultInputGuard {
 
     // MARK: Helpers
 
-    /// Number of times the default-input readback is retried before the write
-    /// is treated as not having landed, and the pause between attempts.
+    /// Readback poll budget: 5 attempts with a 20 ms pause *between* them, so
+    /// 4 sleeps — a worst case of 80 ms, not 100.
     ///
     /// HAL property writes are not guaranteed to be visible to the very next
     /// read. A single immediate readback can therefore report a false failure
     /// for a switch that lands a few milliseconds later — which matters here
     /// because the caller must not reach `AudioDeviceStart` before the switch
-    /// is live (EXP-037's A1 timing assumption). The poll costs nothing on the
-    /// common path: the first readback normally succeeds and returns
-    /// immediately. Only a genuinely failed write pays the full 100 ms, once,
-    /// at capture start.
+    /// is live (EXP-037's A1 timing assumption), and because a false failure
+    /// drops the marker and strands the user on a switch that did land.
+    ///
+    /// The poll costs nothing on the common path: the first readback normally
+    /// succeeds and returns immediately. `applyRestore` can pay the budget once
+    /// per fallback candidate, which is why this awaits rather than sleeping —
+    /// the caller is on the main actor.
+    ///
+    /// The numbers are an assumption, not a measurement. The probe's
+    /// `--measure-write` mode times the real write-to-readback latency and is
+    /// what would let them be set from data.
     private static let readbackAttempts = 5
-    private static let readbackRetryDelay: TimeInterval = 0.02
+    private static let readbackRetryDelay: Duration = .milliseconds(20)
 
     /// Poll `kAudioHardwarePropertyDefaultInputDevice` until it reports
     /// `expected`, up to the bounded attempt budget.
-    private func readBackDefaultInput(equals expected: AudioDeviceID) -> Bool {
+    private func readBackDefaultInput(equals expected: AudioDeviceID) async -> Bool {
         for attempt in 0..<Self.readbackAttempts {
             if (try? control.defaultInputDeviceID()) == expected { return true }
             if attempt < Self.readbackAttempts - 1 {
-                Thread.sleep(forTimeInterval: Self.readbackRetryDelay)
+                try? await Task.sleep(for: Self.readbackRetryDelay)
             }
         }
         return false
@@ -249,11 +270,11 @@ public final class DefaultInputGuard {
     /// non-Bluetooth input the user is on now, and only reach for the built-in
     /// mic when the current default is itself unusable. If nothing usable
     /// exists, leave the input untouched and report failure.
-    private func applyRestore(toUID savedUID: String) -> Bool {
+    private func applyRestore(toUID savedUID: String) async -> Bool {
         do {
             if let target = try control.deviceID(forUID: savedUID) {
                 try control.setDefaultInputDeviceID(target)
-                return readBackDefaultInput(equals: target)
+                return await readBackDefaultInput(equals: target)
             }
             // A3: the saved device is gone (headset unpaired mid-session).
             // Preserve the current system default before resorting to the
@@ -270,7 +291,7 @@ public final class DefaultInputGuard {
             }
             for fallback in try replacementCandidates(excluding: nil) {
                 guard (try? control.setDefaultInputDeviceID(fallback)) != nil,
-                      readBackDefaultInput(equals: fallback) else { continue }
+                      await readBackDefaultInput(equals: fallback) else { continue }
                 log("[EXP-037.restore] fallback-applied savedUIDMissing=\(savedUID)")
                 return true
             }
