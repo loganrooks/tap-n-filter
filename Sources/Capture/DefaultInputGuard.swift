@@ -19,9 +19,13 @@ import os
 /// defined in the EXP-037 pre-registration (D1, D3, D4, D5) and must not drift
 /// from it — the on-device verification greps for exactly these strings.
 ///
-/// Not internally synchronized. Call all methods from the main actor: the
-/// capture lifecycle (`powerOn`/`powerOff`) and launch recovery both run there,
-/// so the single `UserDefaults` marker is only ever touched from one thread.
+/// `@MainActor`, not internally synchronized. The capture lifecycle
+/// (`powerOn`/`powerOff`) and launch recovery both run on the main actor, so
+/// the single `UserDefaults` marker is only ever touched from one thread. That
+/// used to be a comment asking callers to cooperate; it is now enforced, since
+/// the marker's whole job is to be correct across a crash and a torn
+/// read-modify-write of it is the failure it cannot survive.
+@MainActor
 public final class DefaultInputGuard {
 
     /// Key under which the pre-switch default-input UID is persisted, so a

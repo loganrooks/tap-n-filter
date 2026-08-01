@@ -7,6 +7,7 @@ import XCTest
 /// against a fake `DefaultInputControlling`, so they run with no hardware and
 /// no live HAL. The on-device verification of D2 (A2DP retained) is owed
 /// separately — these tests cover D1, D3, D4, D5 and the engage conditions.
+@MainActor
 final class DefaultInputGuardTests: XCTestCase {
 
     // Device id constants used across tests.
@@ -367,6 +368,7 @@ final class DefaultInputGuardTests: XCTestCase {
 // MARK: - Fake
 
 /// Coverage for the second adversarial review round (Codex on PR #20).
+@MainActor
 final class DefaultInputGuardReviewRoundTwoTests: XCTestCase {
 
     private let btInputID: AudioDeviceID = 10
