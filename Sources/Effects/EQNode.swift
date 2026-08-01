@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import os
 
 /// A two-band parametric EQ exposing a high-pass and a low-pass band.
 ///
@@ -96,6 +97,18 @@ public final class EQNode: EffectNode {
         configureEQBands()
     }
 
+    /// Bands whose configured frequency did not survive the write at init, as
+    /// `"<band>: wrote <x> read <y>"`. Empty in the normal case.
+    ///
+    /// A CI run once observed `hp.frequency` reading back as 20.0 — the band
+    /// minimum — for a value that had been written as 100.0, on one OS leg
+    /// only, and never reproduced (U-015). If an `AVAudioUnitEQ` can come up
+    /// unconfigured, the shipping app has the same exposure: an EQ whose
+    /// cutoffs sit at the band minimums, doing nothing audible, with no error
+    /// anywhere. That is invisible by construction, so the condition reports
+    /// itself here instead of waiting to be caught by an assertion diff.
+    public private(set) var configurationWarnings: [String] = []
+
     private func configureEQBands() {
         // AVAudioUnitEQ's `globalGain` is in dB; the unit's overall gain is
         // unity at globalGain = 0.
@@ -130,7 +143,54 @@ public final class EQNode: EffectNode {
         lpBand.frequency = 800.0
         lpBand.bandwidth = qToBandwidth(0.707)
         lpBand.bypass = false
+
+        verifyFrequencyWrites(
+            stage: "init",
+            expected: [("hp", 80.0), ("lp", 800.0)]
+        )
     }
+
+    /// Read back the frequency actually held by each band and record — and log
+    /// — any that did not take.
+    ///
+    /// Called after every write path that sets a frequency, not just `init`.
+    /// U-015 was observed at *restore* time: the 80 Hz default write succeeded
+    /// and the later 100 Hz preset write was the one that did not survive. A
+    /// check that ran only at construction would leave `configurationWarnings`
+    /// empty for exactly the case that was actually seen, and a loaded preset
+    /// could put the shipping EQ at its band minimums in silence.
+    ///
+    /// Logging happens here rather than at a reader, because the only
+    /// production caller of `debugStateDescription()` is a wet/dry or bypass
+    /// change — a node that is misconfigured and never touched again would
+    /// otherwise leave no trace at all.
+    private func verifyFrequencyWrites(stage: String, expected: [(String, Float)]) {
+        let bands = [("hp", eq.bands[0]), ("lp", eq.bands[1])]
+        var fresh: [String] = []
+        for (label, wrote) in expected {
+            guard let band = bands.first(where: { $0.0 == label })?.1 else { continue }
+            // Retire any prior warning for this band: it has just been
+            // rewritten, so the earlier reading is stale either way.
+            configurationWarnings.removeAll { $0.hasPrefix("\(label) at ") }
+            if abs(band.frequency - wrote) > 0.01 {
+                fresh.append(
+                    "\(label) at \(stage): wrote frequency \(wrote) read \(band.frequency)"
+                )
+            }
+        }
+        // Warnings for bands this stage did not touch are kept — a preset that
+        // omits `lp.frequency` does not make an `lp` failure at init untrue.
+        configurationWarnings.append(contentsOf: fresh)
+        if !fresh.isEmpty {
+            Self.logger.error(
+                "EQ band configuration did not take: \(fresh.joined(separator: "; "), privacy: .public)"
+            )
+        }
+    }
+
+    /// Logs the misconfiguration above to the unified log, so the evidence
+    /// exists whether or not any UI is watching.
+    private static let logger = Logger(subsystem: "tnf.effects", category: "EQNode")
 
     // MARK: Parameters
 
@@ -337,7 +397,10 @@ public final class EQNode: EffectNode {
             + "eqOutFmt=\(Self.fmt(eq.outputFormat(forBus: 0))) "
             + "wetFmt=\(Self.fmt(wetMixer.outputFormat(forBus: 0))) "
             + "outFmt=\(Self.fmt(outputBus.outputFormat(forBus: 0))) "
-            + "eqAUBypass=\(eq.bypass)"
+            + "eqAUBypass=\(eq.bypass) "
+            + "hpFreq=\(eq.bands[0].frequency) hpBw=\(eq.bands[0].bandwidth) "
+            + "lpFreq=\(eq.bands[1].frequency) lpBw=\(eq.bands[1].bandwidth) "
+            + "configWarnings=\(configurationWarnings.isEmpty ? "none" : configurationWarnings.joined(separator: "; "))"
     }
 
     private static func fmt(_ format: AVAudioFormat) -> String {
@@ -377,18 +440,27 @@ public final class EQNode: EffectNode {
         displayName = state.displayName
         bypass = state.bypass
         wetDryMix = min(max(state.wetDryMix, 0.0), 1.0)
+        var expectedFrequencies: [(String, Float)] = []
         for parameter in Self.parameterCatalog {
             guard let raw = state.parameters[parameter.identifier] else { continue }
             let clamped = min(max(raw, parameter.range.lowerBound), parameter.range.upperBound)
             // Direct dispatch — avoids re-validating range.
             switch parameter.identifier {
-            case "hp.frequency": eq.bands[0].frequency = clamped
+            case "hp.frequency":
+                eq.bands[0].frequency = clamped
+                expectedFrequencies.append(("hp", clamped))
             case "hp.Q": eq.bands[0].bandwidth = qToBandwidth(clamped)
-            case "lp.frequency": eq.bands[1].frequency = clamped
+            case "lp.frequency":
+                eq.bands[1].frequency = clamped
+                expectedFrequencies.append(("lp", clamped))
             case "lp.Q": eq.bands[1].bandwidth = qToBandwidth(clamped)
             default: break
             }
         }
+        // Verify against the values this restore actually wrote — the stage
+        // where U-015 was observed. Only bands the preset supplied are checked;
+        // one it omitted still holds its verified default.
+        verifyFrequencyWrites(stage: "restore", expected: expectedFrequencies)
         applyMixGains()
     }
 

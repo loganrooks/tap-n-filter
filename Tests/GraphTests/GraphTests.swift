@@ -79,7 +79,21 @@ final class GraphTests: XCTestCase {
 
         let restoredEQ = restored.nodes[0] as? EQNode
         XCTAssertNotNil(restoredEQ)
-        XCTAssertEqual(restoredEQ?.parameterValue("hp.frequency"), 100.0)
+        // A bare equality diff here once cost a full CI investigation to learn
+        // only that the value was 20.0 (U-015). Carry the state that would
+        // distinguish "the write never took" from "the roundtrip lost it".
+        XCTAssertEqual(
+            restoredEQ?.parameterValue("hp.frequency"), 100.0,
+            """
+            hp.frequency did not survive the roundtrip.
+              source snapshot : \(preset.nodes[0].parameters.sorted { $0.key < $1.key })
+              decoded         : \(decoded.nodes[0].parameters.sorted { $0.key < $1.key })
+              source node     : \(eq.debugStateDescription())
+              restored node   : \(restoredEQ?.debugStateDescription() ?? "<nil>")
+            A read-back of 20.0 with a clean snapshot and decode means the audio
+            unit came up unconfigured rather than the preset path losing data.
+            """
+        )
         // Node identity must survive the save/load cycle.
         XCTAssertEqual(restoredEQ?.id, eq.id, "EQNode id must be preserved across restore")
 
