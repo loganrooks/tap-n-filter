@@ -379,6 +379,9 @@ final class DefaultInputGuardReviewRoundTwoTests: XCTestCase {
     private let builtInID: AudioDeviceID = 20
     private let usbID: AudioDeviceID = 30
     private let virtualID: AudioDeviceID = 40
+    /// Not a candidate and not the original — used to model a write that the
+    /// HAL accepts and then applies somewhere unexpected.
+    private let unreachableID: AudioDeviceID = 77
 
     private func makeDefaults() -> UserDefaults {
         UserDefaults(suiteName: "tnf.exp037.r2.\(UUID().uuidString)")!
@@ -622,13 +625,20 @@ final class DefaultInputGuardReviewRoundTwoTests: XCTestCase {
                                  running: false, isInput: true),
                 builtInID: .init(uid: "builtin-uid", transport: kAudioDeviceTransportTypeBuiltIn,
                                  running: false, isInput: true),
+                usbID: .init(uid: "usb-uid", transport: kAudioDeviceTransportTypeUSB,
+                             running: false, isInput: true),
             ],
             defaultInput: btInputID,
             defaultOutput: btInputID
         )
-        // Writes are accepted but never take, so neither the switch nor the
-        // rollback can be confirmed.
-        control.ignoreSetInput = true
+        // Writes are accepted but land on a device that is neither a candidate
+        // nor the original, so nothing reads back as requested — not the two
+        // candidates, and not the rollback. Two things this deliberately is
+        // not: `ignoreSetInput`, which leaves the input untouched and so makes
+        // the rollback trivially confirm (correct behaviour there, wrong branch
+        // here); and a redirect onto a candidate, which the loop would then
+        // accept as a successful switch.
+        control.redirectSetInputTo = unreachableID
         let defaults = makeDefaults()
         let guardian = DefaultInputGuard(control: control, defaults: defaults, log: { _ in })
 
@@ -730,6 +740,10 @@ private final class FakeDefaultInputControl: DefaultInputControlling {
     /// property read on them throws — the hot-plug / malformed-virtual-device
     /// case where the HAL lists a device it cannot describe.
     var phantomInputIDs: [AudioDeviceID] = []
+    /// When set, every accepted write lands on this device instead of the one
+    /// requested — a HAL that returns success and puts the default somewhere
+    /// else, so neither the switch nor a rollback can be confirmed by readback.
+    var redirectSetInputTo: AudioDeviceID?
     /// When true, `setDefaultInputDeviceID` records the call but does NOT
     /// change `defaultInput` — models a HAL write that returns success yet
     /// does not take, so the guard's readback check can be exercised.
@@ -747,6 +761,7 @@ private final class FakeDefaultInputControl: DefaultInputControlling {
     func setDefaultInputDeviceID(_ id: AudioDeviceID) throws {
         setInputCalls.append(id)
         if rejectSetInput.contains(id) { throw FakeError.setRefused }
+        if let redirect = redirectSetInputTo { defaultInput = redirect; return }
         if !ignoreSetInput { defaultInput = id }
     }
 
