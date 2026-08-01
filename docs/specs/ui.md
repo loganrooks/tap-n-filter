@@ -179,7 +179,7 @@ While `viewModel.lastError` is non-nil, a full-width error banner sits above the
 
 Dismissing the banner clears the message only. The status pill continues to report a failure for as long as audio is not actually flowing — `engineStalled` is deliberately independent of `lastError`.
 
-The banner replaced an earlier "error detail expander" next to the button. That control's only action was to clear the error — it destroyed the information its label advertised — and the message itself was reachable only through a hover tooltip, so keyboard and VoiceOver users never saw it. Rendering the text unconditionally costs vertical space only while an error is outstanding, and dismissal is now a distinct, labelled affordance rather than a side effect of asking for detail.
+The banner replaced an earlier "error detail expander" next to the button. That control's only action was to clear the error — it destroyed the information its label advertised — and the message itself was reachable only through a hover tooltip, so a keyboard user could not reach it. VoiceOver users could hear it, since the button carried `.accessibilityValue(error.userMessage)`; the gap was discoverability for sighted and keyboard users. Rendering the text unconditionally costs vertical space only while an error is outstanding, and dismissal is now a distinct, labelled affordance rather than a side effect of asking for detail.
 
 ## Persistence
 

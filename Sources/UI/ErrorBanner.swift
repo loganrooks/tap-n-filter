@@ -6,10 +6,13 @@ import ViewModel
 ///
 /// This replaces an `info.circle` button that sat beside the power control.
 /// That button was labelled "Error details" and its only action was
-/// `clearError()` — it destroyed the information it advertised — while the
-/// message itself lived in a `.help()` tooltip, unreachable without a hover
-/// and invisible to VoiceOver. The message is now rendered in the panel, and
-/// dismissal is a separate, labelled control.
+/// `clearError()` — it destroyed the information it advertised. The message
+/// itself lived in a `.help()` tooltip, so a sighted user had to hover the
+/// button to read it and a keyboard user could not reach it at all. VoiceOver
+/// users *could* hear it: the button carried
+/// `.accessibilityValue(error.userMessage)`. The gap was discoverability for
+/// sighted and keyboard users, not assistive technology. The message is now
+/// rendered in the panel, and dismissal is a separate, labelled control.
 ///
 /// It is a sibling of the footer rather than part of `PowerToggle` on purpose.
 /// `FooterView` lays the presets menu, power control, and quit button out in a
