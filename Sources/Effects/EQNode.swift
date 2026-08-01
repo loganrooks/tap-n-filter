@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import os
 
 /// A two-band parametric EQ exposing a high-pass and a low-pass band.
 ///
@@ -151,7 +152,23 @@ public final class EQNode: EffectNode {
                 "\(label): wrote frequency \(wrote) read \(band.frequency)"
             )
         }
+        // Emit at the point of detection rather than waiting to be asked.
+        // Recording the warning on the instance is not enough on its own: the
+        // only production reader of `debugStateDescription()` is a wet/dry or
+        // bypass change, so a node that comes up misconfigured and is never
+        // touched again would leave no trace anywhere — silent in exactly the
+        // shipped-build case U-015 exists to catch.
+        if !configurationWarnings.isEmpty {
+            let detail = configurationWarnings.joined(separator: "; ")
+            Self.logger.error(
+                "EQ band configuration did not take: \(detail, privacy: .public)"
+            )
+        }
     }
+
+    /// Logs the misconfiguration above to the unified log, so the evidence
+    /// exists whether or not any UI is watching.
+    private static let logger = Logger(subsystem: "tnf.effects", category: "EQNode")
 
     // MARK: Parameters
 

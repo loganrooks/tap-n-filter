@@ -298,11 +298,14 @@ mode is invisible by construction and would be reported as "the EQ does
 nothing."
 
 **Resolution path**: make the condition self-reporting rather than chasing a
-reproduction. Have `configureEQBands()` read back what it wrote and log a
-diagnostic when a band does not hold its configured frequency, so the next
-occurrence — in CI or on a user's machine — arrives with evidence attached
-instead of a bare assertion diff. Widen the test assertion to dump full band
-state on failure at the same time.
+reproduction. `configureEQBands()` now reads back what it wrote, records any
+mismatch in `EQNode.configurationWarnings`, and logs it to the unified log at
+the point of detection. The log call is the load-bearing part: recording the
+warning on the instance alone would be invisible, because the only production
+reader of `debugStateDescription()` is a wet/dry or bypass change, so a node
+that comes up misconfigured and is never touched again would leave no trace.
+The roundtrip assertion also dumps full band state on failure, so the next CI
+occurrence arrives with evidence rather than a bare diff.
 
 **Revisit trigger**: a second occurrence in CI; any user report of an EQ that
 appears to do nothing or to sit at its lowest cutoff; or a macOS release that
