@@ -50,6 +50,15 @@ public final class Graph {
     private let safetyLimiter: AVAudioUnitEffect
 
     private weak var attachedEngine: AVAudioEngine?
+
+    /// Whether this graph is currently wired into an engine.
+    ///
+    /// Callers must drive teardown from this rather than from their own view
+    /// of whether the engine is running. The two can disagree: a failed
+    /// configuration-change restart leaves the engine stopped with the graph
+    /// still attached, and `attach(to:source:destination:)` throws
+    /// `GraphError.alreadyAttached` on the next attempt.
+    public var isAttached: Bool { attachedEngine != nil }
     private weak var attachedSource: AVAudioNode?
     private weak var attachedDestination: AVAudioNode?
 

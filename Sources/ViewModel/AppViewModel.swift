@@ -664,11 +664,25 @@ public final class AppViewModel: ObservableObject {
     }
 
     public func powerOff() async {
-        if engineIsRunning {
+        // Stopping the engine and detaching the graph are separate conditions,
+        // because they can disagree. A failed configuration-change restart
+        // leaves `engineIsRunning` false with the graph still attached; the
+        // old single `if engineIsRunning` guard therefore skipped
+        // `graph.detach()`, and the next `powerOn()` hit
+        // `GraphError.alreadyAttached` — capture could not be restarted at all
+        // without relaunching the app. Drive each teardown from the state that
+        // actually governs it.
+        if engineIsRunning || engine.isRunning {
             engine.stop()
-            graph.detach()
             engineIsRunning = false
         }
+        if graph.isAttached {
+            graph.detach()
+        }
+        // Powering off resolves the stall by definition: nothing is running to
+        // be stalled. Without this the pill would keep reporting a failure into
+        // the next session.
+        engineStalled = false
         do {
             try capture.stop()
         } catch let error as CaptureError {

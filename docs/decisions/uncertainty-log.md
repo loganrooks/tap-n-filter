@@ -226,9 +226,9 @@ error-, transition-, or drawer-gated affordance. `AccessibilityTreeTests`
 validates the artifact, so it cannot catch a missing or empty label on a control
 that the dump never rendered. The audit's coverage is narrower than it reads.
 
-**Current best guess**: The dump should render several states, not one — at
-minimum idle, running, and failed-with-error — and emit either one artifact per
-state or one artifact with a per-state section. The mechanism is available: the
+**Current best guess**: The dump renders at minimum idle, running, and
+failed-with-error, emitting either one artifact per state or one artifact with a
+per-state section. The mechanism is available: the
 dump's `MockCapture` can be made to throw from `start`, which drives
 `powerOn()` down its failure path and publishes `lastError`, since that property
 is `private(set)` and cannot be set from outside the view model.
