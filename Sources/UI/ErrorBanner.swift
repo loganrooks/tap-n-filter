@@ -1,0 +1,68 @@
+import SwiftUI
+import ViewModel
+
+/// Full-width failure message shown above the footer while an error is
+/// outstanding.
+///
+/// This replaces an `info.circle` button that sat beside the power control.
+/// That button was labelled "Error details" and its only action was
+/// `clearError()` — it destroyed the information it advertised. The message
+/// itself lived in a `.help()` tooltip, so a sighted user had to hover the
+/// button to read it and a keyboard user could not reach it at all. VoiceOver
+/// users *could* hear it: the button carried
+/// `.accessibilityValue(error.userMessage)`. The gap was discoverability for
+/// sighted and keyboard users, not assistive technology. The message is now
+/// rendered in the panel, and dismissal is a separate, labelled control.
+///
+/// It is a sibling of the footer rather than part of `PowerToggle` on purpose.
+/// `FooterView` lays the presets menu, power control, and quit button out in a
+/// single centre-aligned `HStack`; a banner nested inside `PowerToggle` made
+/// that control multi-row, so SwiftUI centred the presets and quit buttons
+/// against the combined height and a two-line error visibly shoved them out of
+/// alignment. A row of peer actions should stay one row tall.
+public struct ErrorBanner: View {
+
+    @EnvironmentObject public var viewModel: AppViewModel
+
+    public init() {}
+
+    public var body: some View {
+        if let error = viewModel.lastError {
+            HStack(alignment: .top, spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.red)
+                    .accessibilityHidden(true)
+
+                Text(error.userMessage)
+                    .font(.caption)
+                    .foregroundStyle(.primary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                Button {
+                    viewModel.clearError()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.caption)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Dismiss error")
+                // Deliberately makes no promise about the status pill. The
+                // pill keeps reporting a failure only on the stalled-engine
+                // path, where `engineStalled` outlives the dismissal. For a
+                // failed start the state is `.idle` and dismissing clears the
+                // only record, so the pill correctly returns to "Off" — a hint
+                // guaranteeing otherwise would be false for that case.
+                .accessibilityHint("Hide this error message.")
+            }
+            .padding(8)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color.red.opacity(0.10))
+            )
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Error")
+            .accessibilityValue(error.userMessage)
+        }
+    }
+}

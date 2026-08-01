@@ -91,6 +91,72 @@ final class LayoutContractTests: XCTestCase {
         )
     }
 
+    // MARK: - Drawers
+
+    /// Opening the settings drawer must add the section's full height to the
+    /// panel rather than have a height cap absorb part of it.
+    ///
+    /// The cap was gated on `showDebugPanel` alone while both drawers append a
+    /// section below the footer. Measurement showed the 700 pt cap is not
+    /// currently reachable — the chain editor's own 440 pt cap keeps the total
+    /// below it — so including `showSettings` is defensive, not a fix for a
+    /// live defect. See the note in the body.
+    func test_settingsDrawer_addsItsFullHeight() async throws {
+        let model = try await makeModel()
+
+        // Fill the chain until its ScrollView sits at its own 440 pt maximum,
+        // which is the tallest the panel can get.
+        for _ in 0 ..< 12 {
+            model.addEffect(of: "tnf.eq")
+        }
+
+        let closed = SnapshotHelper.intrinsicSize(
+            of: ControlPanelView().environmentObject(model),
+            width: 380
+        )
+
+        model.toggleSettings()
+        XCTAssertTrue(model.showSettings, "toggleSettings did not open the drawer")
+
+        let open = SnapshotHelper.intrinsicSize(
+            of: ControlPanelView().environmentObject(model),
+            width: 380
+        )
+
+        // WHAT THIS CAN AND CANNOT PROVE
+        //
+        // Measured on CI with a saturated chain: 606 pt closed, 690 pt open.
+        // The chain editor is capped at 440 pt, so the surrounding chrome
+        // cannot push the total past 700 pt. The closed-panel cap is therefore
+        // not reachable today, and opening the settings drawer does not reach
+        // it either. Including `showSettings` in the cap expression is
+        // defensive rather than a fix for a reachable defect: it matches what
+        // docs/specs/ui.md declares, and it keeps the panel correct if the
+        // chain cap or the settings section grows later.
+        //
+        // An earlier version of this test asserted `open > 700` on the
+        // assumption the cap was binding. It was not, and the test failed
+        // honestly rather than passing for the wrong reason. What *is*
+        // measurable is absorption: every point the settings section occupies
+        // must show up in the panel's height. If a cap ever does start
+        // binding, the section gets squeezed and this margin collapses.
+        let growth = open.height - closed.height
+        XCTAssertGreaterThanOrEqual(
+            growth,
+            60,
+            "Opening the settings drawer grew the panel by only \(growth) pt " +
+            "(closed \(closed.height), open \(open.height)). The settings section is taller " +
+            "than that, so a height cap is absorbing part of it instead of letting the " +
+            "window extend."
+        )
+        XCTAssertLessThanOrEqual(
+            open.height,
+            900,
+            "Panel height \(open.height) pt with the settings drawer open exceeds the 900 pt " +
+            "drawer cap."
+        )
+    }
+
     // MARK: - Helpers
 
     /// Build a view model backed by a minimal mock capture controller and a

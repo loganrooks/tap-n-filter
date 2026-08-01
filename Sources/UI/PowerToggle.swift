@@ -48,21 +48,6 @@ public struct PowerToggle: View {
             .accessibilityLabel("Power")
             .accessibilityValue(stateLabel)
             .accessibilityHint("Start or stop audio capture.")
-
-            if let error = viewModel.lastError {
-                Button {
-                    // Toggling a transient popover; here we simply re-surface
-                    // the error in the published state so VoiceOver re-reads it.
-                    viewModel.clearError()
-                } label: {
-                    Image(systemName: "info.circle")
-                }
-                .buttonStyle(.plain)
-                .help(error.userMessage)
-                .accessibilityLabel("Error details")
-                .accessibilityValue(error.userMessage)
-                .accessibilityHint("Dismiss the latest error.")
-            }
         }
     }
 

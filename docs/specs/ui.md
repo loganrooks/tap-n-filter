@@ -13,7 +13,7 @@ MenuBarExtra("tap-n-filter", systemImage: "waveform")
 
 `.window` style (as opposed to `.menu`) gives us a fixed-width popover with arbitrary SwiftUI content. The menu style is too constrained for sliders and chain editing.
 
-Width: 380pt. Height: dynamic, capped at 700pt (900pt with the debug panel open), above which the chain editor scrolls. The chain editor's own scroll region is capped at 440pt. These were widened from the original 320×600 because the chain editor's per-row header (chevron, reorder, name, bypass, wet/dry, remove) was too cramped to add and customize filters comfortably.
+Width: 380pt. Height: dynamic, capped at 700pt, floored at 420pt. The cap rises to 900pt while either drawer below the footer is open — the settings section or the debug panel — because both add a section the 700pt cap would otherwise squeeze out of the chain editor. Above the cap the chain editor scrolls. The chain editor's own scroll region is capped at 440pt. These were widened from the original 320×600 because the chain editor's per-row header (chevron, reorder, name, bypass, wet/dry, remove) was too cramped to add and customize filters comfortably.
 
 The icon in the menubar reflects state:
 - `.waveform` when idle.
@@ -175,7 +175,11 @@ A large prominent button at the bottom of the panel:
 
 Tapping in `.idle` calls `viewModel.powerOn()`. Tapping in `.running` calls `viewModel.powerOff()`. Tapping in `.failed` clears the error and returns to `.idle`.
 
-A tiny error-detail expander next to the button reveals the underlying error message when applicable.
+While `viewModel.lastError` is non-nil, a full-width error banner sits above the footer showing the message text in full, with a warning icon and a separate dismiss control. It is a sibling of the footer, not part of the power control: the footer lays its actions out in one centre-aligned row, and a multi-line banner nested inside `PowerToggle` would drag the presets and quit buttons out of alignment.
+
+Dismissing the banner clears the message only, and what the status pill does next depends on which failure it was. After a stalled engine — capture still `.running` while the engine is stopped — the pill keeps reporting a failure, because `engineStalled` is deliberately independent of `lastError` and audio is genuinely not flowing. After a failed start, the state is `.idle` and `lastError` is the only record of it, so dismissing returns the pill to "Off". That is correct: nothing is running, and there is nothing left to warn about.
+
+The banner replaced an earlier "error detail expander" next to the button. That control's only action was to clear the error — it destroyed the information its label advertised — and the message itself was reachable only through a hover tooltip, so a keyboard user could not reach it. VoiceOver users could hear it, since the button carried `.accessibilityValue(error.userMessage)`; the gap was discoverability for sighted and keyboard users. Rendering the text unconditionally costs vertical space only while an error is outstanding, and dismissal is now a distinct, labelled affordance rather than a side effect of asking for detail.
 
 ## Persistence
 

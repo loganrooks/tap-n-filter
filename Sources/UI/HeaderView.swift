@@ -70,13 +70,41 @@ public struct HeaderView: View {
         .accessibilityValue(pillLabel)
     }
 
+    /// True when an error is outstanding *and* no audio is reaching the user,
+    /// so the pill must report the failure rather than a healthy state.
+    ///
+    /// Two distinct paths produce that combination, and both must be caught:
+    ///
+    /// - **`.idle` with an error.** A failed start rolls back and publishes
+    ///   `.idle`, so the pill would read "Off" and hide the failure.
+    /// - **`.running` with a stopped engine.** The device-configuration-change
+    ///   handler leaves `captureState == .running` when an engine restart
+    ///   throws; `AppViewModel` sets `engineIsRunning = false` and publishes
+    ///   the error. Audio is silent while capture claims to be running.
+    ///
+    /// Letting *any* non-nil `lastError` win was the original bug: a stale
+    /// error from an earlier attempt pinned the pill red while capture ran
+    /// fine. Narrowing it to `.idle` alone was the opposite bug, reporting a
+    /// green "Filtering …" over a dead pipeline. The condition is neither
+    /// state alone — it is "there is an error and audio is not flowing".
+    private var isSilentlyFailed: Bool {
+        switch viewModel.captureState {
+        case .idle:
+            // A failed start rolls back to idle; only the error records it.
+            return viewModel.lastError != nil
+        case .running:
+            // Not conditioned on `lastError`. Dismissing the banner
+            // acknowledges the message, not the silence — if the pill went
+            // green on dismissal it would report a healthy capture over a
+            // stopped engine, which is the failure this branch exists for.
+            return viewModel.engineStalled
+        case .starting, .stopping, .failed:
+            return false
+        }
+    }
+
     private var pillColor: Color {
-        // An unacknowledged error always wins. The capture controller's
-        // rollback paths publish `.idle` after a teardown, so a failure
-        // can leave `captureState == .idle` with `lastError` set — the
-        // status pill would otherwise read "Off" and the user would not
-        // know what happened. Make the error state the primary signal.
-        if viewModel.lastError != nil { return .red }
+        if isSilentlyFailed { return .red }
         switch viewModel.captureState {
         case .idle: return .secondary
         case .starting, .stopping: return .yellow
@@ -86,10 +114,10 @@ public struct HeaderView: View {
     }
 
     private var pillLabel: String {
-        // Status only — short and stable. The actual error text lives in the
-        // debug log panel (toggle via the ladybug button) so the header stays
-        // compact and a long error string never has to fit in a pill.
-        if viewModel.lastError != nil { return "Failed" }
+        // Status only — short and stable. The full error text is shown in the
+        // inline banner above the power toggle (and in the debug log), so the
+        // header stays compact and a long error string never has to fit here.
+        if isSilentlyFailed { return "Failed" }
         switch viewModel.captureState {
         case .idle: return "Off"
         case .starting: return "Starting"

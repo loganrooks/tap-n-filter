@@ -1,0 +1,92 @@
+{
+  "schema_version": "1.0",
+  "pr_number": 23,
+  "repo": "rookslog/tap-n-filter",
+  "last_synced_at": "2026-08-01T01:39:12.257573+00:00",
+  "threads": [
+    {
+      "id": "PRRT_kwDOSjmLjM6VkGrk",
+      "path": "Tests/EffectsTests/EQNodeTests.swift",
+      "line": 35,
+      "reviewer": "chatgpt-codex-connector",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "P1",
+      "category": "ci-coverage",
+      "finding_excerpt": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Add a failing-OS CI leg for this regression**\n\nIn the reviewed tree, both jobs in `.github/workflows/ci.yml` still run only on `macos-14` (lines 11 and 38), while this comment explicitly says the test passes on m",
+      "created_at": "2026-08-01T00:18:28Z",
+      "resolved": true,
+      "outdated": false,
+      "verdict": "DEFERRED",
+      "verdict_commit": null,
+      "verdict_refs": [],
+      "verdict_notes": "Correct as reviewed \u2014 this branch runs macos-14 only, so the guard does not run on a discriminating OS. Resolved by merge order rather than a change here: the macos-14/15/26 matrix is PR #22, and duplicating the ci.yml edit into this branch would conflict with it. Merge #23 before #22.",
+      "verdict_source": "block",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-08-01T01:39:12.257237+00:00",
+          "source": "block",
+          "verdict": "DEFERRED",
+          "by": "tool"
+        }
+      ],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6VkGrm",
+      "path": "Sources/Effects/EQNode.swift",
+      "line": 123,
+      "reviewer": "chatgpt-codex-connector",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "P1",
+      "category": "data-migration",
+      "finding_excerpt": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Migrate presets corrupted by the old bandwidth readback**\n\nWhen a user loads a `.tnf` preset saved on macOS 15+ before this upgrade, its Q fields can already contain the manufactured value `14426.951`; `restore(f",
+      "created_at": "2026-08-01T00:18:28Z",
+      "resolved": true,
+      "outdated": false,
+      "verdict": "ACCEPTED",
+      "verdict_commit": "ca15d67",
+      "verdict_refs": [],
+      "verdict_notes": null,
+      "verdict_source": "block",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-08-01T01:39:12.257561+00:00",
+          "source": "block",
+          "verdict": "ACCEPTED",
+          "by": "tool"
+        }
+      ],
+      "extras": {}
+    },
+    {
+      "id": "PRRT_kwDOSjmLjM6Vka4T",
+      "path": "Tests/EffectsTests/EQNodeTests.swift",
+      "line": 35,
+      "reviewer": "coderabbitai",
+      "reviewer_kind": "bot:agentic-llm",
+      "severity": "minor",
+      "category": "ci-coverage",
+      "finding_excerpt": "_\ud83e\ude7a Stability & Availability_ | _\ud83d\udfe1 Minor_ | _\u26a1 Quick win_\n\n<details>\n<summary>\ud83e\udde9 Analysis chain</summary>\n\n\ud83c\udfc1 Script executed:\n\n```shell\n#!/bin/bash\n# Description: Check CI workflow files for a macOS version matrix covering 14 and 15+.\nfd -e yml -e yaml . .github/workflows 2>/dev/null | xargs -I{} sh -",
+      "created_at": "2026-08-01T01:02:39Z",
+      "resolved": true,
+      "outdated": false,
+      "verdict": "DUPLICATE",
+      "verdict_commit": null,
+      "verdict_refs": [],
+      "verdict_notes": "Same finding as the Codex thread on this file. Resolved by merge order \u2014 the macos-14/15/26 matrix is PR #22, which is what surfaced this bug; duplicating the ci.yml edit here would conflict with it.",
+      "verdict_source": "block",
+      "reconsidered_verdict": null,
+      "verdict_history": [
+        {
+          "at": "2026-08-01T01:39:12.257567+00:00",
+          "source": "block",
+          "verdict": "DUPLICATE",
+          "by": "tool"
+        }
+      ],
+      "extras": {}
+    }
+  ]
+}

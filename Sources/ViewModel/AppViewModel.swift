@@ -333,7 +333,35 @@ public final class AppViewModel: ObservableObject {
 
     private static let persistenceDebounceInterval: TimeInterval = 0.200
 
-    private var engineIsRunning: Bool = false
+    /// Whether the render engine is believed to be running.
+    ///
+    /// Published because `captureState` alone does not tell the UI whether
+    /// audio is actually flowing. The device-configuration-change handler can
+    /// leave `captureState == .running` while the engine is stopped and a
+    /// restart has failed — the user hears silence with a "running" capture.
+    /// The header's status pill reads this to avoid reporting a healthy
+    /// green state over a dead pipeline.
+    @Published public private(set) var engineIsRunning: Bool = false {
+        didSet {
+            // A successful (re)start clears any prior stall. Every path that
+            // brings the engine up runs through here, so the flag cannot
+            // outlive the condition it describes.
+            if engineIsRunning { engineStalled = false }
+        }
+    }
+
+    /// The engine stopped while capture still believes it is running, and the
+    /// restart failed.
+    ///
+    /// Distinct from `!engineIsRunning`, which is briefly true during a normal
+    /// start and would make the UI flash a failure. This flag is set only on
+    /// the configuration-change restart failure and cleared whenever the
+    /// engine comes back up.
+    ///
+    /// It is also deliberately independent of `lastError`: dismissing the
+    /// error banner acknowledges the message, not the silence. The status pill
+    /// must keep reporting a failure while audio is not actually flowing.
+    @Published public private(set) var engineStalled: Bool = false
 
     // MARK: Init
 
@@ -415,6 +443,7 @@ public final class AppViewModel: ObservableObject {
                         )
                     } catch {
                         self.engineIsRunning = false
+                        self.engineStalled = true
                         self.logger.error(
                             "[EXP-031.engineRestart] FAIL — \(error.localizedDescription)"
                         )
@@ -635,11 +664,25 @@ public final class AppViewModel: ObservableObject {
     }
 
     public func powerOff() async {
-        if engineIsRunning {
+        // Stopping the engine and detaching the graph are separate conditions,
+        // because they can disagree. A failed configuration-change restart
+        // leaves `engineIsRunning` false with the graph still attached; the
+        // old single `if engineIsRunning` guard therefore skipped
+        // `graph.detach()`, and the next `powerOn()` hit
+        // `GraphError.alreadyAttached` — capture could not be restarted at all
+        // without relaunching the app. Drive each teardown from the state that
+        // actually governs it.
+        if engineIsRunning || engine.isRunning {
             engine.stop()
-            graph.detach()
             engineIsRunning = false
         }
+        if graph.isAttached {
+            graph.detach()
+        }
+        // Powering off resolves the stall by definition: nothing is running to
+        // be stalled. Without this the pill would keep reporting a failure into
+        // the next session.
+        engineStalled = false
         do {
             try capture.stop()
         } catch let error as CaptureError {

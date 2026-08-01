@@ -208,3 +208,45 @@ Entries that are resolved during build are updated in place (status changed, lin
 **Resolution path**: If revisited, a pre-registered spike must demonstrate either (1) a distinct per-tab audio PID exists for the target browser and a tap on it isolates that tab [predicted: false], or (2) for the extension route, that a WebExtension can intercept a tab's Web Audio/`<media>` graph, apply effects, and play back — while quantifying the DRM failure and the per-browser support matrix. Either path gets its own ADR. A secondary undocumented question surfaced during research: whether two same-origin Safari "Add to Dock" web apps run as separate renderer processes (separately tappable) or coalesce — relevant only to the deferred in-app per-site launcher, not to the per-tab verdict.
 
 **Revisit trigger**: a future macOS/browser that splits tab audio into distinct output processes; a decision to build the in-app per-site launcher (which needs the same-origin coalescing question answered); or sustained user demand for per-tab that justifies a separate extension product.
+
+---
+
+## U-014: Accessibility dump never exercises conditional controls
+
+**Status**: Open — deferred; blocked on a build host that can compile the UI target.
+**Triggered by**: Codex review on PR #21 (`Sources/UI/PowerToggle.swift`).
+
+**Question**: The ADR-011 accessibility audit rests on a committed artifact,
+`test-artifacts/phase-3-accessibility-tree.json`, produced by the
+`tap-n-filter-a11y-dump` executable. That executable hosts a single
+`AppViewModel` in its default idle state with no error published. Every control
+that renders conditionally is therefore absent from the artifact — including the
+error banner and its dismiss button added in PR #21, and any future
+error-, transition-, or drawer-gated affordance. `AccessibilityTreeTests`
+validates the artifact, so it cannot catch a missing or empty label on a control
+that the dump never rendered. The audit's coverage is narrower than it reads.
+
+**Current best guess**: The dump renders at minimum idle, running, and
+failed-with-error, emitting either one artifact per state or one artifact with a
+per-state section. The mechanism is available: the
+dump's `MockCapture` can be made to throw from `start`, which drives
+`powerOn()` down its failure path and publishes `lastError`, since that property
+is `private(set)` and cannot be set from outside the view model.
+
+**Why deferred rather than fixed in PR #21**: applying the change means
+regenerating the committed JSON artifact, which means running the dump
+executable, which means compiling the UI target. The maintainer's host has
+Command Line Tools only, so `swift build` fails on the SwiftUI macro plugins and
+the artifact cannot be regenerated here. Landing a dump change without the
+regenerated artifact would leave the committed evidence inconsistent with the
+tool that produces it — worse than the gap it closes.
+
+**Resolution path**: On a host with full Xcode (or a CI job that regenerates and
+commits the artifact), extend the dump to cover the three states, regenerate,
+and extend `AccessibilityTreeTests` to assert that the error-state controls carry
+non-empty labels. A CI regeneration lane would also close the related snapshot
+baseline gap in ADR-015, which is blocked on the same missing capability.
+
+**Revisit trigger**: Xcode becomes available on the build host; or the CI
+artifact-regeneration lane contemplated in ADR-015 and ADR-022 is built; or a
+VoiceOver user reports an unlabelled control in a conditional state.
