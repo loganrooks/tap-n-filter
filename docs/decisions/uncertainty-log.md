@@ -298,9 +298,13 @@ mode is invisible by construction and would be reported as "the EQ does
 nothing."
 
 **Resolution path**: make the condition self-reporting rather than chasing a
-reproduction. `configureEQBands()` now reads back what it wrote, records any
-mismatch in `EQNode.configurationWarnings`, and logs it to the unified log at
-the point of detection. The log call is the load-bearing part: recording the
+reproduction. Every path that writes a band frequency — `configureEQBands()` at
+init and `restore(from:)` when loading a preset — now reads the value back,
+records any mismatch in `EQNode.configurationWarnings`, and logs it to the
+unified log at the point of detection. The restore path is the one that matters
+most: the failure above was observed there, on the 100 Hz preset write, not on
+the 80 Hz default, so a check that ran only at construction would have stayed
+silent for the case actually seen. The log call is the load-bearing part: recording the
 warning on the instance alone would be invisible, because the only production
 reader of `debugStateDescription()` is a wet/dry or bypass change, so a node
 that comes up misconfigured and is never touched again would leave no trace.

@@ -144,24 +144,46 @@ public final class EQNode: EffectNode {
         lpBand.bandwidth = qToBandwidth(0.707)
         lpBand.bypass = false
 
-        // Verify the writes took. See `configurationWarnings`.
-        configurationWarnings = []
-        for (label, band, wrote) in [("hp", hpBand, Float(80.0)), ("lp", lpBand, Float(800.0))]
-        where abs(band.frequency - wrote) > 0.01 {
-            configurationWarnings.append(
-                "\(label): wrote frequency \(wrote) read \(band.frequency)"
-            )
+        verifyFrequencyWrites(
+            stage: "init",
+            expected: [("hp", 80.0), ("lp", 800.0)]
+        )
+    }
+
+    /// Read back the frequency actually held by each band and record — and log
+    /// — any that did not take.
+    ///
+    /// Called after every write path that sets a frequency, not just `init`.
+    /// U-015 was observed at *restore* time: the 80 Hz default write succeeded
+    /// and the later 100 Hz preset write was the one that did not survive. A
+    /// check that ran only at construction would leave `configurationWarnings`
+    /// empty for exactly the case that was actually seen, and a loaded preset
+    /// could put the shipping EQ at its band minimums in silence.
+    ///
+    /// Logging happens here rather than at a reader, because the only
+    /// production caller of `debugStateDescription()` is a wet/dry or bypass
+    /// change — a node that is misconfigured and never touched again would
+    /// otherwise leave no trace at all.
+    private func verifyFrequencyWrites(stage: String, expected: [(String, Float)]) {
+        let bands = [("hp", eq.bands[0]), ("lp", eq.bands[1])]
+        var fresh: [String] = []
+        for (label, wrote) in expected {
+            guard let band = bands.first(where: { $0.0 == label })?.1 else { continue }
+            // Retire any prior warning for this band: it has just been
+            // rewritten, so the earlier reading is stale either way.
+            configurationWarnings.removeAll { $0.hasPrefix("\(label) at ") }
+            if abs(band.frequency - wrote) > 0.01 {
+                fresh.append(
+                    "\(label) at \(stage): wrote frequency \(wrote) read \(band.frequency)"
+                )
+            }
         }
-        // Emit at the point of detection rather than waiting to be asked.
-        // Recording the warning on the instance is not enough on its own: the
-        // only production reader of `debugStateDescription()` is a wet/dry or
-        // bypass change, so a node that comes up misconfigured and is never
-        // touched again would leave no trace anywhere — silent in exactly the
-        // shipped-build case U-015 exists to catch.
-        if !configurationWarnings.isEmpty {
-            let detail = configurationWarnings.joined(separator: "; ")
+        // Warnings for bands this stage did not touch are kept — a preset that
+        // omits `lp.frequency` does not make an `lp` failure at init untrue.
+        configurationWarnings.append(contentsOf: fresh)
+        if !fresh.isEmpty {
             Self.logger.error(
-                "EQ band configuration did not take: \(detail, privacy: .public)"
+                "EQ band configuration did not take: \(fresh.joined(separator: "; "), privacy: .public)"
             )
         }
     }
@@ -418,18 +440,27 @@ public final class EQNode: EffectNode {
         displayName = state.displayName
         bypass = state.bypass
         wetDryMix = min(max(state.wetDryMix, 0.0), 1.0)
+        var expectedFrequencies: [(String, Float)] = []
         for parameter in Self.parameterCatalog {
             guard let raw = state.parameters[parameter.identifier] else { continue }
             let clamped = min(max(raw, parameter.range.lowerBound), parameter.range.upperBound)
             // Direct dispatch — avoids re-validating range.
             switch parameter.identifier {
-            case "hp.frequency": eq.bands[0].frequency = clamped
+            case "hp.frequency":
+                eq.bands[0].frequency = clamped
+                expectedFrequencies.append(("hp", clamped))
             case "hp.Q": eq.bands[0].bandwidth = qToBandwidth(clamped)
-            case "lp.frequency": eq.bands[1].frequency = clamped
+            case "lp.frequency":
+                eq.bands[1].frequency = clamped
+                expectedFrequencies.append(("lp", clamped))
             case "lp.Q": eq.bands[1].bandwidth = qToBandwidth(clamped)
             default: break
             }
         }
+        // Verify against the values this restore actually wrote — the stage
+        // where U-015 was observed. Only bands the preset supplied are checked;
+        // one it omitted still holds its verified default.
+        verifyFrequencyWrites(stage: "restore", expected: expectedFrequencies)
         applyMixGains()
     }
 
