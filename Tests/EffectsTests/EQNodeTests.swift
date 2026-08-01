@@ -20,6 +20,84 @@ final class EQNodeTests: XCTestCase {
         XCTAssertEqual(node.parameterValue("lp.Q") ?? 0, 0.707, accuracy: 0.001)
     }
 
+    // MARK: Q persistence (the macOS 15+ regression)
+
+    /// Q must survive a write to the audio unit and a read back out of it.
+    ///
+    /// `AVAudioUnitEQFilterParameters.bandwidth` — where this class stores Q —
+    /// is only a live parameter on filter types that have a bandwidth. On
+    /// `.lowPass` / `.highPass` (and the shelf types) a write is accepted and
+    /// silently discarded, and the property reads back 0.0. The bands are
+    /// therefore configured as `.resonantLowPass` / `.resonantHighPass`.
+    ///
+    /// This test fails on macOS 15 and newer if the band types regress to the
+    /// non-resonant variants. It passed on macOS 14 even while broken, which
+    /// is why a single-runner CI never caught it; the OS matrix does.
+    func test_Q_survives_a_write_and_read_through_the_audio_unit() throws {
+        let node = EQNode()
+        try node.setParameter("hp.Q", value: 1.5)
+        try node.setParameter("lp.Q", value: 0.9)
+
+        XCTAssertEqual(
+            node.parameterValue("hp.Q") ?? 0, 1.5, accuracy: 0.01,
+            "hp.Q did not survive the audio unit. A read-back of ~14426 means the band's " +
+            "filterType does not carry a bandwidth parameter; ~0.707 means it fell through " +
+            "to the default guard."
+        )
+        XCTAssertEqual(
+            node.parameterValue("lp.Q") ?? 0, 0.9, accuracy: 0.01,
+            "lp.Q did not survive the audio unit — see hp.Q above."
+        )
+    }
+
+    /// `snapshot()` feeds `.tnf` files that users are invited to read and edit
+    /// by hand. It must never emit a Q outside the range the catalog declares.
+    ///
+    /// Before the resonant-filter fix this emitted 14426.951, which `restore`
+    /// then clamped to the range maximum — so a save/load cycle silently
+    /// rewrote the user's Q to 4.0.
+    func test_snapshot_never_emits_out_of_range_Q() throws {
+        let node = EQNode()
+        try node.setParameter("hp.Q", value: 1.5)
+        try node.setParameter("lp.Q", value: 0.9)
+
+        let state = node.snapshot()
+        let qRange = EQNode.parameterCatalog
+            .first { $0.identifier == "hp.Q" }!
+            .range
+
+        for key in ["hp.Q", "lp.Q"] {
+            let value = try XCTUnwrap(state.parameters[key], "\(key) missing from snapshot")
+            XCTAssertTrue(
+                qRange.contains(value),
+                "snapshot() emitted \(key) = \(value), outside the declared range \(qRange). " +
+                "This value is written verbatim into user-facing .tnf preset files."
+            )
+        }
+    }
+
+    /// Two save/load generations must not drift. This is the user-visible
+    /// shape of the bug: open a preset, save it, and the Q has changed.
+    func test_snapshot_restore_is_stable_across_two_generations() throws {
+        let node = EQNode()
+        try node.setParameter("hp.Q", value: 1.5)
+        try node.setParameter("lp.Q", value: 0.9)
+
+        let first = node.snapshot()
+        let reloaded = EQNode(id: node.id)
+        try reloaded.restore(from: first)
+        let second = reloaded.snapshot()
+
+        for key in ["hp.Q", "lp.Q", "hp.frequency", "lp.frequency"] {
+            XCTAssertEqual(
+                try XCTUnwrap(second.parameters[key]),
+                try XCTUnwrap(first.parameters[key]),
+                accuracy: 0.01,
+                "\(key) drifted between save generations."
+            )
+        }
+    }
+
     // MARK: setParameter dispatch and range enforcement
 
     func test_setParameter_updates_band_frequency() throws {

@@ -101,14 +101,32 @@ public final class EQNode: EffectNode {
         // unity at globalGain = 0.
         eq.globalGain = 0.0
 
+        // The filter type is load-bearing for Q, not just for the response
+        // shape. `AVAudioUnitEQFilterParameters.bandwidth` is only a live
+        // parameter for the filter types that actually have a bandwidth;
+        // for `.lowPass`, `.highPass`, `.lowShelf` and `.highShelf` a write
+        // is accepted and silently discarded, and the property reads back
+        // 0.0. Measured on macOS 27 (probe in
+        // docs/investigations/probes/eq_bandwidth_persistence.swift):
+        //
+        //     parametric        wrote 0.944821  read 0.944821
+        //     lowPass           wrote 0.944821  read 0.000000
+        //     highPass          wrote 0.944821  read 0.000000
+        //     resonantLowPass   wrote 0.944821  read 0.944821
+        //     resonantHighPass  wrote 0.944821  read 0.944821
+        //
+        // The resonant variants are what this class documents itself as using
+        // ("two bands configured as resonant filters") and what the README
+        // advertises ("adjustable cutoff and resonance"). They keep the same
+        // pass-band shape while making Q a real, readable parameter.
         let hpBand = eq.bands[0]
-        hpBand.filterType = .highPass
+        hpBand.filterType = .resonantHighPass
         hpBand.frequency = 80.0
         hpBand.bandwidth = qToBandwidth(0.707)
         hpBand.bypass = false
 
         let lpBand = eq.bands[1]
-        lpBand.filterType = .lowPass
+        lpBand.filterType = .resonantLowPass
         lpBand.frequency = 800.0
         lpBand.bandwidth = qToBandwidth(0.707)
         lpBand.bypass = false
@@ -389,12 +407,27 @@ public final class EQNode: EffectNode {
         return Float(bw)
     }
 
+    /// Default Q, reported when the audio unit has no usable bandwidth to
+    /// convert. Matches the `hp.Q` / `lp.Q` catalog defaults.
+    private static let defaultQ: Float = 0.707
+
     private func bandwidthToQ(_ bandwidth: Float) -> Float {
-        let bwDouble = Double(max(bandwidth, 0.0001))
+        // A bandwidth at or below zero is not a small bandwidth — it is the
+        // audio unit reporting that this band has no bandwidth parameter at
+        // all. Feeding it to the inverse formula produced Q = 14426.951 (the
+        // old `max(bandwidth, 0.0001)` floor run through the conversion), and
+        // because `snapshot()` calls this, that value was written into saved
+        // `.tnf` files, where `restore()` then clamped it to the top of the
+        // declared 0.5...4.0 range. A save/load cycle silently rewrote the
+        // user's Q. Report the default instead: wrong-but-sane beats a
+        // nonsense number escaping into a file the user is invited to edit
+        // by hand.
+        guard bandwidth > 0 else { return Self.defaultQ }
+
         // Inverse of the formula above:
         //   sinh(bw * ln(2) / 2) = 1 / (2 * Q)
         //   Q = 1 / (2 * sinh(bw * ln(2) / 2))
-        let q = 1.0 / (2.0 * sinh(bwDouble * log(2.0) / 2.0))
+        let q = 1.0 / (2.0 * sinh(Double(bandwidth) * log(2.0) / 2.0))
         return Float(q)
     }
 }
