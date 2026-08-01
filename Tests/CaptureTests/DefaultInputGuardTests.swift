@@ -209,8 +209,14 @@ final class DefaultInputGuardTests: XCTestCase {
         XCTAssertTrue(control.setInputCalls.isEmpty, "restore with no marker must not touch the input")
     }
 
-    func test_restore_fallsBackToBuiltInWhenSavedDeviceMissing() {
-        // A3: saved UID no longer resolves to a present device.
+    func test_restore_keepsCurrentNonBluetoothInputWhenSavedDeviceMissing() {
+        // A3: saved UID no longer resolves to a present device. The user is
+        // already on a USB mic, so the correct move is to leave it alone —
+        // forcing the built-in over a device the user selected is the same
+        // class of harm the marker exists to prevent (Codex PR #20 finding #5).
+        // The built-in fallback still applies when the current default is
+        // itself Bluetooth; see
+        // `test_restore_appliesBuiltInFallbackWhenCurrentDefaultIsStillBluetooth`.
         let control = FakeDefaultInputControl(
             devices: [
                 usbID: .init(uid: "usb-uid", transport: kAudioDeviceTransportTypeUSB, running: false, isInput: true),
@@ -226,9 +232,11 @@ final class DefaultInputGuardTests: XCTestCase {
 
         guardian.restore(trigger: "clean-stop")
 
-        XCTAssertEqual(control.defaultInput, builtInID, "fall back to the built-in input when the saved device is gone")
+        XCTAssertEqual(control.defaultInput, usbID,
+                       "a user-chosen USB mic must survive a restore whose saved device is gone")
+        XCTAssertTrue(control.setInputCalls.isEmpty, "no write should be issued at all")
         XCTAssertNil(defaults.string(forKey: DefaultInputGuard.strandedInputMarkerKey))
-        XCTAssertTrue(logs.contains { $0.contains("fallback-applied") })
+        XCTAssertTrue(logs.contains { $0.contains("kept-current") })
     }
 
     // MARK: Recover
@@ -512,31 +520,6 @@ final class DefaultInputGuardReviewRoundTwoTests: XCTestCase {
     }
 
     // MARK: A3 restore fallback
-
-    /// The saved headset is gone, but the user is already on a good USB mic.
-    /// Restore must leave it alone rather than force the built-in.
-    func test_restore_keepsCurrentNonBluetoothDefaultWhenSavedDeviceIsGone() throws {
-        let control = FakeDefaultInputControl(
-            devices: [
-                usbID: .init(uid: "usb-uid", transport: kAudioDeviceTransportTypeUSB,
-                             running: false, isInput: true),
-                builtInID: .init(uid: "builtin-uid", transport: kAudioDeviceTransportTypeBuiltIn,
-                                 running: false, isInput: true),
-            ],
-            defaultInput: usbID,
-            defaultOutput: usbID
-        )
-        let defaults = makeDefaults()
-        defaults.set("gone-bt-uid", forKey: DefaultInputGuard.strandedInputMarkerKey)
-        let guardian = DefaultInputGuard(control: control, defaults: defaults, log: { _ in })
-
-        guardian.restore(trigger: "clean-stop")
-
-        XCTAssertEqual(control.defaultInput, usbID, "a user-chosen USB mic must survive restore")
-        XCTAssertTrue(control.setInputCalls.isEmpty, "no write should be issued at all")
-        XCTAssertNil(defaults.string(forKey: DefaultInputGuard.strandedInputMarkerKey),
-                     "the restore succeeded, so the marker is cleared")
-    }
 
     /// The saved headset is gone and the current default is still a Bluetooth
     /// device, so the built-in fallback does apply.
