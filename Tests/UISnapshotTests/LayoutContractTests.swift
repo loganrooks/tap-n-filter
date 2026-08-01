@@ -93,25 +93,19 @@ final class LayoutContractTests: XCTestCase {
 
     // MARK: - Drawers
 
-    /// Opening the settings drawer must lift the height cap, exactly as the
-    /// debug drawer does.
+    /// Opening the settings drawer must add the section's full height to the
+    /// panel rather than have a height cap absorb part of it.
     ///
-    /// The cap was originally gated on `showDebugPanel` alone while both
-    /// drawers append a section below the footer. With a populated chain and
-    /// settings open, the panel was therefore squeezed against the 700 pt cap
-    /// and had to shed height somewhere — the same class of failure as the
-    /// macOS-27 collapse this file exists to guard, arrived at through the
-    /// cap rather than the floor.
-    func test_settingsDrawerOpen_liftsHeightCap() async throws {
+    /// The cap was gated on `showDebugPanel` alone while both drawers append a
+    /// section below the footer. Measurement showed the 700 pt cap is not
+    /// currently reachable — the chain editor's own 440 pt cap keeps the total
+    /// below it — so including `showSettings` is defensive, not a fix for a
+    /// live defect. See the note in the body.
+    func test_settingsDrawer_addsItsFullHeight() async throws {
         let model = try await makeModel()
 
-        // Enough effects that the chain editor's ScrollView sits at its own
-        // 440 pt maximum, so the closed panel is pressed against the 700 pt
-        // cap. Without this the test proves nothing: with only a few rows the
-        // panel is far below 700, and "open is taller than closed, and under
-        // 900" holds just as well under the old debug-panel-only cap. The
-        // discriminating assertion is that the open panel exceeds 700 —
-        // impossible unless the settings drawer actually lifts the cap.
+        // Fill the chain until its ScrollView sits at its own 440 pt maximum,
+        // which is the tallest the panel can get.
         for _ in 0 ..< 12 {
             model.addEffect(of: "tnf.eq")
         }
@@ -119,12 +113,6 @@ final class LayoutContractTests: XCTestCase {
         let closed = SnapshotHelper.intrinsicSize(
             of: ControlPanelView().environmentObject(model),
             width: 380
-        )
-        XCTAssertLessThanOrEqual(
-            closed.height,
-            700,
-            "Closed panel is \(closed.height) pt, above its own 700 pt cap — the test's " +
-            "premise is broken, not just its conclusion."
         )
 
         model.toggleSettings()
@@ -135,13 +123,31 @@ final class LayoutContractTests: XCTestCase {
             width: 380
         )
 
-        XCTAssertGreaterThan(
-            open.height,
-            700,
-            "Panel is \(open.height) pt with the settings drawer open and a full chain " +
-            "(closed: \(closed.height) pt). It has not crossed the 700 pt closed-panel cap, " +
-            "so the settings section is being absorbed by the cap rather than extending the " +
-            "window — the defect this test guards."
+        // WHAT THIS CAN AND CANNOT PROVE
+        //
+        // Measured on CI with a saturated chain: 606 pt closed, 690 pt open.
+        // The chain editor is capped at 440 pt, so the surrounding chrome
+        // cannot push the total past 700 pt. The closed-panel cap is therefore
+        // not reachable today, and opening the settings drawer does not reach
+        // it either. Including `showSettings` in the cap expression is
+        // defensive rather than a fix for a reachable defect: it matches what
+        // docs/specs/ui.md declares, and it keeps the panel correct if the
+        // chain cap or the settings section grows later.
+        //
+        // An earlier version of this test asserted `open > 700` on the
+        // assumption the cap was binding. It was not, and the test failed
+        // honestly rather than passing for the wrong reason. What *is*
+        // measurable is absorption: every point the settings section occupies
+        // must show up in the panel's height. If a cap ever does start
+        // binding, the section gets squeezed and this margin collapses.
+        let growth = open.height - closed.height
+        XCTAssertGreaterThanOrEqual(
+            growth,
+            60,
+            "Opening the settings drawer grew the panel by only \(growth) pt " +
+            "(closed \(closed.height), open \(open.height)). The settings section is taller " +
+            "than that, so a height cap is absorbing part of it instead of letting the " +
+            "window extend."
         )
         XCTAssertLessThanOrEqual(
             open.height,
