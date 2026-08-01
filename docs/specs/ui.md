@@ -175,7 +175,9 @@ A large prominent button at the bottom of the panel:
 
 Tapping in `.idle` calls `viewModel.powerOn()`. Tapping in `.running` calls `viewModel.powerOff()`. Tapping in `.failed` clears the error and returns to `.idle`.
 
-While `viewModel.lastError` is non-nil, an error banner sits directly above the power button showing the message text in full, with a warning icon and a separate dismiss control.
+While `viewModel.lastError` is non-nil, a full-width error banner sits above the footer showing the message text in full, with a warning icon and a separate dismiss control. It is a sibling of the footer, not part of the power control: the footer lays its actions out in one centre-aligned row, and a multi-line banner nested inside `PowerToggle` would drag the presets and quit buttons out of alignment.
+
+Dismissing the banner clears the message only. The status pill continues to report a failure for as long as audio is not actually flowing — `engineStalled` is deliberately independent of `lastError`.
 
 The banner replaced an earlier "error detail expander" next to the button. That control's only action was to clear the error — it destroyed the information its label advertised — and the message itself was reachable only through a hover tooltip, so keyboard and VoiceOver users never saw it. Rendering the text unconditionally costs vertical space only while an error is outstanding, and dismissal is now a distinct, labelled affordance rather than a side effect of asking for detail.
 

@@ -88,12 +88,16 @@ public struct HeaderView: View {
     /// green "Filtering …" over a dead pipeline. The condition is neither
     /// state alone — it is "there is an error and audio is not flowing".
     private var isSilentlyFailed: Bool {
-        guard viewModel.lastError != nil else { return false }
         switch viewModel.captureState {
         case .idle:
-            return true
+            // A failed start rolls back to idle; only the error records it.
+            return viewModel.lastError != nil
         case .running:
-            return !viewModel.engineIsRunning
+            // Not conditioned on `lastError`. Dismissing the banner
+            // acknowledges the message, not the silence — if the pill went
+            // green on dismissal it would report a healthy capture over a
+            // stopped engine, which is the failure this branch exists for.
+            return viewModel.engineStalled
         case .starting, .stopping, .failed:
             return false
         }

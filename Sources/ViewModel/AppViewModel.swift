@@ -341,7 +341,27 @@ public final class AppViewModel: ObservableObject {
     /// restart has failed — the user hears silence with a "running" capture.
     /// The header's status pill reads this to avoid reporting a healthy
     /// green state over a dead pipeline.
-    @Published public private(set) var engineIsRunning: Bool = false
+    @Published public private(set) var engineIsRunning: Bool = false {
+        didSet {
+            // A successful (re)start clears any prior stall. Every path that
+            // brings the engine up runs through here, so the flag cannot
+            // outlive the condition it describes.
+            if engineIsRunning { engineStalled = false }
+        }
+    }
+
+    /// The engine stopped while capture still believes it is running, and the
+    /// restart failed.
+    ///
+    /// Distinct from `!engineIsRunning`, which is briefly true during a normal
+    /// start and would make the UI flash a failure. This flag is set only on
+    /// the configuration-change restart failure and cleared whenever the
+    /// engine comes back up.
+    ///
+    /// It is also deliberately independent of `lastError`: dismissing the
+    /// error banner acknowledges the message, not the silence. The status pill
+    /// must keep reporting a failure while audio is not actually flowing.
+    @Published public private(set) var engineStalled: Bool = false
 
     // MARK: Init
 
@@ -423,6 +443,7 @@ public final class AppViewModel: ObservableObject {
                         )
                     } catch {
                         self.engineIsRunning = false
+                        self.engineStalled = true
                         self.logger.error(
                             "[EXP-031.engineRestart] FAIL — \(error.localizedDescription)"
                         )

@@ -36,6 +36,16 @@ public struct ControlPanelView: View {
 
             Divider()
 
+            // Above the footer, not inside it: FooterView lays its actions out
+            // in one centre-aligned row, and a multi-line banner nested in the
+            // power control would drag the presets and quit buttons out of
+            // alignment with it.
+            if viewModel.lastError != nil {
+                ErrorBanner()
+                    .padding(.horizontal, 12)
+                    .padding(.top, 8)
+            }
+
             FooterView()
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
