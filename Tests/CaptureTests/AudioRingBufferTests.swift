@@ -258,6 +258,14 @@ final class AudioRingBufferTests: XCTestCase {
         let producerDone = expectation(description: "producer done")
         let consumerDone = expectation(description: "consumer done")
 
+        // Lets the consumer tell "the producer is still writing" apart from
+        // "the producer has stopped and the ring is genuinely short". Without
+        // that distinction the drain loop has no exit when frames are lost:
+        // `wait(for:timeout:)` fails the test but does not cancel an
+        // already-dispatched block, so the consumer would keep sleeping and
+        // asserting inside a test method that has already returned.
+        let producerFinished = AtomicFlag()
+
         // Producer: write chunkCount ramps of chunkFrames each, sleeping
         // ~10 ms between chunks to roughly mimic an IOProc cadence.
         producer.async {
@@ -291,10 +299,20 @@ final class AudioRingBufferTests: XCTestCase {
                 }
                 Thread.sleep(forTimeInterval: 0.01)
             }
+            producerFinished.set()
             producerDone.fulfill()
         }
 
         // Consumer: drain chunkFrames at a time, verifying monotonicity.
+        // The loop terminates on completion (`framesRead == totalFrames`),
+        // not on a wall-clock deadline: the producer writes exactly
+        // `totalFrames` and `read` never returns more than is buffered, so
+        // a correct run always converges on the full count regardless of
+        // how the two threads are scheduled. A slow-but-correct run under
+        // CI load therefore keeps draining instead of bailing out early.
+        // The generous `wait(for:)` timeout below is the sole backstop: a
+        // genuinely wedged ring never fulfils `consumerDone` and fails the
+        // test there, with no flaky partial-drain assertion in between.
         consumer.async {
             var nextExpected: Float = 0
             var framesRead = 0
@@ -304,13 +322,27 @@ final class AudioRingBufferTests: XCTestCase {
                 dch0.deallocate()
                 dch1.deallocate()
             }
-            let deadline = Date().addingTimeInterval(5.0)
-            while framesRead < totalFrames && Date() < deadline {
+            // Consecutive empty reads seen *after* the producer stopped. While
+            // the producer is still writing, an empty read means "not yet" and
+            // must never count toward giving up — that is what made the old
+            // wall-clock deadline flaky. Once the producer has finished, a
+            // correct ring hands over everything it holds, so a long run of
+            // empty reads means the frames are gone and no further waiting
+            // recovers them.
+            var emptyReadsAfterProducer = 0
+            let emptyReadLimit = 2_000 // ~2 s at the 1 ms poll interval
+
+            while framesRead < totalFrames {
                 let n = ring.read(into: [dch0, dch1], frames: chunkFrames)
                 if n == 0 {
+                    if producerFinished.isSet {
+                        emptyReadsAfterProducer += 1
+                        if emptyReadsAfterProducer >= emptyReadLimit { break }
+                    }
                     Thread.sleep(forTimeInterval: 0.001)
                     continue
                 }
+                emptyReadsAfterProducer = 0
                 for i in 0..<n {
                     XCTAssertEqual(dch0[i], nextExpected, "ch0 out of order at frame \(framesRead + i)")
                     XCTAssertEqual(dch1[i], nextExpected + 100_000, "ch1 out of order at frame \(framesRead + i)")
@@ -318,11 +350,15 @@ final class AudioRingBufferTests: XCTestCase {
                 }
                 framesRead += n
             }
-            XCTAssertEqual(framesRead, totalFrames, "consumer did not drain all frames within deadline")
+            XCTAssertEqual(framesRead, totalFrames, "consumer drained \(framesRead) of \(totalFrames) frames")
             consumerDone.fulfill()
         }
 
-        wait(for: [producerDone, consumerDone], timeout: 10.0)
+        // Generous backstop only. The producer needs ~1 s (100 chunks at a
+        // ~10 ms cadence) and the consumer drains in parallel, so a healthy
+        // run completes in a couple of seconds even under load; the timeout
+        // exists to fail a wedged ring rather than hang the suite forever.
+        wait(for: [producerDone, consumerDone], timeout: 30.0)
     }
 
     // MARK: T1.8
@@ -343,5 +379,26 @@ final class AudioRingBufferTests: XCTestCase {
         XCTAssertEqual(ring.read(into: [dst], frames: 0), 0)
         // Caller-supplied destination must not have been touched.
         XCTAssertEqual(dst[0], -1)
+    }
+}
+
+/// Minimal thread-safe boolean for coordinating test producer/consumer
+/// threads. A plain captured `var` would be a data race; the concurrency
+/// primitives in `AudioRingBuffer` itself are deliberately not reused here so
+/// a bug in the type under test cannot mask a bug in its own test harness.
+final class AtomicFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+
+    func set() {
+        lock.lock()
+        value = true
+        lock.unlock()
+    }
+
+    var isSet: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
     }
 }
