@@ -15,15 +15,28 @@ Work toward v0.1.0. Nothing has been tagged or released yet.
 
 - Audio capture from a chosen application via Core Audio process taps, with a
   direct IOProc reader and a lock-free ring buffer (ADR-018).
-- Configurable effect graph: parametric EQ, convolution reverb, and gain, each
-  with bypass and per-node wet/dry mixing (ADR-007).
-- Always-on output safety limiter, not user-defeatable, so a boosted gain
-  cannot produce a headphone blowout (ADR-021).
+- Configurable effect graph: a two-band resonant EQ, a reverb built on
+  `AVAudioUnitReverb`'s factory presets, and a gain stage, each with bypass.
+  Wet/dry mixing is per node and applies where it is meaningful; `GainNode`
+  declares `supportsWetDry = false`, and the EQ hides the control by default
+  (ADR-007). Convolution with custom impulse responses is future work, not
+  shipped here.
+- Always-on output limiter, not user-defeatable, which prevents the graph from
+  clipping above 0 dBFS (ADR-021). It bounds digital peak level, not loudness:
+  a gain stage can still raise a quiet source by up to +12 dB without reaching
+  the limiter threshold, so it is not a hearing-safety guarantee.
 - Menubar control panel: source picker, chain editor with button-based reorder
   (ADR-013), power toggle, status pill, and a debug log panel.
 - Preset save and load as `.tnf` JSON files, plus the bundled `distant-engines`
   and `dry` factory presets.
 - "Preserve Bluetooth quality during capture" setting (ADR-019, Layer A).
+
+### Deferred to V0.2
+
+- The `submerged` and `next-room` factory presets. Four presets were scoped for
+  V1 and cut to two (`distant-engines`, `dry`) during the framing audit, because
+  only the shipped pair had a documented design rationale and ear-test budget.
+  README and `docs/specs/preset-format.md` both point here for this deferral.
 - Release bundler producing an ad-hoc-signed `.app` and a compressed `.dmg`.
 - Accessibility labels, values, and hints across every control, with a
   committed accessibility-tree artifact and tests enforcing label discipline
@@ -41,9 +54,12 @@ Work toward v0.1.0. Nothing has been tagged or released yet.
 
 ### Known limitations
 
-- **Not notarized.** v0.1.0 will ship ad-hoc signed, so Gatekeeper blocks the
-  first open. The README documents the right-click-Open workaround. Developer
-  ID signing is deferred (ADR-017).
+- **Not notarized.** v0.1.0 ships without Developer ID signing or
+  notarization, so Gatekeeper blocks the first open and the README documents
+  the right-click-Open workaround. `Build/release-bundle.sh` signs ad-hoc
+  (`-`) unless a self-signed codesigning identity is present on the build
+  host, in which case it uses that instead; neither satisfies Gatekeeper on
+  another machine. Developer ID is deferred (ADR-017).
 - **Process granularity only.** Targeting is per-application; per-tab and
   per-window filtering are not achievable through process taps (ADR-020).
 - **Bluetooth headsets may drop to HFP.** Capture can cause macOS to switch a
