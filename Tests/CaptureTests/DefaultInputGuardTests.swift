@@ -187,7 +187,8 @@ final class DefaultInputGuardTests: XCTestCase {
         var logs: [String] = []
         let guardian = DefaultInputGuard(control: control, defaults: defaults, log: { logs.append($0) })
 
-        XCTAssertTrue(await guardian.engageIfNeeded(settingEnabled: true).engaged)
+        let outcome = await guardian.engageIfNeeded(settingEnabled: true)
+        XCTAssertTrue(outcome.engaged)
         XCTAssertEqual(control.defaultInput, builtInID)
 
         await guardian.restore(trigger: "clean-stop")
@@ -302,7 +303,8 @@ final class DefaultInputGuardTests: XCTestCase {
         let defaults = makeDefaults()
         let guardian = DefaultInputGuard(control: control, defaults: defaults, log: { _ in })
 
-        XCTAssertTrue(await guardian.engageIfNeeded(settingEnabled: true).engaged)
+        let outcome = await guardian.engageIfNeeded(settingEnabled: true)
+        XCTAssertTrue(outcome.engaged)
         XCTAssertEqual(defaults.string(forKey: DefaultInputGuard.strandedInputMarkerKey), "bt-uid")
 
         // Simulate the default input becoming Bluetooth again mid-session
