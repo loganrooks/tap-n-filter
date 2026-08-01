@@ -211,7 +211,14 @@ func measureWriteLatency(allInputs: [DeviceFacts], currentInputID: AudioDeviceID
     //
     // Abrupt termination (SIGKILL, power loss) can still strand it; there is no
     // handler for that, and recovery is manual via System Settings > Sound.
-    defer { restoreDefaultInput(to: currentInputID, writeAddr: writeAddr, size: size) }
+    defer {
+        restoreDefaultInput(
+            to: currentInputID,
+            onlyIfStill: target.id,
+            writeAddr: writeAddr,
+            size: size
+        )
+    }
 
     var landedNs: UInt64?
     for _ in 0..<200 { // up to ~1s at 5ms granularity
@@ -233,13 +240,17 @@ func measureWriteLatency(allInputs: [DeviceFacts], currentInputID: AudioDeviceID
 
 }
 
-/// Hand the system default input back, but only if it is still the device this
-/// probe set. The poll window is about a second, and a user who changes their
-/// input during it means it well — clobbering that choice would make the probe
-/// the very kind of silent device-stealer the mitigation it tests is careful
-/// not to be.
+/// Hand the system default input back, but only while the probe still owns it.
+///
+/// Ownership means "the input is still the device the probe installed", which
+/// is `onlyIfStill`. Comparing against the *original* instead gets the polarity
+/// backwards: if a user picks a third device during the ~1 s poll, the current
+/// input differs from the original, and a check phrased that way would treat
+/// that as licence to overwrite their choice — exactly the silent device-steal
+/// the mitigation under test is careful to avoid.
 func restoreDefaultInput(
     to original: AudioDeviceID,
+    onlyIfStill replacement: AudioDeviceID,
     writeAddr: AudioObjectPropertyAddress,
     size: UInt32
 ) {
@@ -256,6 +267,11 @@ func restoreDefaultInput(
     }
     guard current != original else {
         print("  restore not needed; default input is already [\(original)]")
+        return
+    }
+    guard current == replacement else {
+        print("  restore RELINQUISHED: default input is [\(current)], not the probe's "
+              + "replacement [\(replacement)] — leaving the newer choice alone")
         return
     }
     var addrCopy = writeAddr
