@@ -39,6 +39,44 @@ public protocol DefaultInputControlling {
 
     /// Every device that exposes at least one input channel.
     func inputDeviceIDs() throws -> [AudioDeviceID]
+
+    /// `kAudioDevicePropertyDeviceCanBeDefaultDevice` on the input scope —
+    /// false for devices the HAL exposes with input channels but refuses to
+    /// make the default input (some virtual and aggregate devices). Setting
+    /// such a device as the default input fails, so it must not be offered as
+    /// a replacement.
+    func canBeDefaultInputDevice(_ id: AudioDeviceID) throws -> Bool
+}
+
+/// Identity of the *physical* device behind a HAL device object.
+public enum AudioDeviceIdentity {
+
+    /// macOS publishes a Bluetooth headset as **two** device objects — one
+    /// input-only, one output-only — with distinct `AudioDeviceID`s and
+    /// distinct UIDs. The UIDs are the same Bluetooth MAC address with a
+    /// `:input` / `:output` suffix. Measured on macOS 27 with a Bose
+    /// QuietComfort (`docs/investigations/probes/hal_device_identity.swift`):
+    ///
+    ///     id=108  in=1 out=0  uid=BC-87-FA-23-5B-E0:input
+    ///     id=102  in=0 out=2  uid=BC-87-FA-23-5B-E0:output
+    ///
+    /// Comparing `AudioDeviceID`s to decide "is the default input the same
+    /// headset as the default output" therefore never matches. Comparing the
+    /// UID with its scope suffix stripped does.
+    ///
+    /// A UID with no recognised suffix is returned unchanged, so non-Bluetooth
+    /// devices compare by their plain UID.
+    public static func physicalDeviceKey(forUID uid: String) -> String {
+        for suffix in [":input", ":output"] where uid.hasSuffix(suffix) {
+            return String(uid.dropLast(suffix.count))
+        }
+        return uid
+    }
+
+    /// True when two device UIDs name the same physical device.
+    public static func isSamePhysicalDevice(_ lhs: String, _ rhs: String) -> Bool {
+        physicalDeviceKey(forUID: lhs) == physicalDeviceKey(forUID: rhs)
+    }
 }
 
 /// Transport-type classification shared by the guard and its tests.
@@ -181,6 +219,20 @@ public struct SystemDefaultInputControl: DefaultInputControlling {
             throw DefaultInputControlError.propertyReadFailed(status, "devices")
         }
         return ids.filter { hasInputChannels($0) }
+    }
+
+    public func canBeDefaultInputDevice(_ id: AudioDeviceID) throws -> Bool {
+        var addr = address(
+            kAudioDevicePropertyDeviceCanBeDefaultDevice,
+            scope: kAudioObjectPropertyScopeInput
+        )
+        var value: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        let status = AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &value)
+        guard status == noErr else {
+            throw DefaultInputControlError.propertyReadFailed(status, "canBeDefaultInputDevice")
+        }
+        return value != 0
     }
 
     /// True when the device exposes at least one input channel. A device with

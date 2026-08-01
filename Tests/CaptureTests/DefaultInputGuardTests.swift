@@ -358,18 +358,242 @@ final class DefaultInputGuardTests: XCTestCase {
 
 // MARK: - Fake
 
+/// Coverage for the second adversarial review round (Codex on PR #20).
+final class DefaultInputGuardReviewRoundTwoTests: XCTestCase {
+
+    private let btInputID: AudioDeviceID = 10
+    private let btOutputID: AudioDeviceID = 11
+    private let otherBTInputID: AudioDeviceID = 12
+    private let builtInID: AudioDeviceID = 20
+    private let usbID: AudioDeviceID = 30
+    private let virtualID: AudioDeviceID = 40
+
+    private func makeDefaults() -> UserDefaults {
+        UserDefaults(suiteName: "tnf.exp037.r2.\(UUID().uuidString)")!
+    }
+
+    // MARK: Same-physical-device identity (ADR-019 engage condition 3)
+
+    /// macOS publishes a headset as two device objects with different IDs and
+    /// `:input` / `:output` UID suffixes. The guard must still recognise them
+    /// as the same headset — comparing IDs would never match.
+    func test_engage_matchesSplitInputOutputObjectsOfOneHeadset() throws {
+        let control = FakeDefaultInputControl(
+            devices: [
+                btInputID: .init(uid: "BC-87-FA-23-5B-E0:input",
+                                 transport: kAudioDeviceTransportTypeBluetooth,
+                                 running: false, isInput: true),
+                btOutputID: .init(uid: "BC-87-FA-23-5B-E0:output",
+                                  transport: kAudioDeviceTransportTypeBluetooth,
+                                  running: false, isInput: false),
+                builtInID: .init(uid: "builtin-uid",
+                                 transport: kAudioDeviceTransportTypeBuiltIn,
+                                 running: false, isInput: true),
+            ],
+            defaultInput: btInputID,
+            defaultOutput: btOutputID
+        )
+        let guardian = DefaultInputGuard(control: control, defaults: makeDefaults(), log: { _ in })
+
+        let outcome = guardian.engageIfNeeded(settingEnabled: true)
+
+        XCTAssertTrue(outcome.engaged,
+                      "the split input/output objects of one headset must count as the same device")
+        XCTAssertEqual(control.defaultInput, builtInID)
+    }
+
+    /// Bluetooth output A with an unrelated Bluetooth microphone B as the
+    /// default input: HFP negotiates on B, not A, so switching B away is a
+    /// system-wide side effect that buys nothing.
+    func test_engage_declinesWhenBluetoothInputIsADifferentDeviceThanTheOutput() throws {
+        let control = FakeDefaultInputControl(
+            devices: [
+                otherBTInputID: .init(uid: "AA-11-22-33-44-55:input",
+                                      transport: kAudioDeviceTransportTypeBluetooth,
+                                      running: false, isInput: true),
+                btOutputID: .init(uid: "BC-87-FA-23-5B-E0:output",
+                                  transport: kAudioDeviceTransportTypeBluetooth,
+                                  running: false, isInput: false),
+                builtInID: .init(uid: "builtin-uid",
+                                 transport: kAudioDeviceTransportTypeBuiltIn,
+                                 running: false, isInput: true),
+            ],
+            defaultInput: otherBTInputID,
+            defaultOutput: btOutputID
+        )
+        let defaults = makeDefaults()
+        let guardian = DefaultInputGuard(control: control, defaults: defaults, log: { _ in })
+
+        let outcome = guardian.engageIfNeeded(settingEnabled: true)
+
+        XCTAssertFalse(outcome.engaged)
+        XCTAssertEqual(outcome.reason, "input-not-the-bt-output")
+        XCTAssertEqual(control.defaultInput, otherBTInputID, "an unrelated mic must not be touched")
+        XCTAssertNil(defaults.string(forKey: DefaultInputGuard.strandedInputMarkerKey))
+    }
+
+    // MARK: Replacement candidate selection
+
+    /// A device can advertise input channels and still refuse to become the
+    /// default input. It must not be offered.
+    func test_engage_skipsCandidateThatCannotBeDefaultInput() throws {
+        let control = FakeDefaultInputControl(
+            devices: [
+                btInputID: .init(uid: "bt-uid", transport: kAudioDeviceTransportTypeBluetooth,
+                                 running: false, isInput: true),
+                virtualID: .init(uid: "virtual-uid", transport: kAudioDeviceTransportTypeVirtual,
+                                 running: false, isInput: true, canBeDefaultInput: false),
+                usbID: .init(uid: "usb-uid", transport: kAudioDeviceTransportTypeUSB,
+                             running: false, isInput: true),
+            ],
+            defaultInput: btInputID,
+            defaultOutput: btInputID
+        )
+        let guardian = DefaultInputGuard(control: control, defaults: makeDefaults(), log: { _ in })
+
+        let outcome = guardian.engageIfNeeded(settingEnabled: true)
+
+        XCTAssertTrue(outcome.engaged)
+        XCTAssertEqual(control.defaultInput, usbID)
+        XCTAssertFalse(control.setInputCalls.contains(virtualID),
+                       "a non-defaultable device must never be attempted")
+    }
+
+    /// If the HAL rejects the first candidate at write time, the next one is
+    /// tried rather than the whole mitigation aborting.
+    func test_engage_fallsThroughToNextCandidateWhenSetFails() throws {
+        let control = FakeDefaultInputControl(
+            devices: [
+                btInputID: .init(uid: "bt-uid", transport: kAudioDeviceTransportTypeBluetooth,
+                                 running: false, isInput: true),
+                builtInID: .init(uid: "builtin-uid", transport: kAudioDeviceTransportTypeBuiltIn,
+                                 running: false, isInput: true),
+                usbID: .init(uid: "usb-uid", transport: kAudioDeviceTransportTypeUSB,
+                             running: false, isInput: true),
+            ],
+            defaultInput: btInputID,
+            defaultOutput: btInputID
+        )
+        control.rejectSetInput = [builtInID]
+        let defaults = makeDefaults()
+        let guardian = DefaultInputGuard(control: control, defaults: defaults, log: { _ in })
+
+        let outcome = guardian.engageIfNeeded(settingEnabled: true)
+
+        XCTAssertTrue(outcome.engaged)
+        XCTAssertEqual(control.defaultInput, usbID)
+        XCTAssertEqual(outcome.toUID, "usb-uid")
+        XCTAssertEqual(defaults.string(forKey: DefaultInputGuard.strandedInputMarkerKey), "bt-uid")
+    }
+
+    /// When no candidate can be applied, nothing changed — so the marker set
+    /// ahead of the attempt must not survive to strand a later launch.
+    func test_engage_dropsMarkerWhenEveryCandidateFails() throws {
+        let control = FakeDefaultInputControl(
+            devices: [
+                btInputID: .init(uid: "bt-uid", transport: kAudioDeviceTransportTypeBluetooth,
+                                 running: false, isInput: true),
+                builtInID: .init(uid: "builtin-uid", transport: kAudioDeviceTransportTypeBuiltIn,
+                                 running: false, isInput: true),
+            ],
+            defaultInput: btInputID,
+            defaultOutput: btInputID
+        )
+        control.rejectSetInput = [builtInID]
+        let defaults = makeDefaults()
+        let guardian = DefaultInputGuard(control: control, defaults: defaults, log: { _ in })
+
+        let outcome = guardian.engageIfNeeded(settingEnabled: true)
+
+        XCTAssertFalse(outcome.engaged)
+        XCTAssertEqual(outcome.reason, "switch-readback-failed")
+        XCTAssertNil(defaults.string(forKey: DefaultInputGuard.strandedInputMarkerKey))
+        XCTAssertEqual(control.defaultInput, btInputID)
+    }
+
+    // MARK: A3 restore fallback
+
+    /// The saved headset is gone, but the user is already on a good USB mic.
+    /// Restore must leave it alone rather than force the built-in.
+    func test_restore_keepsCurrentNonBluetoothDefaultWhenSavedDeviceIsGone() throws {
+        let control = FakeDefaultInputControl(
+            devices: [
+                usbID: .init(uid: "usb-uid", transport: kAudioDeviceTransportTypeUSB,
+                             running: false, isInput: true),
+                builtInID: .init(uid: "builtin-uid", transport: kAudioDeviceTransportTypeBuiltIn,
+                                 running: false, isInput: true),
+            ],
+            defaultInput: usbID,
+            defaultOutput: usbID
+        )
+        let defaults = makeDefaults()
+        defaults.set("gone-bt-uid", forKey: DefaultInputGuard.strandedInputMarkerKey)
+        let guardian = DefaultInputGuard(control: control, defaults: defaults, log: { _ in })
+
+        guardian.restore(trigger: "clean-stop")
+
+        XCTAssertEqual(control.defaultInput, usbID, "a user-chosen USB mic must survive restore")
+        XCTAssertTrue(control.setInputCalls.isEmpty, "no write should be issued at all")
+        XCTAssertNil(defaults.string(forKey: DefaultInputGuard.strandedInputMarkerKey),
+                     "the restore succeeded, so the marker is cleared")
+    }
+
+    /// The saved headset is gone and the current default is still a Bluetooth
+    /// device, so the built-in fallback does apply.
+    func test_restore_appliesBuiltInFallbackWhenCurrentDefaultIsStillBluetooth() throws {
+        let control = FakeDefaultInputControl(
+            devices: [
+                btInputID: .init(uid: "other-bt-uid", transport: kAudioDeviceTransportTypeBluetooth,
+                                 running: false, isInput: true),
+                builtInID: .init(uid: "builtin-uid", transport: kAudioDeviceTransportTypeBuiltIn,
+                                 running: false, isInput: true),
+            ],
+            defaultInput: btInputID,
+            defaultOutput: btInputID
+        )
+        let defaults = makeDefaults()
+        defaults.set("gone-bt-uid", forKey: DefaultInputGuard.strandedInputMarkerKey)
+        let guardian = DefaultInputGuard(control: control, defaults: defaults, log: { _ in })
+
+        guardian.restore(trigger: "clean-stop")
+
+        XCTAssertEqual(control.defaultInput, builtInID)
+        XCTAssertNil(defaults.string(forKey: DefaultInputGuard.strandedInputMarkerKey))
+    }
+
+    // MARK: Physical-device key
+
+    func test_physicalDeviceKey_stripsScopeSuffixes() {
+        XCTAssertTrue(AudioDeviceIdentity.isSamePhysicalDevice(
+            "BC-87-FA-23-5B-E0:input", "BC-87-FA-23-5B-E0:output"))
+        XCTAssertFalse(AudioDeviceIdentity.isSamePhysicalDevice(
+            "AA-11-22-33-44-55:input", "BC-87-FA-23-5B-E0:output"))
+        // Devices without a scope suffix compare by their plain UID.
+        XCTAssertTrue(AudioDeviceIdentity.isSamePhysicalDevice("BuiltInMicrophoneDevice",
+                                                              "BuiltInMicrophoneDevice"))
+        XCTAssertFalse(AudioDeviceIdentity.isSamePhysicalDevice("BuiltInMicrophoneDevice",
+                                                               "BuiltInSpeakerDevice"))
+    }
+}
+
 private final class FakeDefaultInputControl: DefaultInputControlling {
     struct Device {
         var uid: String
         var transport: UInt32
         var running: Bool
         var isInput: Bool
+        /// Models `kAudioDevicePropertyDeviceCanBeDefaultDevice` on the input
+        /// scope. Defaults to true so existing fixtures are unaffected.
+        var canBeDefaultInput: Bool = true
     }
 
     var devices: [AudioDeviceID: Device]
     var defaultInput: AudioDeviceID
     var defaultOutput: AudioDeviceID
     private(set) var setInputCalls: [AudioDeviceID] = []
+    /// Device IDs whose `setDefaultInputDeviceID` throws, modelling a HAL that
+    /// refuses a device the enumeration offered.
+    var rejectSetInput: Set<AudioDeviceID> = []
     /// When true, `setDefaultInputDeviceID` records the call but does NOT
     /// change `defaultInput` — models a HAL write that returns success yet
     /// does not take, so the guard's readback check can be exercised.
@@ -386,7 +610,13 @@ private final class FakeDefaultInputControl: DefaultInputControlling {
 
     func setDefaultInputDeviceID(_ id: AudioDeviceID) throws {
         setInputCalls.append(id)
+        if rejectSetInput.contains(id) { throw FakeError.setRefused }
         if !ignoreSetInput { defaultInput = id }
+    }
+
+    func canBeDefaultInputDevice(_ id: AudioDeviceID) throws -> Bool {
+        guard let device = devices[id] else { throw FakeError.unknownDevice }
+        return device.canBeDefaultInput
     }
 
     func transportType(of id: AudioDeviceID) throws -> UInt32 {
@@ -411,5 +641,5 @@ private final class FakeDefaultInputControl: DefaultInputControlling {
         devices.filter { $0.value.isInput }.keys.sorted()
     }
 
-    enum FakeError: Error { case unknownDevice }
+    enum FakeError: Error { case unknownDevice, setRefused }
 }

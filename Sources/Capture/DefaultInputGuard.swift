@@ -99,7 +99,28 @@ public final class DefaultInputGuard {
                 // trigger, so there is nothing to switch.
                 return .notEngaged("input-not-bluetooth")
             }
-            guard let replacement = try pickReplacementInput(excluding: inputID) else {
+            let originUID = try control.uid(of: inputID)
+            let outputUID = try control.uid(of: outputID)
+            // ADR-019 engage condition 3 is an *identity* condition — the
+            // default input must be the same headset as the Bluetooth output,
+            // not merely some Bluetooth device. With BT output A selected and
+            // an unrelated idle BT microphone B as the default input, HFP is
+            // negotiated on B, not on A; switching B away is a system-wide
+            // side effect that buys the user nothing.
+            //
+            // Note this cannot be an `AudioDeviceID` comparison: macOS
+            // publishes a headset as two device objects with different IDs and
+            // different UIDs (see `AudioDeviceIdentity`), so `inputID ==
+            // outputID` would never hold and the mitigation would never
+            // engage. The comparison is on the UID with its scope suffix
+            // stripped.
+            guard AudioDeviceIdentity.isSamePhysicalDevice(originUID, outputUID) else {
+                log("[EXP-037.switch] from=\(originUID) btOutput=\(outputUID) "
+                    + "engaged=false reason=input-not-the-bt-output")
+                return .notEngaged("input-not-the-bt-output")
+            }
+            let candidates = try replacementCandidates(excluding: inputID)
+            guard !candidates.isEmpty else {
                 log("[EXP-037.switch] engaged=false reason=no-replacement-input")
                 return .notEngaged("no-replacement-input")
             }
@@ -111,31 +132,47 @@ public final class DefaultInputGuard {
             // input — so the wiring keeps engage close to capture start (A1)
             // and this guarantee is best-effort by nature.
             if try control.isRunningSomewhere(inputID) {
-                let originUID = (try? control.uid(of: inputID)) ?? "?"
                 log("[EXP-037.switch] from=\(originUID) engaged=false reason=bt-input-in-use")
                 return .notEngaged("bt-input-in-use")
             }
-            let originUID = try control.uid(of: inputID)
-            let outputUID = (try? control.uid(of: outputID)) ?? "?"
             // Persist the original UID BEFORE the switch so a crash between the
             // switch and a clean stop can still be recovered on next launch.
             defaults.set(originUID, forKey: Self.strandedInputMarkerKey)
-            try control.setDefaultInputDeviceID(replacement)
-            let replacementUID = try control.uid(of: replacement)
-            // D1 requires the switch to have actually landed: a readback that
-            // the default input now equals the replacement. A `noErr` write
-            // that did not take is NOT success — drop the marker we just set
-            // and report failure, so we never claim D1 (or leave a recovery
-            // breadcrumb) for a no-op switch.
-            guard (try? control.defaultInputDeviceID()) == replacement else {
-                defaults.removeObject(forKey: Self.strandedInputMarkerKey)
+            // Try candidates in preference order. A device can advertise input
+            // channels and still refuse to become the default input, and the
+            // HAL only reports that at write time — so one unusable candidate
+            // must not disable the mitigation while a usable one remains.
+            for replacement in candidates {
+                do {
+                    try control.setDefaultInputDeviceID(replacement)
+                } catch {
+                    log("[EXP-037.switch] candidate=\(replacement) set-failed error=\(error)")
+                    continue
+                }
+                // D1 requires the switch to have actually landed: a readback
+                // that the default input now equals the replacement. A `noErr`
+                // write that did not take is NOT success — we never claim D1
+                // (or leave a recovery breadcrumb) for a no-op switch.
+                guard readBackDefaultInput(equals: replacement) else {
+                    log("[EXP-037.switch] candidate=\(replacement) readback-failed")
+                    continue
+                }
+                let replacementUID = (try? control.uid(of: replacement)) ?? "?"
                 log("[EXP-037.switch] from=\(originUID) to=\(replacementUID) "
-                    + "engaged=false reason=switch-readback-failed")
-                return .notEngaged("switch-readback-failed")
+                    + "btOutput=\(outputUID) engaged=true readback=true")
+                return EngageOutcome(
+                    engaged: true,
+                    reason: nil,
+                    fromUID: originUID,
+                    toUID: replacementUID
+                )
             }
-            log("[EXP-037.switch] from=\(originUID) to=\(replacementUID) "
-                + "btOutput=\(outputUID) engaged=true readback=true")
-            return EngageOutcome(engaged: true, reason: nil, fromUID: originUID, toUID: replacementUID)
+            // Every candidate failed. Drop the marker we optimistically set —
+            // nothing was changed, so there is nothing owed a restore.
+            defaults.removeObject(forKey: Self.strandedInputMarkerKey)
+            log("[EXP-037.switch] from=\(originUID) engaged=false "
+                + "reason=switch-readback-failed candidates=\(candidates.count)")
+            return .notEngaged("switch-readback-failed")
         } catch {
             log("[EXP-037.switch] engaged=false reason=error error=\(error)")
             return .notEngaged("error")
@@ -181,18 +218,59 @@ public final class DefaultInputGuard {
 
     // MARK: Helpers
 
+    /// Number of times the default-input readback is retried before the write
+    /// is treated as not having landed, and the pause between attempts.
+    ///
+    /// HAL property writes are not guaranteed to be visible to the very next
+    /// read. A single immediate readback can therefore report a false failure
+    /// for a switch that lands a few milliseconds later — which matters here
+    /// because the caller must not reach `AudioDeviceStart` before the switch
+    /// is live (EXP-037's A1 timing assumption). The poll costs nothing on the
+    /// common path: the first readback normally succeeds and returns
+    /// immediately. Only a genuinely failed write pays the full 100 ms, once,
+    /// at capture start.
+    private static let readbackAttempts = 5
+    private static let readbackRetryDelay: TimeInterval = 0.02
+
+    /// Poll `kAudioHardwarePropertyDefaultInputDevice` until it reports
+    /// `expected`, up to the bounded attempt budget.
+    private func readBackDefaultInput(equals expected: AudioDeviceID) -> Bool {
+        for attempt in 0..<Self.readbackAttempts {
+            if (try? control.defaultInputDeviceID()) == expected { return true }
+            if attempt < Self.readbackAttempts - 1 {
+                Thread.sleep(forTimeInterval: Self.readbackRetryDelay)
+            }
+        }
+        return false
+    }
+
     /// Resolve the saved UID to a present device and set it as the default
-    /// input. A3 fallback: if the saved device is gone, fall back to a
-    /// non-Bluetooth input (preferring the built-in mic); if none exists,
-    /// leave the input untouched and report failure.
+    /// input. A3 fallback: if the saved device is gone, keep whatever
+    /// non-Bluetooth input the user is on now, and only reach for the built-in
+    /// mic when the current default is itself unusable. If nothing usable
+    /// exists, leave the input untouched and report failure.
     private func applyRestore(toUID savedUID: String) -> Bool {
         do {
             if let target = try control.deviceID(forUID: savedUID) {
                 try control.setDefaultInputDeviceID(target)
+                return readBackDefaultInput(equals: target)
+            }
+            // A3: the saved device is gone (headset unpaired mid-session).
+            // Preserve the current system default before resorting to the
+            // built-in mic — the user may have already picked a perfectly good
+            // USB mic, and overwriting it would leave them on an input they
+            // never chose, which is the same class of harm the marker exists
+            // to prevent.
+            if let current = try? control.defaultInputDeviceID(),
+               current != AudioObjectID(kAudioObjectUnknown),
+               let transport = try? control.transportType(of: current),
+               !AudioDeviceTransport.isBluetooth(transport) {
+                log("[EXP-037.restore] kept-current savedUIDMissing=\(savedUID)")
                 return true
             }
-            if let fallback = try pickReplacementInput(excluding: nil) {
-                try control.setDefaultInputDeviceID(fallback)
+            for fallback in try replacementCandidates(excluding: nil) {
+                guard (try? control.setDefaultInputDeviceID(fallback)) != nil,
+                      readBackDefaultInput(equals: fallback) else { continue }
                 log("[EXP-037.restore] fallback-applied savedUIDMissing=\(savedUID)")
                 return true
             }
@@ -203,18 +281,32 @@ public final class DefaultInputGuard {
         }
     }
 
-    /// Pick a non-Bluetooth input device, preferring the built-in microphone,
-    /// then any other non-Bluetooth input. Returns `nil` when the only inputs
-    /// are Bluetooth (the mitigation cannot run; the caller surfaces the
-    /// README caveat).
-    private func pickReplacementInput(excluding excludedID: AudioDeviceID?) throws -> AudioDeviceID? {
-        var firstNonBluetooth: AudioDeviceID?
+    /// Non-Bluetooth input devices that can actually become the default input,
+    /// in preference order: the built-in microphone first, then the rest in
+    /// HAL order. Empty when the only inputs are Bluetooth or non-selectable
+    /// (the mitigation cannot run; the caller surfaces the README caveat).
+    ///
+    /// A device is filtered out unless `canBeDefaultInputDevice` says the HAL
+    /// will accept it. Some virtual and aggregate devices advertise input
+    /// channels but refuse to be the default input; offering one and having
+    /// the write fail used to abort the whole switch even when a usable mic
+    /// was next in the list.
+    private func replacementCandidates(
+        excluding excludedID: AudioDeviceID?
+    ) throws -> [AudioDeviceID] {
+        var builtIn: [AudioDeviceID] = []
+        var others: [AudioDeviceID] = []
         for id in try control.inputDeviceIDs() where id != excludedID {
             let transport = try control.transportType(of: id)
             if AudioDeviceTransport.isBluetooth(transport) { continue }
-            if AudioDeviceTransport.isBuiltIn(transport) { return id }
-            if firstNonBluetooth == nil { firstNonBluetooth = id }
+            // A device that cannot be read is a device we cannot vouch for.
+            guard (try? control.canBeDefaultInputDevice(id)) == true else { continue }
+            if AudioDeviceTransport.isBuiltIn(transport) {
+                builtIn.append(id)
+            } else {
+                others.append(id)
+            }
         }
-        return firstNonBluetooth
+        return builtIn + others
     }
 }
