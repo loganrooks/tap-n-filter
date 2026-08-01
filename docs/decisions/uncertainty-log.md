@@ -250,3 +250,60 @@ baseline gap in ADR-015, which is blocked on the same missing capability.
 **Revisit trigger**: Xcode becomes available on the build host; or the CI
 artifact-regeneration lane contemplated in ADR-015 and ADR-022 is built; or a
 VoiceOver user reports an unlabelled control in a conditional state.
+
+## U-015: EQ band parameters intermittently read back at their minimum
+
+**Status**: Open — cause unidentified; observed once, not reproduced.
+**Triggered by**: a macos-15 CI failure of
+`GraphTests.test_snapshot_restore_roundtrip_preserves_chain` on PR #22
+(run 30681407164).
+
+**Question**: The test set `hp.frequency` to 100 Hz, round-tripped a graph
+through JSON, and asserted the restored node reported 100 Hz. It reported 20.0 —
+which is simultaneously the `hp.frequency` catalog lower bound and the
+`AVAudioUnitEQ` band frequency minimum. The macos-14 and macos-26 legs of the
+same run passed.
+
+The obvious reading was a regression from the resonant-filter change in #23,
+which had just landed underneath that branch. That reading is wrong. A
+diagnostic branch (PR #24) instrumented every boundary — the audio-unit write,
+`snapshot()`, the encoded JSON, the decoded parameters, the restored readback,
+and the two-node shape the failing test uses — and all three legs came back
+clean, macos-15 included:
+
+```
+[15] B.afterSetFrequency hp.freq=Optional(100.0)
+[15] D.snapshot  params=[... "hp.frequency", value: 100.0 ...]
+[15] F.decoded   params=[... "hp.frequency", value: 100.0 ...]
+[15] G.restored  hp.freq=Optional(100.0)
+```
+
+Re-running the originally failing job at its identical SHA then passed. Same
+tree, both outcomes: the failure is intermittent, and no layer of the
+save/restore path loses the value on a good run.
+
+**Current best guess**: the underlying `AUNBandEQ` audio unit occasionally fails
+to instantiate or configure under CI resource pressure, leaving band parameters
+at their minimums, so `configureEQBands()`'s writes are discarded. That would
+produce exactly 20.0 and would be load-independent of the code path — which
+matches the evidence. This is conjecture: nothing has been measured that
+distinguishes it from a toolchain-specific `AVAudioUnitEQ` bug on the 15.7.7
+image, and a single unreproduced observation cannot separate them.
+
+**Why it matters beyond the test**: if an `AVAudioUnitEQ` can silently come up
+unconfigured, the shipping app has the same exposure — the user would get an EQ
+whose cutoffs sit at the band minimums with no error surfaced. The test is the
+only place this has ever been seen, and it may well be CI-only, but the failure
+mode is invisible by construction and would be reported as "the EQ does
+nothing."
+
+**Resolution path**: make the condition self-reporting rather than chasing a
+reproduction. Have `configureEQBands()` read back what it wrote and log a
+diagnostic when a band does not hold its configured frequency, so the next
+occurrence — in CI or on a user's machine — arrives with evidence attached
+instead of a bare assertion diff. Widen the test assertion to dump full band
+state on failure at the same time.
+
+**Revisit trigger**: a second occurrence in CI; any user report of an EQ that
+appears to do nothing or to sit at its lowest cutoff; or a macOS release that
+changes `AVAudioUnitEQ` instantiation behaviour.

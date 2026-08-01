@@ -96,6 +96,18 @@ public final class EQNode: EffectNode {
         configureEQBands()
     }
 
+    /// Bands whose configured frequency did not survive the write at init, as
+    /// `"<band>: wrote <x> read <y>"`. Empty in the normal case.
+    ///
+    /// A CI run once observed `hp.frequency` reading back as 20.0 — the band
+    /// minimum — for a value that had been written as 100.0, on one OS leg
+    /// only, and never reproduced (U-015). If an `AVAudioUnitEQ` can come up
+    /// unconfigured, the shipping app has the same exposure: an EQ whose
+    /// cutoffs sit at the band minimums, doing nothing audible, with no error
+    /// anywhere. That is invisible by construction, so the condition reports
+    /// itself here instead of waiting to be caught by an assertion diff.
+    public private(set) var configurationWarnings: [String] = []
+
     private func configureEQBands() {
         // AVAudioUnitEQ's `globalGain` is in dB; the unit's overall gain is
         // unity at globalGain = 0.
@@ -130,6 +142,15 @@ public final class EQNode: EffectNode {
         lpBand.frequency = 800.0
         lpBand.bandwidth = qToBandwidth(0.707)
         lpBand.bypass = false
+
+        // Verify the writes took. See `configurationWarnings`.
+        configurationWarnings = []
+        for (label, band, wrote) in [("hp", hpBand, Float(80.0)), ("lp", lpBand, Float(800.0))]
+        where abs(band.frequency - wrote) > 0.01 {
+            configurationWarnings.append(
+                "\(label): wrote frequency \(wrote) read \(band.frequency)"
+            )
+        }
     }
 
     // MARK: Parameters
@@ -337,7 +358,10 @@ public final class EQNode: EffectNode {
             + "eqOutFmt=\(Self.fmt(eq.outputFormat(forBus: 0))) "
             + "wetFmt=\(Self.fmt(wetMixer.outputFormat(forBus: 0))) "
             + "outFmt=\(Self.fmt(outputBus.outputFormat(forBus: 0))) "
-            + "eqAUBypass=\(eq.bypass)"
+            + "eqAUBypass=\(eq.bypass) "
+            + "hpFreq=\(eq.bands[0].frequency) hpBw=\(eq.bands[0].bandwidth) "
+            + "lpFreq=\(eq.bands[1].frequency) lpBw=\(eq.bands[1].bandwidth) "
+            + "configWarnings=\(configurationWarnings.isEmpty ? "none" : configurationWarnings.joined(separator: "; "))"
     }
 
     private static func fmt(_ format: AVAudioFormat) -> String {
